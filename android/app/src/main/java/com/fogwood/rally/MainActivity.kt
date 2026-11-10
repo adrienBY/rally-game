@@ -82,6 +82,13 @@ class MainActivity : Activity() {
         web.saveState(outState)
     }
 
+    /** Back while driving returns to the stage menu; back on the menu leaves the app. */
+    @Deprecated("Uses the classic back callback; predictive back is not enabled")
+    @Suppress("DEPRECATION")
+    override fun onBackPressed() {
+        web.evaluateJavascript("(window.__back && window.__back()) ? 1 : 0") { r -> if (r != "1") finish() }
+    }
+
     override fun onPause() {
         web.evaluateJavascript("window.__appPause && window.__appPause(true)", null)
         web.onPause(); super.onPause()
