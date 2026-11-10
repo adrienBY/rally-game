@@ -198,7 +198,6 @@ if (ALP) {   // open mountainside: a smooth membrane stretched through every leg
     let h = (M[k] * (1 - u) + M[k + 1] * u) * (1 - v) + (M[k + CX] * (1 - u) + M[k + CX + 1] * u) * v;
     h += (ridged(x * 0.0062 + 11, z * 0.0062 + 4) * 70 - 22) * smooth(28, 110, pd) + (fbm(x * 0.02, z * 0.02) - 0.5) * 7 * smooth(6, 24, pd) + (fbm(x * 0.07, z * 0.07) - 0.5) * 1.2 * smooth(3, 9, pd);
     const w = 1 - smooth(ROAD + 1, ROAD + 6, pd); h = h + (ROADH[piG[id]] - 0.05 - h) * w;
-    const edge = Math.min(GXH - Math.abs(x), GZH - Math.abs(z)); if (edge < 30) h += (30 - edge) * 0.8;
     hG[id] = h;
   }
 } else
@@ -206,7 +205,6 @@ for (let j = 0; j < GNZ; j++) for (let i = 0; i < GNX; i++) {
   const id = j * GNX + i, x = i - GXH, z = j - GZH, pd = pdG[id];
   let h = terrain(x, z);
   const w = 1 - (SNOW ? smooth(ROAD + 1.5, ROAD + 22, pd) : smooth(ROAD + 1, ROAD + 10, pd)); h = h + (ROADH[piG[id]] - 0.12 - h) * w;
-  const edge = Math.min(GXH - Math.abs(x), GZH - Math.abs(z)); if (edge < 30) h += (30 - edge) * 0.5;
   hG[id] = h;
 }
 function bil(G, x, z) {
@@ -224,8 +222,8 @@ const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPrefer
 renderer.outputColorSpace = THREE.LinearSRGBColorSpace; renderer.setPixelRatio(1);
 const FOG = SNOW ? new THREE.Color(0.79, 0.84, 0.9) : ALP ? new THREE.Color(0.7, 0.79, 0.9) : new THREE.Color(0.60, 0.65, 0.64);
 renderer.setClearColor(FOG, 0);
-const scene = new THREE.Scene(); scene.fog = new THREE.FogExp2(FOG, SNOW ? 0.0105 : ALP ? 0.0068 : 0.017);
-const camera = new THREE.PerspectiveCamera(58, 16 / 9, 0.08, 240);
+const scene = new THREE.Scene(); scene.fog = new THREE.FogExp2(FOG, SNOW ? 0.0034 : ALP ? 0.0021 : 0.0056);
+const camera = new THREE.PerspectiveCamera(58, 16 / 9, 0.12, 1900);
 const SUN = ALP ? new THREE.Vector3(0.45, 0.55, -0.7).normalize() : SNOW ? new THREE.Vector3(-0.55, 0.24, -0.8).normalize() : new THREE.Vector3(0.6, 0.48, -0.62).normalize();
 scene.add(ALP ? new THREE.HemisphereLight(0xd2e2f6, 0x56603e, 2.1) : SNOW ? new THREE.HemisphereLight(0xdbe6f5, 0x6f7f96, 2.0) : new THREE.HemisphereLight(0xc8d2cf, 0x2b3420, 2.3));
 const sunL = ALP ? new THREE.DirectionalLight(0xfff0d6, 2.2) : SNOW ? new THREE.DirectionalLight(0xffd2a6, 2.2) : new THREE.DirectionalLight(0xffefc8, 1.9); sunL.position.copy(SUN); scene.add(sunL);
@@ -408,7 +406,57 @@ const shadeAt = (x, z) => Math.min(1, bil(SH, x, z));
   const road = new THREE.Mesh(rg, new THREE.MeshLambertMaterial({ map: gravelTex, vertexColors: true, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 }));
   road.frustumCulled = false; scene.add(road);
 }
-const sky = new THREE.Mesh(new THREE.SphereGeometry(210, 24, 12), new THREE.ShaderMaterial({
+/* ================= beyond the stage: land and forest out to the horizon =================
+   One coarse mesh whose spacing grows with distance (6 m at the stage edge, ~80 m at the horizon), tucked just under
+   the edge of the detailed stage ground, then low-poly trees in culled chunks. */
+const FAR = MAPN === "forest" ? 950 : SNOW ? 1400 : 1750;
+const EX = GXH - 2, EZ = GZH - 2;   // detailed ground covers |x| <= EX, |z| <= EZ
+function relief(x, z) {
+  if (ALP) return ridged(x * 0.0021 + 5, z * 0.0021 + 9) * 560 - 110;
+  if (SNOW) return ridged(x * 0.0024 - 3, z * 0.0024 + 6) * 460 - 80;
+  return (fbm(x * 0.0035 + 2, z * 0.0035 - 5, 3) - 0.5) * 120 + 18;
+}
+const detail = ALP ? (x, z) => (fbm(x * 0.02, z * 0.02) - 0.5) * 6 + (fbm(x * 0.07, z * 0.07) - 0.5) * 1.2 : terrain;
+function farH(x, z) {
+  const cx = clamp(x, -EX, EX), cz = clamp(z, -EZ, EZ), dOut = Math.hypot(x - cx, z - cz);
+  if (dOut <= 0) return height(x, z);
+  return height(cx, cz) + detail(x, z) - detail(cx, cz) + relief(x, z) * smooth(0, ALP ? 520 : SNOW ? 480 : 380, dOut);
+}
+const roadDist = (x, z) => { const p = PATH[pathIdx(x, z)]; return Math.hypot(x - p[0], z - p[1]); };
+const ROADAVG = (() => { let a = 0; for (let i = 0; i < NP; i += 10) a += ROADH[i]; return a / Math.ceil(NP / 10); })();
+{
+  const axis = (E, HE) => { const v = []; for (let x = -HE; x <= HE + 0.01; x += (2 * HE) / Math.max(1, Math.round(2 * HE / 6))) v.push(x);
+    const out = []; for (let d = 0, x = E; x < FAR; d = x - E, x += 6 + d * 0.055) out.push(x); out.push(FAR);
+    return [...out.slice().reverse().map(q => -q), ...v, ...out]; };
+  const HX = EX - 6, HZ = EZ - 6, AX = axis(EX, HX), AZ = axis(EZ, HZ), NXa = AX.length, NZa = AZ.length;
+  const pos = new Float32Array(NXa * NZa * 3), col = new Float32Array(NXa * NZa * 3), idx = [];
+  const fcol = (x, z, h, slope) => {
+    const n = fbm(x * 0.05, z * 0.05, 3), n2 = fbm(x * 0.011 + 7, z * 0.011, 3);
+    if (ALP) { let r = 0.3 + n * 0.1, g = 0.4 + n * 0.1, b = 0.17 + n * 0.04;
+      const rock = Math.max(smooth(0.5, 0.9, slope + (n - 0.5) * 0.4), smooth(150, 230, h + (n2 - 0.5) * 80));
+      const snowK = smooth(230, 290, h + (n2 - 0.5) * 90) * (1 - smooth(1.0, 1.5, slope));
+      r += (0.45 - r) * rock; g += (0.44 - g) * rock; b += (0.43 - b) * rock;
+      r += (0.86 - r) * snowK; g += (0.89 - g) * snowK; b += (0.95 - b) * snowK; return [r, g, b]; }
+    if (SNOW) { const rock = smooth(0.75, 1.15, slope + (n - 0.5) * 0.4); let r = 0.8 + n * 0.06, g = 0.84 + n * 0.05, b = 0.92 + n * 0.04;
+      r += (0.27 - r) * rock; g += (0.28 - g) * rock; b += (0.33 - b) * rock; return [r * 0.96, g * 0.98, b]; }
+    const lit = Math.max(0, n2 - 0.5) * 1.6; return [0.25 + n * 0.12 + lit * 0.1, 0.36 + n * 0.14, 0.17 + n * 0.06];
+  };
+  for (let j = 0; j < NZa; j++) for (let i = 0; i < NXa; i++) {
+    const x = AX[i], z = AZ[j], k = j * NXa + i, inside = Math.abs(x) <= EX + 0.01 && Math.abs(z) <= EZ + 0.01;
+    const edge = inside && (Math.abs(Math.abs(x) - EX) < 0.02 || Math.abs(Math.abs(z) - EZ) < 0.02);
+    const h = inside ? height(x, z) - (edge ? 0.35 : 1.0) : farH(x, z);
+    const slope = inside ? 0 : Math.hypot(farH(x + 4, z) - farH(x - 4, z), farH(x, z + 4) - farH(x, z - 4)) / 8;
+    pos[k * 3] = x; pos[k * 3 + 1] = h; pos[k * 3 + 2] = z; const c = fcol(x, z, h, slope); col[k * 3] = c[0]; col[k * 3 + 1] = c[1]; col[k * 3 + 2] = c[2];
+  }
+  for (let j = 0; j < NZa - 1; j++) for (let i = 0; i < NXa - 1; i++) {
+    if (AX[i] >= -HX - 0.01 && AX[i + 1] <= HX + 0.01 && AZ[j] >= -HZ - 0.01 && AZ[j + 1] <= HZ + 0.01) continue;   // hole under the stage
+    const a = j * NXa + i, b = a + 1, c = a + NXa, e = c + 1; idx.push(a, c, b, b, c, e);
+  }
+  const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.BufferAttribute(pos, 3)); g.setAttribute("color", new THREE.BufferAttribute(col, 3));
+  g.setIndex(idx); g.computeVertexNormals();
+  scene.add(new THREE.Mesh(g, new THREE.MeshLambertMaterial({ vertexColors: true })));
+}
+const sky = new THREE.Mesh(new THREE.SphereGeometry(1600, 24, 12), new THREE.ShaderMaterial({
   side: THREE.BackSide, depthWrite: false, blending: THREE.NoBlending,
   uniforms: { uSun: { value: SUN }, uFog: { value: FOG }, uTop: { value: ALP ? new THREE.Color(0.28, 0.5, 0.88) : SNOW ? new THREE.Color(0.36, 0.55, 0.84) : FOG.clone().add(new THREE.Color(0.12, 0.12, 0.1)) },
     uGlow: { value: ALP ? new THREE.Color(0.3, 0.27, 0.2) : SNOW ? new THREE.Color(0.5, 0.32, 0.18) : new THREE.Color(0.32, 0.29, 0.2) }, uHalo: { value: SNOW ? 0.22 : ALP ? 0.12 : 0.0 } },
@@ -419,7 +467,7 @@ const sky = new THREE.Mesh(new THREE.SphereGeometry(210, 24, 12), new THREE.Shad
 const peaks = new THREE.Group(); scene.add(peaks);
 if (SNOW || ALP) {
   let base = 0; for (let i = 0; i < NP; i += 10) base += ROADH[i]; base = base / Math.ceil(NP / 10) - 25;
-  for (const [R, hMin, hAmp, haze, sd] of [[200, 50, 120, 0.55, 5], [178, 26, 70, 0.32, 21]]) {
+  for (const [R, hMin, hAmp, haze, sd] of [[1780, 260, 600, 0.6, 5]]) {
     const N = 240, pos = [], col = [], idx = [];
     const fog = [FOG.r, FOG.g, FOG.b];
     for (let i = 0; i <= N; i++) {
@@ -428,7 +476,7 @@ if (SNOW || ALP) {
       const glow = Math.max(0, ca * SUN.x + sa * SUN.z) * 0.6, rockN = vnoise(i * 0.7, sd + 3);
       const top = ALP ? [0.95, 0.96, 0.98] : [0.96 + glow * 0.04, 0.93 - glow * 0.05, 0.95 - glow * 0.12], mid = ALP ? (rockN > 0.45 ? [0.46, 0.45, 0.45] : [0.38, 0.44, 0.3]) : rockN > 0.55 ? [0.52, 0.56, 0.66] : [0.86, 0.89, 0.95];
       const mix = (c, k) => c.map((v, j) => v + (fog[j] - v) * k);
-      for (const [y, c] of [[-60, mix(fog, 0)], [ht * 0.45, mix(mid, haze + 0.15)], [ht * 0.8, mix(top, haze * 0.6)], [ht, mix(top, haze * 0.45)]]) { pos.push(ca * R, y, sa * R); col.push(...c); }
+      for (const [y, c] of [[-400, mix(fog, 0)], [ht * 0.45, mix(mid, haze + 0.15)], [ht * 0.8, mix(top, haze * 0.6)], [ht, mix(top, haze * 0.45)]]) { pos.push(ca * R, y, sa * R); col.push(...c); }
     }
     for (let i = 0; i < N; i++) for (let r = 0; r < 3; r++) { const A0 = i * 4 + r, B0 = (i + 1) * 4 + r; idx.push(A0, B0, A0 + 1, A0 + 1, B0, B0 + 1); }
     const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute("color", new THREE.Float32BufferAttribute(col, 3)); g.setIndex(idx);
@@ -476,6 +524,54 @@ const card = new THREE.PlaneGeometry(1, 1);
   instanced(card, sway(new THREE.MeshBasicMaterial({ map: leafTex, alphaTest: 0.5, side: THREE.DoubleSide }), 0.16, false), leafM, leafC);
   instanced(card, sway(new THREE.MeshBasicMaterial({ map: needleTex, alphaTest: 0.5, side: THREE.DoubleSide }), 0.08, false), needleM, needleC);
   if (snowM.length) instanced(card, sway(new THREE.MeshBasicMaterial({ map: leafTex, alphaTest: 0.5, side: THREE.DoubleSide }), 0.06, false), snowM, snowC);
+}
+/* far forest: faceted low-poly pines and broadleaves with baked light, grouped in 400 m chunks so off-screen ones are culled */
+{
+  const parts = (list) => { const P = [], N = [], C = []; const v = new THREE.Vector3();
+    for (const [geo, colorFn] of list) { const g = geo.index ? geo.toNonIndexed() : geo; g.computeVertexNormals();
+      const p = g.attributes.position, n = g.attributes.normal;
+      for (let i = 0; i < p.count; i++) { P.push(p.getX(i), p.getY(i), p.getZ(i)); v.fromBufferAttribute(n, i); N.push(v.x, v.y, v.z); C.push(...colorFn(v, p.getY(i))); } }
+    const out = new THREE.BufferGeometry(); out.setAttribute("position", new THREE.Float32BufferAttribute(P, 3)); out.setAttribute("normal", new THREE.Float32BufferAttribute(N, 3));
+    out.setAttribute("color", new THREE.Float32BufferAttribute(C, 3)); return out; };
+  const shade = (v, base, top) => { const l = 0.5 + 0.45 * Math.max(0, v.dot(SUN)) + 0.18 * v.y; return [base[0] * l, base[1] * l, base[2] * l].map((q, i) => q + (top ? top[i] * Math.max(0, v.y - 0.25) : 0)); };
+  const trunk = (h) => { const t = new THREE.CylinderGeometry(0.035, 0.05, h, 4, 1, true); t.translate(0, h / 2, 0); return t; };
+  const cone = (r, h, y) => { const c = new THREE.ConeGeometry(r, h, 6, 1, true); c.translate(0, y + h / 2, 0); return c; };
+  const bark = (v) => shade(v, [0.32, 0.25, 0.2]);
+  const pineGeo = parts([[trunk(0.3), bark], [cone(0.42, 0.56, 0.18), (v) => shade(v, [1, 1, 1])], [cone(0.3, 0.46, 0.52), (v) => shade(v, [1, 1, 1])]]);
+  const snowPineGeo = parts([[trunk(0.3), bark], [cone(0.42, 0.56, 0.18), (v) => shade(v, [0.2, 0.3, 0.24], [1.2, 1.2, 1.3])], [cone(0.3, 0.46, 0.52), (v) => shade(v, [0.2, 0.3, 0.24], [1.3, 1.3, 1.4])]]);
+  const blob = new THREE.IcosahedronGeometry(0.5, 0); blob.scale(1, 0.78, 1); blob.translate(0, 0.66, 0);
+  const leafGeo = parts([[trunk(0.45), bark], [blob, (v) => shade(v, [1, 1, 1])]]);
+  const mat = new THREE.MeshBasicMaterial({ vertexColors: true });
+  const chunks = new Map(), add = (geo, x, z, m4, c) => { const key = Math.floor(x / 400) * 64 + Math.floor(z / 400) + (geo === pineGeo ? 0 : geo === leafGeo ? 10000 : 20000);
+    if (!chunks.has(key)) chunks.set(key, { geo, M: [], C: [] }); const ch = chunks.get(key); ch.M.push(m4); ch.C.push(c); };
+  const TREE_R = MAPN === "forest" ? 760 : SNOW ? 1050 : 1150, CELL = 9, NEAR_BAND = SNOW ? 46 : 52;
+  const hr = (i, j, s) => hash2(i * 7 + s, j * 13 - s * 3);
+  let nFar = 0;
+  for (let gj = Math.floor(-TREE_R / CELL); gj <= TREE_R / CELL; gj++) for (let gi = Math.floor(-TREE_R / CELL); gi <= TREE_R / CELL; gi++) {
+    const x = (gi + hr(gi, gj, 1)) * CELL, z = (gj + hr(gi, gj, 2)) * CELL;
+    if (x * x + z * z > TREE_R * TREE_R) continue;
+    const cx = clamp(x, -EX, EX), cz = clamp(z, -EZ, EZ), dOut = Math.hypot(x - cx, z - cz), inGrid = dOut === 0;
+    const thin = 1 + dOut / 260; if (hr(gi, gj, 3) > 1 / (thin * thin)) continue;               // sparser with distance...
+    const rd = roadDist(x, z); if (rd < NEAR_BAND + hr(gi, gj, 4) * 8) continue;               // ...and never inside the detailed band
+    const h = farH(x, z), slope = Math.hypot(farH(x + 3, z) - farH(x - 3, z), farH(x, z + 3) - farH(x, z - 3)) / 6;
+    let dens;
+    if (ALP) dens = (h < 48 + (fbm(x * 0.01, z * 0.01) - 0.5) * 30 && slope < 0.7) ? smooth(0.45, 0.68, fbm(x * 0.02 + 50, z * 0.02)) * 0.9 : 0;
+    else if (SNOW) dens = (h < ROADAVG + 70 + (fbm(x * 0.01, z * 0.01) - 0.5) * 50 && slope < 0.75) ? smooth(0.4, 0.66, fbm(x * 0.022 + 50, z * 0.022)) * 0.95 : 0;
+    else dens = clamp(0.95 - fbm(x * 0.03 + 50, z * 0.03) * 0.9 + smooth(80, 400, rd) * 0.25, 0, 1) * (slope < 1.1 ? 1 : 0.3);
+    if (hr(gi, gj, 5) > dens) continue;
+    const pine = SNOW || ALP || hr(gi, gj, 6) < 0.22, sc = Math.pow(thin, 0.75);
+    const H = (pine ? 15 + hr(gi, gj, 7) * 7 : 11 + hr(gi, gj, 7) * 6) * sc, W = H * (pine ? 0.46 : 0.62) * (0.85 + hr(gi, gj, 8) * 0.3);
+    tmpO.position.set(x, h - 0.4, z); tmpO.rotation.set(0, hr(gi, gj, 9) * 6.28, 0); tmpO.scale.set(W, H, W); tmpO.updateMatrix();
+    const v = 0.82 + hr(gi, gj, 10) * 0.3;
+    const c = SNOW ? new THREE.Color(v, v, v) : pine ? new THREE.Color().setHSL(0.33 + hr(gi, gj, 11) * 0.05, 0.3, 0.2).multiplyScalar(1.45 * v)
+      : hr(gi, gj, 12) < 0.07 ? new THREE.Color(0.86, 0.48, 0.18).multiplyScalar(0.95 * v) : new THREE.Color().setHSL(0.24 + hr(gi, gj, 11) * 0.06, 0.42, 0.31).multiplyScalar(1.25 * v);
+    add(SNOW ? snowPineGeo : pine ? pineGeo : leafGeo, x, z, tmpO.matrix.clone(), c); nFar++;
+    if (inGrid) obstacles.push({ x, z, r: 0.35 });
+  }
+  for (const ch of chunks.values()) { const im = new THREE.InstancedMesh(ch.geo, mat, ch.M.length);
+    ch.M.forEach((m, i) => { im.setMatrixAt(i, m); im.setColorAt(i, ch.C[i]); }); im.instanceMatrix.needsUpdate = true; im.instanceColor.needsUpdate = true;
+    im.computeBoundingSphere(); scene.add(im); }
+  window.__farTrees = nFar;
 }
 function clumpGeo(n) {
   const pos = [], uvs = [], idx = []; let off = 0;
@@ -1340,6 +1436,7 @@ function frame(now) {
   updateGrass(S.x, S.z);
   dMat.uniforms.uScale.value = LH / (2 * Math.tan(camera.fov * Math.PI / 360));
 
+  if (window.__camOv) { const o = window.__camOv; camera.position.set(o[0], o[1], o[2]); camera.lookAt(o[3], o[4], o[5]); }
   camera.updateMatrixWorld();
   v3.copy(SUN).multiplyScalar(150).add(camera.position).project(camera); camera.getWorldDirection(fwd);
   post.uniforms.uSun.value.set(v3.x * 0.5 + 0.5, v3.y * 0.5 + 0.5);

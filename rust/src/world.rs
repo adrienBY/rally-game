@@ -57,7 +57,6 @@ pub fn build(map: Map, path: &[(f64, f64)], roadh: &[f64], gxh: i32, gzh: i32) -
             for jj in j..(j + 8).min(gnz) { for ii in i..(i + 8).min(gnx) { let q = jj * gnx + ii; if pd[q] >= 20.0 { pi[q] = bk as i16; } } }
         }
         i += 8; } j += 8; }
-    let edge_berm = |x: f64, z: f64, k: f64| { let e = (gxh as f64 - x.abs()).min(gzh as f64 - z.abs()); if e < 30.0 { (30.0 - e) * k } else { 0.0 } };
     if map == Map::Stelvio {
         // membrane stretched through every leg of the road (Jacobi relaxation on a 4 m grid), peaks further out
         let cs = 4usize; let cx = (gnx + cs - 1) / cs + 1; let cz = (gnz + cs - 1) / cs + 1;
@@ -84,7 +83,6 @@ pub fn build(map: Map, path: &[(f64, f64)], roadh: &[f64], gxh: i32, gzh: i32) -
                 + (fbm(x * 0.07, z * 0.07, 4) - 0.5) * 1.2 * smooth(3.0, 9.0, pdv);
             let w = 1.0 - smooth(ROAD + 1.0, ROAD + 6.0, pdv);
             hv = hv + (roadh[pi_r[id] as usize] - 0.05 - hv) * w;
-            hv += edge_berm(x, z, 0.8);
             row[i] = hv as f32;
         } });
     } else {
@@ -94,7 +92,6 @@ pub fn build(map: Map, path: &[(f64, f64)], roadh: &[f64], gxh: i32, gzh: i32) -
             let mut hv = terrain(map, x, z);
             let w = 1.0 - if map == Map::Snow { smooth(ROAD + 1.5, ROAD + 22.0, pdv) } else { smooth(ROAD + 1.0, ROAD + 10.0, pdv) };
             hv = hv + (roadh[pi_r[id] as usize] - 0.12 - hv) * w;
-            hv += edge_berm(x, z, 0.5);
             row[i] = hv as f32;
         } });
     }
