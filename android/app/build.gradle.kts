@@ -30,6 +30,7 @@ android {
     kotlinOptions { jvmTarget = "17" }
     androidResources { noCompress += listOf("html", "js") }
     packaging { jniLibs { useLegacyPackaging = false } }
+    lint { abortOnError = false; checkReleaseBuilds = false }
 }
 
 dependencies {

@@ -3,21 +3,38 @@ package com.fogwood.rally
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.graphics.Color
+import android.opengl.GLSurfaceView
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.FrameLayout
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.webkit.WebMessageCompat
 import androidx.webkit.WebViewAssetLoader
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import java.io.ByteArrayInputStream
+import javax.microedition.khronos.egl.EGLConfig
+import javax.microedition.khronos.opengles.GL10
 
+/**
+ * Layout: a GLSurfaceView where the Rust renderer draws the 3D world, with the game's WebView on top
+ * (transparent page; it runs the game logic, input, audio and the HUD).
+ */
 class MainActivity : Activity() {
     private lateinit var web: WebView
+    private var glView: GLSurfaceView? = null
+    private val main = Handler(Looper.getMainLooper())
 
     /** Exposed to the game as window.FogwoodNative. Only present when the Rust library loaded. */
     class Bridge {
@@ -25,10 +42,25 @@ class MainActivity : Activity() {
             NativeCore.prepare(map, path, roadh, gxh, gzh)
         @JavascriptInterface fun obstacles(csv: String): Int = NativeCore.obstacles(csv)
         @JavascriptInterface fun step(csv: String): String = NativeCore.step(csv)
+        @JavascriptInterface fun glStatus(): String = NativeCore.glStatus()
         @JavascriptInterface fun version(): String = "fogwood-core-rust"
     }
 
-    @SuppressLint("SetJavaScriptEnabled")
+    private inner class SceneRenderer : GLSurfaceView.Renderer {
+        private var frames = 0
+        override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
+            val resend = NativeCore.glInit()
+            Log.i(TAG, "GL ready: ${NativeCore.glStatus()}")
+            if (resend) main.post { web.evaluateJavascript("window.__nglResend && window.__nglResend()", null) }
+        }
+        override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) = NativeCore.glResize(width, height)
+        override fun onDrawFrame(gl: GL10?) {
+            NativeCore.glDraw()
+            if (++frames % 600 == 1) Log.i(TAG, "renderer: ${NativeCore.glStatus()}")
+        }
+    }
+
+    @SuppressLint("SetJavaScriptEnabled", "RequiresFeature")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -44,8 +76,26 @@ class MainActivity : Activity() {
             }
             .build()
 
+        val root = FrameLayout(this)
+        root.setBackgroundColor(Color.rgb(11, 16, 11))
+
+        // native renderer only when the Rust library loaded and this WebView can post binary messages
+        val nativeGl = NativeCore.loaded &&
+            WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) &&
+            WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_ARRAY_BUFFER)
+        if (nativeGl) {
+            glView = GLSurfaceView(this).apply {
+                setEGLContextClientVersion(3)
+                setEGLConfigChooser(8, 8, 8, 0, 16, 0)
+                preserveEGLContextOnPause = true
+                setRenderer(SceneRenderer())
+                renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY
+            }
+            root.addView(glView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        }
+
         web = WebView(this).apply {
-            setBackgroundColor(Color.rgb(11, 16, 11))
+            setBackgroundColor(if (nativeGl) Color.TRANSPARENT else Color.rgb(11, 16, 11))
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.mediaPlaybackRequiresUserGesture = false
@@ -60,7 +110,17 @@ class MainActivity : Activity() {
             }
             if (NativeCore.loaded) addJavascriptInterface(Bridge(), "FogwoodNative")
         }
-        setContentView(web)
+        if (nativeGl) {
+            // window.FogwoodGL.postMessage(ArrayBuffer): scene once, then one small packet per frame
+            WebViewCompat.addWebMessageListener(web, "FogwoodGL", setOf("https://appassets.androidplatform.net")) { _, message, _, _, _ ->
+                if (message.type == WebMessageCompat.TYPE_ARRAY_BUFFER) {
+                    NativeCore.glMessage(message.arrayBuffer)
+                    glView?.requestRender()
+                }
+            }
+        }
+        root.addView(web, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        setContentView(root)
         hideBars()
         if (savedInstanceState == null) web.loadUrl("https://appassets.androidplatform.net/assets/index.html")
         else web.restoreState(savedInstanceState)
@@ -91,11 +151,13 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         web.evaluateJavascript("window.__appPause && window.__appPause(true)", null)
-        web.onPause(); super.onPause()
+        web.onPause(); glView?.onPause(); super.onPause()
     }
     override fun onResume() {
-        super.onResume(); web.onResume(); hideBars()
+        super.onResume(); web.onResume(); glView?.onResume(); hideBars()
         web.evaluateJavascript("window.__appPause && window.__appPause(false)", null)
     }
     override fun onDestroy() { web.destroy(); super.onDestroy() }
+
+    companion object { private const val TAG = "Fogwood" }
 }

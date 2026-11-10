@@ -27,3 +27,24 @@ pub extern "system" fn Java_com_fogwood_rally_NativeCore_obstacles<'l>(mut env: 
 pub extern "system" fn Java_com_fogwood_rally_NativeCore_step<'l>(mut env: JNIEnv<'l>, _c: JClass<'l>, csv: JString<'l>) -> jstring {
     let v = s(&mut env, &csv); let r = bridge::step(&v); out(&mut env, r)
 }
+
+// ---- native renderer (GL thread: glInit/glResize/glDraw; any thread: glMessage) ----
+use jni::objects::JByteArray;
+use jni::sys::jboolean;
+
+#[no_mangle]
+pub extern "system" fn Java_com_fogwood_rally_NativeCore_glInit<'l>(_env: JNIEnv<'l>, _c: JClass<'l>) -> jboolean {
+    if crate::gfx::gl_init() { 1 } else { 0 }
+}
+#[no_mangle]
+pub extern "system" fn Java_com_fogwood_rally_NativeCore_glResize<'l>(_env: JNIEnv<'l>, _c: JClass<'l>, w: jint, h: jint) { crate::gfx::gl_resize(w, h); }
+#[no_mangle]
+pub extern "system" fn Java_com_fogwood_rally_NativeCore_glDraw<'l>(_env: JNIEnv<'l>, _c: JClass<'l>) { crate::gfx::gl_draw(); }
+#[no_mangle]
+pub extern "system" fn Java_com_fogwood_rally_NativeCore_glMessage<'l>(env: JNIEnv<'l>, _c: JClass<'l>, data: JByteArray<'l>) {
+    if let Ok(v) = env.convert_byte_array(&data) { crate::gfx::push_message(v); }
+}
+#[no_mangle]
+pub extern "system" fn Java_com_fogwood_rally_NativeCore_glStatus<'l>(mut env: JNIEnv<'l>, _c: JClass<'l>) -> jstring {
+    let s = crate::gfx::status(); out(&mut env, s)
+}

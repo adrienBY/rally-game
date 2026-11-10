@@ -218,7 +218,13 @@ const pathIdx = (x, z) => piG[clamp(Math.round(z) + GZH, 0, GNZ - 1) * GNX + cla
 
 /* ================= renderer ================= */
 const canvas = document.getElementById("view");
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: "high-performance" });
+/* native renderer (Android app): FogwoodGL receives the scene once and a small binary packet per frame; Rust draws it with
+   OpenGL ES underneath this page, and the canvas only carries the HUD. In a browser, three.js renders everything as usual. */
+const NGL = (typeof window !== "undefined" && window.FogwoodGL && typeof window.FogwoodGL.postMessage === "function") ? window.FogwoodGL : null;
+const renderer = NGL ? { outputColorSpace: "", setPixelRatio() {}, setClearColor() {}, setSize() {}, setRenderTarget() {}, render() {}, forceContextLoss() {}, dispose() {},
+    info: { render: { calls: 0, triangles: 0 } } }
+  : new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: "high-performance" });
+if (NGL) { document.documentElement.style.background = "transparent"; document.body.style.background = "transparent"; canvas.style.background = "transparent"; }
 renderer.outputColorSpace = THREE.LinearSRGBColorSpace; renderer.setPixelRatio(1);
 const FOG = SNOW ? new THREE.Color(0.79, 0.84, 0.9) : ALP ? new THREE.Color(0.7, 0.79, 0.9) : new THREE.Color(0.60, 0.65, 0.64);
 renderer.setClearColor(FOG, 0);
@@ -237,7 +243,7 @@ function resize() {
   U = Math.max(1, Math.floor(Math.min(LH, LW * 0.56) / 150));
   renderer.setSize(LW, LH, false); camera.aspect = w / h; camera.updateProjectionMatrix();
   if (rt) rt.dispose(); rt = new THREE.WebGLRenderTarget(LW, LH, { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter });
-  if (!hudCanvas) hudCanvas = document.createElement("canvas");
+  if (!hudCanvas) hudCanvas = NGL ? canvas : document.createElement("canvas");
   hudCanvas.width = LW; hudCanvas.height = LH; hud = hudCanvas.getContext("2d"); hud.imageSmoothingEnabled = false;
   if (hudTex) hudTex.dispose();
   hudTex = new THREE.CanvasTexture(hudCanvas); hudTex.minFilter = hudTex.magFilter = THREE.NearestFilter; hudTex.generateMipmaps = false;
@@ -327,7 +333,7 @@ function sway(mat, amp, useUv) {
         float sw = (sin(uTime * 1.4 + ph) * 0.6 + sin(uTime * 3.1 + ph * 2.3) * 0.25) * (0.4 + uWind) * ${amp.toFixed(3)};
         float k = ${useUv ? "uv.y" : "1.0"}; transformed.x += sw * k; transformed.z += sw * 0.5 * k;`);
   };
-  mat.customProgramCacheKey = () => "sway" + amp + useUv;
+  mat.customProgramCacheKey = () => "sway" + amp + useUv; mat.userData.sway = [amp, useUv ? 1 : 0];
   return mat;
 }
 const tmpO = new THREE.Object3D(), tmpC = new THREE.Color();
@@ -462,7 +468,7 @@ const sky = new THREE.Mesh(new THREE.SphereGeometry(1600, 24, 12), new THREE.Sha
     uGlow: { value: ALP ? new THREE.Color(0.3, 0.27, 0.2) : SNOW ? new THREE.Color(0.5, 0.32, 0.18) : new THREE.Color(0.32, 0.29, 0.2) }, uHalo: { value: SNOW ? 0.22 : ALP ? 0.12 : 0.0 } },
   vertexShader: "varying vec3 vD; void main(){ vD = normalize(position); gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0); }",
   fragmentShader: "uniform vec3 uSun; uniform vec3 uFog; uniform vec3 uTop; uniform vec3 uGlow; uniform float uHalo; varying vec3 vD; void main(){ float s = max(dot(normalize(vD), uSun), 0.0); vec3 c = mix(uFog, uTop, smoothstep(0.0,0.6,vD.y)) + uGlow*pow(s,6.0) + uGlow*uHalo*pow(s,2.0)*(1.0-smoothstep(0.0,0.5,vD.y)); gl_FragColor = vec4(c,0.0); }"
-})); sky.renderOrder = -1; scene.add(sky);
+})); sky.renderOrder = -1; scene.add(sky); sky.material.userData.kind = "sky";
 /* snow map: two rings of distant peaks that travel with the camera (alpenglow on the sunward faces) */
 const peaks = new THREE.Group(); scene.add(peaks);
 if (SNOW || ALP) {
@@ -909,7 +915,7 @@ const dMat = new THREE.ShaderMaterial({
   fragmentShader: `uniform vec3 uFog; uniform vec3 uCol; varying float vA; varying float vF;
     void main(){ vec2 p = gl_PointCoord-0.5; if(dot(p,p)>0.25) discard; gl_FragColor = vec4(mix(uCol,uFog,vF), vA); }`
 });
-const dust = new THREE.Points(dGeo, dMat); dust.frustumCulled = false; scene.add(dust);
+const dust = new THREE.Points(dGeo, dMat); dust.frustumCulled = false; scene.add(dust); dMat.userData.kind = "dust";
 function emitDust(x, y, z, vx, vy, vz, size) { const i = dHead; dHead = (dHead + 1) % DN;
   dPos[i * 3] = x; dPos[i * 3 + 1] = y; dPos[i * 3 + 2] = z; dV[i * 3] = vx; dV[i * 3 + 1] = vy; dV[i * 3 + 2] = vz; dAge[i] = 0; dLife[i] = rr(1.2, 2.4); dS[i] = size; }
 
@@ -1387,6 +1393,89 @@ function drawHUD(inp) {
   if (m) { const sc = 2 * U; text(g, m, (LW - textW(m, sc)) / 2, LH * 0.3, sc, mc); }
 }
 
+/* ================= native renderer bridge =================
+   Scene packet: u32 magic "FWS1", u32 json length, json (materials, geometries, textures, objects, lights), then one blob
+   holding every buffer (4-byte aligned). Frame packet: Float32Array, see nglFrame. Objects are mirrored generically:
+   anything whose matrix, visibility or opacity changes, and any buffer whose version changes, is re-sent. */
+let nglSent = false; const NGL_OBJ = [], NGL_GEO = [];
+function nglExport() {
+  const parts = []; let blobLen = 0;
+  const addBuf = (ta) => { const b = new Uint8Array(ta.buffer, ta.byteOffset, ta.byteLength), off = blobLen; parts.push([off, b]); blobLen += (b.length + 3) & ~3; return [off, b.length]; };
+  const f32 = (a) => a instanceof Float32Array ? a : Float32Array.from(a);
+  const texs = new Map(), geos = new Map(), mats = new Map(), objs = [];
+  const texId = (t) => { if (!t || !t.image) return -1; if (texs.has(t)) return texs.get(t).id;
+    const img = t.image, w = img.width, h = img.height, data = img.getContext("2d").getImageData(0, 0, w, h).data; t.updateMatrix();
+    const e = { id: texs.size, w, h, data: addBuf(data), flipY: t.flipY ? 1 : 0, ws: t.wrapS, wt: t.wrapT, mag: t.magFilter, min: t.minFilter, mip: t.generateMipmaps ? 1 : 0, m: Array.from(t.matrix.elements) };
+    texs.set(t, e); return e.id; };
+  const geoId = (g) => { if (geos.has(g)) return geos.get(g).id;
+    const attrs = []; for (const name of ["position", "normal", "uv", "color", "aA", "aS"]) { const a = g.attributes[name]; if (!a) continue;
+      attrs.push({ name, size: a.itemSize, data: addBuf(f32(a.array)) }); }
+    if (!g.boundingSphere) g.computeBoundingSphere(); const bs = g.boundingSphere;
+    const e = { id: geos.size, attrs, index: g.index ? addBuf(Uint32Array.from(g.index.array)) : null, count: g.index ? g.index.count : g.attributes.position.count,
+      dr: [g.drawRange.start, isFinite(g.drawRange.count) ? g.drawRange.count : -1], bs: [bs.center.x, bs.center.y, bs.center.z, bs.radius] };
+    geos.set(g, e); NGL_GEO[e.id] = { g, ver: attrs.map(a => g.attributes[a.name].version), names: attrs.map(a => a.name) }; return e.id; };
+  const col = (c) => c ? [c.r, c.g, c.b] : [1, 1, 1];
+  const matId = (m) => { if (mats.has(m)) return mats.get(m).id;
+    const kind = m.userData.kind || (m.isMeshPhongMaterial ? "phong" : m.isMeshLambertMaterial ? "lambert" : m.isPointsMaterial ? "points" : "basic");
+    const e = { id: mats.size, kind, color: col(m.color), spec: col(m.specular), shin: m.shininess || 30, emis: m.emissive ? col(m.emissive) : [0, 0, 0], map: texId(m.map),
+      at: m.alphaTest || 0, tr: m.transparent ? 1 : 0, op: m.opacity, side: m.side, vc: m.vertexColors ? 1 : 0, fog: m.fog ? 1 : 0, dw: m.depthWrite ? 1 : 0, dt: m.depthTest ? 1 : 0,
+      po: m.polygonOffset ? [m.polygonOffsetFactor, m.polygonOffsetUnits] : null, blend: m.blending, sway: m.userData.sway || null, size: m.size || 1 };
+    if (kind === "sky") { const u = m.uniforms; e.u = { sun: u.uSun.value.toArray(), fog: col(u.uFog.value), top: col(u.uTop.value), glow: col(u.uGlow.value), halo: u.uHalo.value }; }
+    if (kind === "dust") { const u = m.uniforms; e.u = { dens: u.uDens.value, fog: col(u.uFog.value), col: col(u.uCol.value) }; }
+    mats.set(m, e); return e.id; };
+  const visible = (o) => { for (let p = o; p; p = p.parent) if (!p.visible) return false; return true; };
+  scene.updateMatrixWorld(true);
+  scene.traverse((o) => { if (!(o.isMesh || o.isPoints) || !o.material) return;
+    // multi-material meshes become one object per geometry group
+    const groups = Array.isArray(o.material) ? o.geometry.groups.map(g => [g.start, g.count, o.material[g.materialIndex]]).filter(g => g[2]) : [[0, -1, o.material]];
+    for (const [gs, gc, mat] of groups) {
+    const e = { id: objs.length, type: o.isInstancedMesh ? "inst" : o.isPoints ? "points" : "mesh", g: geoId(o.geometry), m: matId(mat), mw: Array.from(o.matrixWorld.elements),
+      ro: o.renderOrder, cull: o.frustumCulled ? 1 : 0, vis: visible(o) ? 1 : 0 };
+    if (gc >= 0) e.dr = [gs, gc];
+    if (o.isInstancedMesh) { e.count = o.count; e.max = o.instanceMatrix.count; e.im = addBuf(o.instanceMatrix.array); e.ic = o.instanceColor ? addBuf(o.instanceColor.array) : null;
+      if (o.boundingSphere) { const b = o.boundingSphere; e.ibs = [b.center.x, b.center.y, b.center.z, b.radius]; } else e.cull = 0; }
+    objs.push(e); NGL_OBJ[e.id] = { o, mat, mw: new Float32Array(o.matrixWorld.elements), vis: e.vis, op: mat.opacity, imv: o.isInstancedMesh ? o.instanceMatrix.version : 0,
+      icv: o.instanceColor ? o.instanceColor.version : 0, count: o.count }; } });
+  const lights = { hemi: [], dir: [] };
+  scene.traverse((o) => { if (o.isHemisphereLight) lights.hemi.push({ sky: col(o.color).map(v => v * o.intensity), ground: col(o.groundColor).map(v => v * o.intensity), d: o.position.clone().normalize().toArray() });
+    if (o.isDirectionalLight) lights.dir.push({ c: col(o.color).map(v => v * o.intensity), d: o.position.clone().sub(o.target.position).normalize().toArray() }); });
+  const head = { v: 1, map: MAPN, fog: { c: col(scene.fog.color), d: scene.fog.density }, clear: [FOG.r, FOG.g, FOG.b, 0], lights,
+    texs: [...texs.values()], geos: [...geos.values()], mats: [...mats.values()], objs };
+  const json = new TextEncoder().encode(JSON.stringify(head)), jl = (json.length + 3) & ~3;
+  const out = new Uint8Array(8 + jl + blobLen), dv = new DataView(out.buffer); dv.setUint32(0, 0x31535746, true); dv.setUint32(4, json.length, true);
+  out.set(json, 8); for (const [off, b] of parts) out.set(b, 8 + jl + off);
+  return out.buffer;
+}
+const nglBuf = []; const NGL_MAGIC = 7001;
+function nglFrame() {
+  if (!nglSent) { NGL.postMessage(nglExport()); nglSent = true; }
+  scene.updateMatrixWorld(); camera.updateMatrixWorld();
+  const a = nglBuf; a.length = 0;
+  const pu = post.uniforms;
+  a.push(NGL_MAGIC, LW, LH, ...camera.matrixWorldInverse.elements, ...camera.projectionMatrix.elements, camera.position.x, camera.position.y, camera.position.z,
+    uTime.value, uWind.value, pu.uSun.value.x, pu.uSun.value.y, pu.uSunVis.value, pu.uFlash.value, pu.uSpeed.value, dMat.uniforms.uScale.value);
+  const nObjAt = a.length; a.push(0); let nObj = 0;
+  for (let id = 0; id < NGL_OBJ.length; id++) { const r = NGL_OBJ[id], o = r.o, e = o.matrixWorld.elements; let vis = 1;
+    for (let p = o; p; p = p.parent) if (!p.visible) { vis = 0; break; }
+    let ch = vis !== r.vis || r.mat.opacity !== r.op; if (!ch) for (let k = 0; k < 16; k++) if (Math.fround(e[k]) !== r.mw[k]) { ch = true; break; }
+    if (!ch) continue; r.vis = vis; r.op = r.mat.opacity; r.mw.set(e); a.push(id, vis, r.op, ...e); nObj++; }
+  a[nObjAt] = nObj;
+  const nBufAt = a.length; a.push(0); let nBuf = 0;
+  for (let gid = 0; gid < NGL_GEO.length; gid++) { const r = NGL_GEO[gid];
+    for (let k = 0; k < r.names.length; k++) { const at = r.g.attributes[r.names[k]]; if (at.version === r.ver[k]) continue; r.ver[k] = at.version;
+      a.push(1, gid, k, at.array.length); for (let q = 0; q < at.array.length; q++) a.push(at.array[q]); nBuf++; } }
+  for (let id = 0; id < NGL_OBJ.length; id++) { const r = NGL_OBJ[id], o = r.o; if (!o.isInstancedMesh || (id > 0 && NGL_OBJ[id - 1].o === o)) continue;
+    const icv = o.instanceColor ? o.instanceColor.version : 0;
+    if (o.instanceMatrix.version === r.imv && icv === r.icv && o.count === r.count) continue; r.imv = o.instanceMatrix.version; r.icv = icv; r.count = o.count;
+    const n = o.count, M = o.instanceMatrix.array, C = o.instanceColor ? o.instanceColor.array : null;
+    a.push(2, id, n, n * 16); for (let q = 0; q < n * 16; q++) a.push(M[q]);
+    a.push(C ? n * 3 : 0); if (C) for (let q = 0; q < n * 3; q++) a.push(C[q]); nBuf++; }
+  a[nBufAt] = nBuf;
+  NGL.postMessage(Float32Array.from(a).buffer);
+}
+window.__nglExport = nglExport; window.__nglFrame = () => nglFrame();
+window.__nglResend = () => { nglSent = false; };   // the app lost its GL context (e.g. after a long pause): send the scene again
+
 /* ================= frame loop ================= */
 const fwd = new THREE.Vector3(), v3 = new THREE.Vector3(), lookT = new THREE.Vector3();
 let last = performance.now(), fpsAcc = 0, fpsN = 0, downgraded = false, hudTick = false;
@@ -1449,8 +1538,9 @@ function frame(now) {
   post.uniforms.uFlash.value = S.shake * 0.5; post.uniforms.uSpeed.value = mode === 2 ? spK * 1.1 : spK;
 
   hudTick = !hudTick; if (hudTick || game.state !== "drive" || touches.size) { drawHUD(inp); hudTex.needsUpdate = true; }
+  if (NGL) nglFrame(); else {
   renderer.setRenderTarget(rt); renderer.render(scene, camera);
-  renderer.setRenderTarget(null); renderer.render(postScene, postCam);
+  renderer.setRenderTarget(null); renderer.render(postScene, postCam); }
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);

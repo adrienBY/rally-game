@@ -6,5 +6,7 @@ pub mod noise;
 pub mod world;
 pub mod physics;
 pub mod bridge;
+pub mod render;
+pub mod gfx;
 #[cfg(any(target_os = "android", feature = "jni-host"))]
 mod jni_api;

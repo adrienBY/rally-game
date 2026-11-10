@@ -32,3 +32,13 @@ Locally: `cd rust && cargo test --release`, then `cargo ndk -t arm64-v8a -o ../a
 and `cd android && gradle assembleRelease` (Android SDK + NDK required).
 
 After editing the game: `python3 web/build.py` (rebuilds `web/dist/*.html` and the app's `assets/index.html`).
+
+## Native renderer (Android)
+`rust/src/render/` draws the 3D world with OpenGL ES 3 on a `GLSurfaceView` underneath the WebView. At its first frame the
+game exports its whole scene (geometries, materials, textures, instances, lights, fog) as one binary packet through
+`window.FogwoodGL.postMessage(ArrayBuffer)`, then sends a small packet per frame (camera, objects that moved, buffers that
+changed). Rust reproduces three.js's Basic/Lambert/Phong shading, fog, instancing, wind sway, sky, particles and the post
+pass (god rays, zoom blur, grade, 4x4 dither) at the game's low resolution and upscales with nearest filtering. The page
+itself only draws the HUD. If the WebView can't post binary messages, the game falls back to WebGL.
+
+`cargo run --release --bin render_host <scene> <frame|.stream> out.ppm` renders dumped packets headlessly (Mesa EGL).
