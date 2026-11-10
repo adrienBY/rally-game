@@ -1,0 +1,22 @@
+[package]
+name = "fogwood_core"
+version = "0.1.0"
+edition = "2021"
+description = "Fogwood Rally native core: stage generation and vehicle physics"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+jni = { version = "0.21.1", default-features = false }
+libm = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+
+[features]
+# compiles the JNI layer on a desktop host too (used by CI to type-check it)
+jni-host = []

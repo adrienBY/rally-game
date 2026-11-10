@@ -1,0 +1,34 @@
+# Fogwood Rally — Android
+
+Pixel-art rally game (Forest, Snow, Stelvio stages) packaged as a native Android app with a custom Rust engine core.
+
+```
+rust/      fogwood_core: stage generation + vehicle physics in Rust (JNI cdylib)
+android/   Kotlin app: full-screen landscape WebView renderer, bundled game + three.js, JNI bridge
+web/       game source (rally_template.html), audio, build.py
+.github/   CI: tests the Rust core, cross-compiles it for arm64/armv7/x86_64, builds and publishes the APK
+```
+
+## How the pieces fit
+* **Rust core** (`rust/src`)
+  * `world.rs` — distance-to-road field, nearest-road index and terrain height on a 1 m grid for all three stages
+    (Stelvio's membrane relaxation included), rows generated on every CPU core.
+  * `physics.rs` — four tyres with Pacejka-style curves and a friction circle, spring/damper suspension with bump stops
+    and anti-roll bars, AWD drivetrain, torque curve, auto gearbox, ABS/TC, arcade assist layer, obstacle collisions,
+    360 Hz sub-stepping.
+  * `noise.rs` — value noise that reproduces the JavaScript int32 arithmetic bit for bit.
+  * `bridge.rs` / `jni_api.rs` — one call per frame from the game; numbers travel as exact round-trip decimals.
+* **App** (`android/`) — loads `assets/index.html` through `WebViewAssetLoader`, exposes `window.FogwoodNative`,
+  serves the generated grids as raw bytes at `/native/grids.bin`. The game detects the bridge and hands world
+  generation and the physics step to Rust; in a normal browser it runs its JavaScript versions instead.
+* **Parity** — `rust/tests/parity.rs` checks the Rust grids are byte-identical to the browser build and that the car
+  follows the same trajectory (fixtures dumped from the game).
+
+## Build
+Push to `main` (or run the workflow by hand): GitHub Actions builds `FogwoodRally-<n>.apk`, attaches it to a release
+named *Fogwood Rally build n* and to the run's artifacts. Install it on the phone (allow installs from your browser).
+
+Locally: `cd rust && cargo test --release`, then `cargo ndk -t arm64-v8a -o ../android/app/src/main/jniLibs build --release --lib`
+and `cd android && gradle assembleRelease` (Android SDK + NDK required).
+
+After editing the game: `python3 web/build.py` (rebuilds `web/dist/*.html` and the app's `assets/index.html`).
