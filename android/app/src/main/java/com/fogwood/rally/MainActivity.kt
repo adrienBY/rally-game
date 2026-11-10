@@ -51,13 +51,34 @@ class MainActivity : Activity() {
         override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
             val resend = NativeCore.glInit()
             Log.i(TAG, "GL ready: ${NativeCore.glStatus()}")
+            checkFailure()
             if (resend) main.post { web.evaluateJavascript("window.__nglResend && window.__nglResend()", null) }
         }
         override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) = NativeCore.glResize(width, height)
         override fun onDrawFrame(gl: GL10?) {
             NativeCore.glDraw()
-            if (++frames % 600 == 1) Log.i(TAG, "renderer: ${NativeCore.glStatus()}")
+            frames++
+            if (frames < 240 || frames % 600 == 0) checkFailure()
+            if (frames % 600 == 1) Log.i(TAG, "renderer: ${NativeCore.glStatus()}")
         }
+        /** If the native renderer can't work on this device, reload the page with the WebGL renderer instead. */
+        private fun checkFailure() {
+            val st = NativeCore.glStatus()
+            if (!st.contains("failed") || fellBack) return
+            fellBack = true
+            Log.e(TAG, "native renderer off: $st")
+            main.post { fallBackToWebGl() }
+        }
+    }
+    @Volatile private var fellBack = false
+
+    @SuppressLint("RequiresFeature")
+    private fun fallBackToWebGl() {
+        try { WebViewCompat.removeWebMessageListener(web, "FogwoodGL") } catch (_: Throwable) {}
+        glView?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        glView = null
+        web.setBackgroundColor(Color.rgb(11, 16, 11))
+        web.reload()
     }
 
     @SuppressLint("SetJavaScriptEnabled", "RequiresFeature")
