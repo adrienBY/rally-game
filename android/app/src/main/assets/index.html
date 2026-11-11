@@ -12,6 +12,7 @@ body {
   touch-action: none; overscroll-behavior: none;
   -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent;
 }
+*, *::before, *::after { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
 #view {
   position: fixed; inset: 0; width: 100vw; height: 100dvh; display: block; touch-action: none;
   image-rendering: pixelated; image-rendering: crisp-edges; background: #6f7a74; outline: none;
@@ -44,6 +45,17 @@ SHARED.promise = (async () => { try {
 /* app lifecycle (Android app calls __appPause; browsers fire visibilitychange): silence audio while in the background */
 const appPause = (p) => { const ac = SHARED.ac; if (!ac) return; try { if (p) ac.suspend(); else if (window.__audioOn) ac.resume(); } catch (_) {} };
 document.addEventListener("visibilitychange", () => appPause(document.hidden)); window.__appPause = appPause;
+/* long presses must never open Android's selection / copy-paste menu */
+for (const ev of ["contextmenu", "selectstart", "dragstart"]) document.addEventListener(ev, e => e.preventDefault(), { capture: true });
+/* haptics: the Android app vibrates through FogwoodNative.haptic (rich effects); browsers fall back to navigator.vibrate */
+const HAPTIC = (() => {
+  const n = window.FogwoodNative;
+  if (n && typeof n.haptic === "function") return (k, s) => { try { n.haptic(k, s); } catch (_) {} };
+  if (navigator.vibrate) return (k, s) => { try { navigator.vibrate(k === "impact" ? Math.round(14 + 40 * s) : k === "land" ? Math.round(10 + 28 * s) : k === "rumble" ? Math.round(5 + 9 * s) : k === "shift" ? 12 : 7); } catch (_) {} };
+  return null;
+})();
+let vibOn = true; try { vibOn = localStorage.getItem("fogwood-vib") !== "0"; } catch (_) {}
+const buzz = (k, s = 1) => { if (HAPTIC && vibOn) HAPTIC(k, Math.max(0, Math.min(1, s))); };
 let CURRENT = null;
 function switchMap(name) { if (CURRENT) CURRENT(); CURRENT = boot(name); }
 function boot(MAPN) {
@@ -1180,7 +1192,7 @@ addEventListener("keydown", e => { if (!alive) return;
 addEventListener("keyup", e => keys.delete(e.code), SIG);
 const touches = new Map(); let touchUsed = false, UI = {};
 const lowXY = (e) => [e.clientX / innerWidth * LW, e.clientY / innerHeight * LH];
-const TOPB = ["snd", "cam", "pix", "rst", "menu"];
+const TOPB = ["snd", "vib", "cam", "pix", "rst", "menu"];
 function hitButton(x, y) {
   if (game.state === "title") for (const k of ["mapF", "mapS", "mapA"]) { const b = UI[k]; if (b && x >= b.x - 2 && x <= b.x + b.w + 2 && y >= b.y - 3 && y <= b.y + b.h + 3) return k; }
   for (const k of TOPB) { const b = UI[k]; if (b && x >= b.x - 2 && x <= b.x + b.w + 2 && y >= b.y - 2 && y <= b.y + b.h + 3) return k; }
@@ -1194,12 +1206,14 @@ canvas.addEventListener("pointerdown", e => {
   canvas.focus({ preventScroll: true }); if (e.pointerType !== "mouse") touchUsed = true;
   try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
   const [x, y] = lowXY(e), b = hitButton(x, y);
-  if (b === "snd") toggleSound(); else if (b === "pix") { pixIdx = (pixIdx + 1) % PIX.length; resize(); }
+  if (b) buzz("tap", TOPB.includes(b) || b.startsWith("map") ? 0.55 : 0.4); else if (game.state === "title") buzz("tap", 0.55);
+  if (b === "snd") toggleSound(); else if (b === "vib") { vibOn = !vibOn; try { localStorage.setItem("fogwood-vib", vibOn ? "1" : "0"); } catch (_) {} if (vibOn) buzz("shift", 0.7); flashMsg(vibOn ? "HAPTICS ON" : "HAPTICS OFF", 1); } else if (b === "pix") { pixIdx = (pixIdx + 1) % PIX.length; resize(); }
   else if (b === "mapF" || b === "mapS" || b === "mapA") { const want = b === "mapS" ? "snow" : b === "mapA" ? "stelvio" : "forest"; if (want !== MAPN) setTimeout(() => switchMap(want), 0); }
   else if (game.state === "title") startGame();
   else if (b === "menu") toTitle(); else if (b === "cam") cycleCam(); else if (b === "rst") resetCar(); else if (b) touches.set(e.pointerId, b);
 }, SIG);
-canvas.addEventListener("pointermove", e => { if (!touches.has(e.pointerId)) return; const [x, y] = lowXY(e), b = hitButton(x, y); if (b && !TOPB.includes(b)) touches.set(e.pointerId, b); }, SIG);
+canvas.addEventListener("pointermove", e => { if (!touches.has(e.pointerId)) return; const [x, y] = lowXY(e), b = hitButton(x, y);
+  if (b && !TOPB.includes(b)) { if (touches.get(e.pointerId) !== b) buzz("tap", 0.3); touches.set(e.pointerId, b); } }, SIG);
 const endT = e => touches.delete(e.pointerId);
 canvas.addEventListener("pointerup", endT, SIG); canvas.addEventListener("pointercancel", endT, SIG);
 const pressed = (n) => { for (const v of touches.values()) if (v === n) return true; return false; };
@@ -1287,7 +1301,7 @@ function initAudio() {
 }
 function oneShot(buf, rate, gain, lp) { if (!A.master || !soundOn) return; const s = ac.createBufferSource(); s.buffer = buf; s.playbackRate.value = rate;
   const g = ac.createGain(); g.gain.value = gain; let n = s; if (lp) { const f = ac.createBiquadFilter(); f.type = lp[0]; f.frequency.value = lp[1]; s.connect(f); n = f; } n.connect(g); g.connect(A.master); s.start(); }
-function shiftEvent() { if (!A.master) return; const t = ac.currentTime; A.engG.gain.cancelScheduledValues(t); A.engG.gain.setValueAtTime(A.engG.gain.value, t); A.engG.gain.linearRampToValueAtTime(0.2, t + 0.05); A.engG.gain.linearRampToValueAtTime(0.6, t + 0.24); }
+function shiftEvent() { if (game.state === "drive") buzz("shift", 0.45); if (!A.master) return; const t = ac.currentTime; A.engG.gain.cancelScheduledValues(t); A.engG.gain.setValueAtTime(A.engG.gain.value, t); A.engG.gain.linearRampToValueAtTime(0.2, t + 0.05); A.engG.gain.linearRampToValueAtTime(0.6, t + 0.24); }
 function toggleSound() { soundOn = !soundOn; if (A.master) { ac.resume(); A.master.gain.setTargetAtTime(soundOn ? 0.9 : 0, ac.currentTime, 0.15); } flashMsg(soundOn ? "SOUND ON" : "SOUND OFF", 1); }
 let popCool = 0;
 function updateAudio(dt, inp, gust) {
@@ -1329,7 +1343,7 @@ function drawHUD(inp) {
   const btn = (k, label, on) => { const w = Math.max(bw, textW(label, U) + 6 * U), x = bx + bw - w; UI[k] = { x, y: pt, w, h: bh };
     box(g, x, pt, w, bh, on ? "rgba(243,207,98,0.28)" : PANEL, on ? AMBER : EDGE);
     text(g, label, x + (w - textW(label, U)) / 2, pt + 3 * U, U, on ? AMBER : INK); bx = x - gap - bw; };
-  btn("snd", "SND", soundOn); btn("pix", "PIX", false);
+  btn("snd", "SND", soundOn); if (HAPTIC) btn("vib", "VIB", vibOn); else UI.vib = null; btn("pix", "PIX", false);
   if (game.state === "drive") { btn("cam", "CAM", false); btn("rst", "RST", false); btn("menu", "MENU", false); } else { UI.cam = UI.rst = UI.menu = null; }
 
   if (game.state === "title") {
@@ -1393,6 +1407,7 @@ function drawHUD(inp) {
   if (m) { const sc = 2 * U; text(g, m, (LW - textW(m, sc)) / 2, LH * 0.3, sc, mc); }
 }
 
+const hapT = { t: 0, cool: 0 };
 /* ================= native renderer bridge =================
    Scene packet: u32 magic "FWS1", u32 json length, json (materials, geometries, textures, objects, lights), then one blob
    holding every buffer (4-byte aligned). Frame packet: Float32Array, see nglFrame. Objects are mirrored generically:
@@ -1489,10 +1504,20 @@ function frame(now) {
   if (game.state === "drive") updateLap(dt);
   updateAudio(dt, inp, gust);
   if (S.landed) { const v = -S.landV; S.landed = false;
+    if (v > 1.8 && game.state === "drive") buzz("land", clamp((v - 1.5) / 7, 0.15, 1));
     if (v > 2.5) { if (A.master) oneShot(decoded.impact, rr(0.6, 0.75), clamp(v / 9, 0.2, 1.0), ["lowpass", 900]); S.shake = Math.max(S.shake, clamp((v - 2) / 9, 0, 0.8));
       for (const w of WH) for (let q = 0; q < 6; q++) emitDust(w.wx, height(w.wx, w.wz) + 0.2, w.wz, rr(-2, 2), rr(0.5, 2), rr(-2, 2), rr(0.8, 1.4)); }
     S.landV = 0; }
   if (S.impact > 2.5) S.shake = Math.min(1, S.impact / 10);
+  if (game.state === "drive") {
+    hapT.cool = Math.max(0, hapT.cool - dt);
+    if (S.impact > 1.5 && hapT.cool <= 0) { buzz("impact", clamp(S.impact / 9, 0.25, 1)); hapT.cool = 0.12; }
+    // texture: light pulses while sliding hard or rattling over rough ground off the road
+    const spd = Math.abs(S.u), slideK = SNOW ? clamp((S.slide - 5.5) / 9, 0, 1) : clamp((S.slide - 3.2) / 7, 0, 1);
+    const roughK = S.contacts > 0 && !S.onRoad ? clamp((spd - 4) / 22, 0, 1) * (SNOW ? 0.35 : 0.55) : 0;
+    const k = Math.max(slideK, roughK); hapT.t -= dt;
+    if (k > 0.05 && S.contacts > 0 && hapT.t <= 0) { buzz("rumble", 0.2 + 0.6 * k); hapT.t = 0.12 - 0.05 * k; }
+  }
   S.shake = Math.max(0, S.shake - dt * 3);
 
   const sp = Math.hypot(S.vx, S.vz);

@@ -33,11 +33,14 @@ import javax.microedition.khronos.opengles.GL10
  */
 class MainActivity : Activity() {
     private lateinit var web: WebView
+    private lateinit var haptics: Haptics
     private var glView: GLSurfaceView? = null
     private val main = Handler(Looper.getMainLooper())
 
     /** Exposed to the game as window.FogwoodNative. Only present when the Rust library loaded. */
-    class Bridge {
+    inner class Bridge {
+        /** kind: tap | shift | land | impact | rumble; strength 0..1 */
+        @JavascriptInterface fun haptic(kind: String, strength: Float) = haptics.play(kind, strength)
         @JavascriptInterface fun prepare(map: Int, path: String, roadh: String, gxh: Int, gzh: Int): String =
             NativeCore.prepare(map, path, roadh, gxh, gzh)
         @JavascriptInterface fun obstacles(csv: String): Int = NativeCore.obstacles(csv)
@@ -86,6 +89,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         WindowCompat.setDecorFitsSystemWindows(window, false)
+        haptics = Haptics(this)
 
         val loader = WebViewAssetLoader.Builder()
             .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
@@ -125,6 +129,10 @@ class MainActivity : Activity() {
             isVerticalScrollBarEnabled = false
             isHorizontalScrollBarEnabled = false
             overScrollMode = WebView.OVER_SCROLL_NEVER
+            // no long-press selection / copy-paste menu and no system long-press buzz
+            isLongClickable = false
+            setOnLongClickListener { true }
+            isHapticFeedbackEnabled = false
             webViewClient = object : WebViewClient() {
                 override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
                     loader.shouldInterceptRequest(request.url)
