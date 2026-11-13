@@ -34,4 +34,5 @@ fn run(name: &str) {
 }
 #[test] fn forest() { run("forest"); }
 #[test] fn snow() { run("snow"); }
-#[test] fn stelvio() { run("stelvio"); }
+#[test] fn canyon() { run("canyon"); }
+#[test] fn lakes() { run("lakes"); }

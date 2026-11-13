@@ -1,7 +1,7 @@
 //! Vehicle dynamics: a straight port of the JavaScript model (same order of operations, same constants),
 //! so a car driven by the native engine behaves exactly like the browser build.
 use crate::noise::{clamp, js_round, sgn, vnoise, wrap_a};
-use crate::world::{Map, World, ROAD};
+use crate::world::{Map, World, ROAD, WL};
 use std::collections::HashMap;
 
 #[inline] fn sin(x: f64) -> f64 { libm::sin(x) }
@@ -161,7 +161,7 @@ impl Car {
     }
 
     fn step(&mut self, world: &World, t: &Tune, dt: f64, ctl: &Ctl, gx: f64, gz: f64) {
-        let snow = world.map == Map::Snow; let alp = world.map == Map::Stelvio;
+        let snow = world.map == Map::Snow; let can = world.map == Map::Canyon; let lak = world.map == Map::Lakes;
         let sh = sin(self.h); let ch = cos(self.h); let lxw = ch; let lzw = -sh;
         let u = self.vx * sh + self.vz * ch; let vl = self.vx * lxw + self.vz * lzw;
         let (m, iz, r_, g) = (M, t.iz, TIRE_R, 9.81);
@@ -175,8 +175,9 @@ impl Car {
             w.comp = comp; w.d = d; w.hg = hg;
             let mut f = 0.0;
             if comp > 0.0 { f = t.k * comp + t.c * rate; if comp > STOP { f += t.k * 10.0 * (comp - STOP) + t.c * 2.0 * rate.max(0.0); } }
-            w.fz = f; w.mu = if w.road { t.mu_road } else { t.mu_grass };
-            w.rr = if w.road { if snow { 0.03 } else if alp { 0.015 } else { 0.02 } } else if w.bank { 0.2 } else if snow { 0.11 } else { 0.06 };
+            let wet = lak && hg < WL - 0.05;
+            w.fz = f; w.mu = if wet { 0.5 } else if w.road { t.mu_road } else { t.mu_grass };
+            w.rr = if wet { 0.45 } else if w.road { if snow { 0.03 } else if can { 0.026 } else { 0.02 } } else if w.bank { 0.2 } else if snow { 0.11 } else if can { 0.13 } else { 0.06 };
         }
         for (ia, ib) in [(0usize, 1usize), (2, 3)] {
             let ca = self.wh[ia].comp; let cb = self.wh[ib].comp;

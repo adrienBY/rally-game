@@ -78,7 +78,8 @@ const wrapA = (a) => Math.atan2(Math.sin(a), Math.cos(a));
 const smooth = (e0, e1, x) => { const t = clamp((x - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t); };
 
 /* ================= map: #snow selects the mountain stage, anything else the forest ================= */
-const SNOW = MAPN === "snow", ALP = MAPN === "stelvio";
+const SNOW = MAPN === "snow", CAN = MAPN === "canyon", LAK = MAPN === "lakes", WARM = CAN || LAK;
+const WL = -4.5;   // lakes: water level
 const ridged = (x, z) => { let s = 0, a = 0.5, f = 1; for (let i = 0; i < 4; i++) { const n = 1 - Math.abs(vnoise(x * f, z * f) * 2 - 1); s += a * n * n; f *= 2.1; a *= 0.5; } return s; };
 
 /* ================= the stage: a ~1.5 km closed loop, resampled every metre ================= */
@@ -86,25 +87,15 @@ const ROAD = 3.4;
 const PATH = [], TAN = [];
 {
   const raw = [];
-  if (ALP) {   // Passo dello Stelvio: a stack of six legs joined by tight tornanti, then the col and a long descent back
-    const L0 = -50, R0 = 70, z0 = -110, D = 36, rad = D / 2;
-    let z = z0;
-    for (let l = 0; l < 6; l++) {
-      const dir = l % 2 === 0 ? 1 : -1, xs = dir > 0 ? L0 : R0, xe = dir > 0 ? R0 : L0;
-      for (let i = 0; i < 480; i++) raw.push([xs + (xe - xs) * i / 480, z]);
-      if (l < 5) { for (let i = 0; i < 240; i++) { const a = -Math.PI / 2 + Math.PI * i / 240; raw.push([xe + dir * Math.cos(a) * rad, z + rad + Math.sin(a) * rad]); } z += D; }
-    }
-    const C = [[-40, 70], [-50, 70], [-95, 78], [-120, 110], [-80, 150], [20, 165], [130, 150], [205, 100], [225, 30], [195, -40], [230, -110], [180, -175], [60, -195], [-60, -185], [-110, -150], [-90, -118], [-50, -110], [-40, -110]];
-    for (let k = 1; k < C.length - 2; k++) { const p0 = C[k - 1], p1 = C[k], p2 = C[k + 1], p3 = C[k + 2];
-      for (let i = 0; i < 300; i++) { const t = i / 300, t2 = t * t, t3 = t2 * t;
-        raw.push([0, 1].map(q => 0.5 * (2 * p1[q] + (-p0[q] + p2[q]) * t + (2 * p0[q] - 5 * p1[q] + 4 * p2[q] - p3[q]) * t2 + (-p0[q] + 3 * p1[q] - 3 * p2[q] + p3[q]) * t3))); } }
-  }
-  const NR = ALP ? raw.length : 24000;
-  for (let k = 0; k < (ALP ? 0 : NR); k++) {
-    const N = NR;
-    const t = k / N * Math.PI * 2;
+  const NR = 24000;
+  for (let k = 0; k < NR; k++) {
+    const t = k / NR * Math.PI * 2;
     if (SNOW) { const r = 1.3 * (140 + 34 * Math.sin(3 * t + 0.7) + 22 * Math.sin(2 * t + 2.1) + 13 * Math.sin(5 * t + 1.0) + 6 * Math.sin(9 * t + 0.3));
       raw.push([1.15 * r * Math.cos(t), r * Math.sin(t)]); continue; }
+    if (CAN) { const r = 1.15 * (165 + 38 * Math.sin(2 * t + 0.4) + 26 * Math.sin(3 * t + 2.2) + 9 * Math.sin(6 * t + 1.1) + 4 * Math.sin(10 * t));
+      raw.push([1.25 * r * Math.cos(t), 0.9 * r * Math.sin(t)]); continue; }
+    if (LAK) { const r = 1.2 * (158 + 30 * Math.sin(3 * t + 1.4) + 22 * Math.sin(2 * t + 0.2) + 12 * Math.sin(5 * t + 2.6) + 5 * Math.sin(9 * t + 0.9));
+      raw.push([1.1 * r * Math.cos(t), r * Math.sin(t)]); continue; }
     const r = 1.25 * (150 + 42 * Math.sin(2 * t + 1) + 24 * Math.sin(3 * t + 0.3) + 11 * Math.sin(7 * t + 2) + 5 * Math.sin(11 * t + 0.7));
     raw.push([1.2 * r * Math.cos(t), 0.92 * r * Math.sin(t)]);
   }
@@ -123,7 +114,7 @@ const VCURVE = new Float32Array(NP), VPROF = new Float32Array(NP);
 for (let i = 0; i < NP; i++) {
   const a = TAN[(i + NP - 6) % NP], b = TAN[(i + 6) % NP];
   const d = Math.abs(Math.atan2(a[0] * b[1] - a[1] * b[0], a[0] * b[0] + a[1] * b[1])) / 12;
-  VCURVE[i] = Math.min(44, Math.sqrt((SNOW ? 0.5 : ALP ? 0.8 : 0.66) * 9.81 / Math.max(d, 1e-4)));
+  VCURVE[i] = Math.min(44, Math.sqrt((SNOW ? 0.5 : CAN ? 0.62 : 0.66) * 9.81 / Math.max(d, 1e-4)));
 }
 VPROF.set(VCURVE);
 for (let pass = 0; pass < 3; pass++) for (let i = NP - 1; i >= 0; i--) VPROF[i] = Math.min(VPROF[i], Math.sqrt(VPROF[(i + 1) % NP] ** 2 + 2 * 5.0));
@@ -150,21 +141,22 @@ for (let j = 0; j < GNZ; j += 8) for (let i = 0; i < GNX; i += 8) {
 }
 }
 if (!NATIVE) jsSplat();
-const terrain = ALP
-  ? (x, z) => ridged(x * 0.0062 + 11, z * 0.0062 + 4) * 70 + (fbm(x * 0.02, z * 0.02) - 0.5) * 8
+/* canyon: sandy valley floor (the road follows it) + flat-topped mesas that rise as cliffs away from the road */
+const canyonMesa = (x, z) => smooth(0.53, 0.585, fbm(x * 0.0065 + 21, z * 0.0065 + 7)) * (24 + fbm(x * 0.03 + 5, z * 0.03) * 14);
+const terrain = CAN
+  ? (x, z) => (fbm(x * 0.008 + 3, z * 0.008 - 2) - 0.5) * 18 + (fbm(x * 0.05, z * 0.05) - 0.5) * 1.2
+  : LAK
+  ? (x, z) => (fbm(x * 0.006 + 5, z * 0.006 + 1) - 0.5) * 44 + (fbm(x * 0.02, z * 0.02) - 0.5) * 8 + (fbm(x * 0.07, z * 0.07) - 0.5) * 1.2
   : SNOW
   ? (x, z) => ridged(x * 0.0052 + 3, z * 0.0052 - 7) * 58 + (fbm(x * 0.016, z * 0.016) - 0.5) * 12 + (fbm(x * 0.07, z * 0.07) - 0.5) * 1.4
   : (x, z) => (fbm(x * 0.014 + 10, z * 0.014 - 4) - 0.5) * 16 + (fbm(x * 0.06, z * 0.06) - 0.5) * 1.6;
 const ROADH = new Float32Array(NP);
 for (let i = 0; i < NP; i++) ROADH[i] = terrain(PATH[i][0], PATH[i][1]);
-let S_TOP = 0;
-if (ALP) {   // designed profile: 8% up the hairpin stack, a little more to the col, then a long descent home
-  for (let i = 0; i < NP; i++) { const a = PATH[i]; if (S_TOP === 0 && i > 900 && a[0] <= -49.5 && Math.abs(a[1] - 70) < 0.6) S_TOP = i; }
-  if (!S_TOP) S_TOP = Math.round(NP * 0.47);
-  const sCol = S_TOP + 150, hTop = S_TOP * 0.08, hCol = hTop + 9;
-  for (let i = 0; i < NP; i++) ROADH[i] = i <= S_TOP ? i * 0.08 : i <= sCol ? hTop + (i - S_TOP) / 150 * 9 : hCol * (1 - (i - sCol) / (NP - sCol));
+for (let pass = 0; pass < (SNOW ? 7 : LAK ? 5 : 4); pass++) { const c = ROADH.slice(); for (let i = 0; i < NP; i++) { let s = 0; for (let k = -14; k <= 14; k++) s += c[(i + k + NP) % NP]; ROADH[i] = s / 29; } }
+if (LAK) {   // the road never dips into a lake: it crosses low ground on causeways
+  for (let i = 0; i < NP; i++) ROADH[i] = Math.max(ROADH[i], WL + 1.6);
+  for (let pass = 0; pass < 2; pass++) { const c = ROADH.slice(); for (let i = 0; i < NP; i++) { let s = 0; for (let k = -6; k <= 6; k++) s += c[(i + k + NP) % NP]; ROADH[i] = s / 13; } }
 }
-for (let pass = 0; pass < (SNOW ? 7 : ALP ? 3 : 4); pass++) { const c = ROADH.slice(); for (let i = 0; i < NP; i++) { let s = 0; for (let k = -14; k <= 14; k++) s += c[(i + k + NP) % NP]; ROADH[i] = s / 29; } }
 if (SNOW) {   // mountain pass: cap the gradient so the road climbs and descends like a real col
   for (let pass = 0; pass < 8; pass++) {
     for (let i = 1; i <= NP * 2; i++) { const a = ROADH[(i - 1) % NP], k = i % NP; ROADH[k] = clamp(ROADH[k], a - 0.11, a + 0.11); }
@@ -173,22 +165,37 @@ if (SNOW) {   // mountain pass: cap the gradient so the road climbs and descends
   for (let pass = 0; pass < 2; pass++) { const c = ROADH.slice(); for (let i = 0; i < NP; i++) { let s = 0; for (let k = -8; k <= 8; k++) s += c[(i + k + NP) % NP]; ROADH[i] = s / 17; } }
 }
 /* jumps: crests on the straights (gentle run-up, sharp drop-off), plus rolling undulations along the whole stage */
-const JUMPS = [];
-if (!ALP) {
+const JUMPS = [], RAMP = { i: -1, L: 8, H: 1.4 };
+{ // the two new stages are built around their bumps: more and bigger crests, more kickers, stronger undulation
+  const JP = WARM ? { n: 9, gap: 115, bigA: LAK ? 2.3 : 1.9, smallA: 1.0, suB: 13, sdB: 5.5, suS: 7, sdS: 3.6, vB: 23, vS: 26, kick: 0.16, kickA: 0.55, und: 0.34 }
+                  : { n: 6, gap: 150, bigA: 1.5, smallA: 0.75, suB: 10, sdB: 4.6, suS: 6, sdS: 3.2, vB: 24, vS: 27, kick: 0.09, kickA: 0.42, und: 0.24 };
   const straight = (i) => { for (let k = -28; k <= 36; k++) if (VCURVE[(i + k + NP) % NP] < 24) return false; return true; };
-  for (let i = 90; i < NP - 90; i += 3) { if (!straight(i)) continue; if (JUMPS.some(j => Math.abs(j.i - i) < 150)) continue; JUMPS.push({ i, big: JUMPS.length % 2 === 0 }); if (JUMPS.length >= 6) break; }
-  for (const j of JUMPS) { const A = j.big ? 1.5 : 0.75, su = j.big ? 10 : 6, sd = j.big ? 4.6 : 3.2;
+  for (let i = 90; i < NP - 90; i += 3) { if (!straight(i)) continue; if (JUMPS.some(j => Math.abs(j.i - i) < JP.gap)) continue; JUMPS.push({ i, big: JUMPS.length % 2 === 0 }); if (JUMPS.length >= JP.n) break; }
+  for (const j of JUMPS) { const A = j.big ? JP.bigA : JP.smallA, su = j.big ? JP.suB : JP.suS, sd = j.big ? JP.sdB : JP.sdS;
     for (let s = -36; s <= 24; s++) { const k = (j.i + s + NP) % NP, sg = s < 0 ? su : sd; ROADH[k] += A * Math.exp(-(s * s) / (2 * sg * sg)); }
-    for (let s = -40; s <= 30; s++) { const k = (j.i + s + NP) % NP; VPROF[k] = Math.min(VPROF[k], j.big ? 24 : 27); } }
+    for (let s = -40; s <= 30; s++) { const k = (j.i + s + NP) % NP; VPROF[k] = Math.min(VPROF[k], j.big ? JP.vB : JP.vS); } }
+  if (CAN) {   // whoops: runs of five dune bumps on some of the straights
+    let runs = 0;
+    for (let i = 120; i < NP - 120 && runs < 4; i += 5) { if (VCURVE[i] < 26 || JUMPS.some(j => Math.abs(j.i - i) < 90) || hash2(i, 31) > 0.2) continue;
+      for (let s = 0; s <= 66; s++) { const k = (i + s) % NP; ROADH[k] += 0.5 * Math.pow(Math.sin(s * Math.PI / 13.2), 2) * Math.sin(Math.PI * s / 66); VPROF[k] = Math.min(VPROF[k], 25); }
+      runs++; i += 200; } }
   for (let pass = 0; pass < 3; pass++) for (let i = NP - 1; i >= 0; i--) VPROF[i] = Math.min(VPROF[i], Math.sqrt(VPROF[(i + 1) % NP] ** 2 + 2 * 5.0));
-  for (let i = 60; i < NP - 40; i += 3) { if (VCURVE[i] < 20 || JUMPS.some(j => Math.abs(j.i - i) < 60) || hash2(i, 7) > 0.09) continue;   // small kickers
-    for (let s = -10; s <= 8; s++) { const k = (i + s) % NP, sg = s < 0 ? 3.2 : 2.2; ROADH[k] += 0.42 * Math.exp(-(s * s) / (2 * sg * sg)); } i += 60; }
-  for (let i = 0; i < NP; i++) ROADH[i] += 0.24 * Math.sin(i * Math.PI * 2 / 26) * (0.5 + 0.5 * Math.sin(i * Math.PI * 2 / 190 + 1));
+  for (let i = 60; i < NP - 40; i += 3) { if (VCURVE[i] < 20 || JUMPS.some(j => Math.abs(j.i - i) < 60) || hash2(i, 7) > JP.kick) continue;   // small kickers
+    for (let s = -10; s <= 8; s++) { const k = (i + s) % NP, sg = s < 0 ? 3.2 : 2.2; ROADH[k] += JP.kickA * Math.exp(-(s * s) / (2 * sg * sg)); } i += 60; }
+  for (let i = 0; i < NP; i++) ROADH[i] += JP.und * Math.sin(i * Math.PI * 2 / 26) * (0.5 + 0.5 * Math.sin(i * Math.PI * 2 / 190 + 1));
+  // one launch ramp per stage: a straight, well away from the crests; 8 m of plank incline, 1.4 m lip, sheer drop
+  const cdist = (a, b) => { const d = Math.abs(a - b) % NP; return Math.min(d, NP - d); };
+  for (let i = Math.round(NP * 0.3); i < NP * 0.92; i += 3) { if (!straight(i) || !straight((i + 40) % NP) || JUMPS.some(j => cdist(j.i, i) < 80)) continue;
+    RAMP.i = i; break; }
+  if (RAMP.i < 0) RAMP.i = Math.round(NP * 0.6);
+  for (let s = 0; s <= RAMP.L; s++) ROADH[(RAMP.i - RAMP.L + s + NP) % NP] += RAMP.H * s / RAMP.L;
+  for (let s = -50; s <= 45; s++) { const k = (RAMP.i + s + NP) % NP; VPROF[k] = Math.min(VPROF[k], 25); }
+  for (let pass = 0; pass < 3; pass++) for (let i = NP - 1; i >= 0; i--) VPROF[i] = Math.min(VPROF[i], Math.sqrt(VPROF[(i + 1) % NP] ** 2 + 2 * 5.0));
 }
 if (NATIVE) {
   try {
     const t0 = performance.now(), pc = new Array(NP * 2); for (let i = 0; i < NP; i++) { pc[i * 2] = PATH[i][0]; pc[i * 2 + 1] = PATH[i][1]; }
-    const res = String(NATIVE.prepare(SNOW ? 1 : ALP ? 2 : 0, pc.join(","), Array.prototype.join.call(ROADH, ","), GXH, GZH));
+    const res = String(NATIVE.prepare(SNOW ? 1 : CAN ? 2 : LAK ? 3 : 0, pc.join(","), Array.prototype.join.call(ROADH, ","), GXH, GZH));
     if (!res.startsWith("ok")) throw new Error(res);
     const n = GNX * GNZ, x = new XMLHttpRequest(); x.open("GET", "/native/grids.bin", false); x.overrideMimeType("text/plain; charset=x-user-defined"); x.send();
     const str = x.responseText; if (str.length !== n * 10) throw new Error("grid size " + str.length);
@@ -198,25 +205,13 @@ if (NATIVE) {
   } catch (e) { console.warn("native grids failed, using JS", e); jsSplat(); }
 }
 if (gridsNative) {} else
-if (ALP) {   // open mountainside: a smooth membrane stretched through every leg of the road, rugged peaks further out
-  const CS = 4, CX = Math.ceil(GNX / CS) + 1, CZ = Math.ceil(GNZ / CS) + 1, M = new Float32Array(CX * CZ), fix = new Uint8Array(CX * CZ);
-  for (let j = 0; j < CZ; j++) for (let i = 0; i < CX; i++) { const gi = Math.min(GNX - 1, i * CS), gj = Math.min(GNZ - 1, j * CS), id = gj * GNX + gi;
-    M[j * CX + i] = ROADH[piG[id]]; if (pdG[id] < ROAD + 2) fix[j * CX + i] = 1; }
-  const T = new Float32Array(CX * CZ);
-  for (let it = 0; it < 260; it++) { for (let j = 0; j < CZ; j++) for (let i = 0; i < CX; i++) { const k = j * CX + i; if (fix[k]) { T[k] = M[k]; continue; }
-      let s = 0, n = 0; if (i > 0) { s += M[k - 1]; n++; } if (i < CX - 1) { s += M[k + 1]; n++; } if (j > 0) { s += M[k - CX]; n++; } if (j < CZ - 1) { s += M[k + CX]; n++; } T[k] = s / n; } M.set(T); }
-  for (let j = 0; j < GNZ; j++) for (let i = 0; i < GNX; i++) {
-    const id = j * GNX + i, x = i - GXH, z = j - GZH, pd = pdG[id], fx = i / CS, fz = j / CS, ci = Math.min(CX - 2, fx | 0), cj = Math.min(CZ - 2, fz | 0), u = fx - ci, v = fz - cj, k = cj * CX + ci;
-    let h = (M[k] * (1 - u) + M[k + 1] * u) * (1 - v) + (M[k + CX] * (1 - u) + M[k + CX + 1] * u) * v;
-    h += (ridged(x * 0.0062 + 11, z * 0.0062 + 4) * 70 - 22) * smooth(28, 110, pd) + (fbm(x * 0.02, z * 0.02) - 0.5) * 7 * smooth(6, 24, pd) + (fbm(x * 0.07, z * 0.07) - 0.5) * 1.2 * smooth(3, 9, pd);
-    const w = 1 - smooth(ROAD + 1, ROAD + 6, pd); h = h + (ROADH[piG[id]] - 0.05 - h) * w;
-    hG[id] = h;
-  }
-} else
 for (let j = 0; j < GNZ; j++) for (let i = 0; i < GNX; i++) {
   const id = j * GNX + i, x = i - GXH, z = j - GZH, pd = pdG[id];
   let h = terrain(x, z);
-  const w = 1 - (SNOW ? smooth(ROAD + 1.5, ROAD + 22, pd) : smooth(ROAD + 1, ROAD + 10, pd)); h = h + (ROADH[piG[id]] - 0.12 - h) * w;
+  if (CAN) h += canyonMesa(x, z) * smooth(ROAD + 6, ROAD + 16, pd);
+  const w = 1 - (SNOW ? smooth(ROAD + 1.5, ROAD + 22, pd) : CAN ? smooth(ROAD + 1, ROAD + 9, pd) : LAK ? smooth(ROAD + 1, ROAD + 14, pd) : smooth(ROAD + 1, ROAD + 10, pd));
+  h = h + (ROADH[piG[id]] - 0.12 - h) * w;
+  if (LAK && h < WL) h = WL - Math.min(1.6, (WL - h) * 0.2);
   hG[id] = h;
 }
 function bil(G, x, z) {
@@ -238,13 +233,13 @@ const renderer = NGL ? { outputColorSpace: "", setPixelRatio() {}, setClearColor
   : new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: "high-performance" });
 if (NGL) { document.documentElement.style.background = "transparent"; document.body.style.background = "transparent"; canvas.style.background = "transparent"; }
 renderer.outputColorSpace = THREE.LinearSRGBColorSpace; renderer.setPixelRatio(1);
-const FOG = SNOW ? new THREE.Color(0.79, 0.84, 0.9) : ALP ? new THREE.Color(0.7, 0.79, 0.9) : new THREE.Color(0.60, 0.65, 0.64);
+const FOG = SNOW ? new THREE.Color(0.79, 0.84, 0.9) : CAN ? new THREE.Color(0.88, 0.66, 0.5) : LAK ? new THREE.Color(0.84, 0.74, 0.76) : new THREE.Color(0.60, 0.65, 0.64);
 renderer.setClearColor(FOG, 0);
-const scene = new THREE.Scene(); scene.fog = new THREE.FogExp2(FOG, SNOW ? 0.0034 : ALP ? 0.0021 : 0.0056);
+const scene = new THREE.Scene(); scene.fog = new THREE.FogExp2(FOG, SNOW ? 0.0034 : CAN ? 0.0024 : LAK ? 0.0029 : 0.0056);
 const camera = new THREE.PerspectiveCamera(58, 16 / 9, 0.12, 1900);
-const SUN = ALP ? new THREE.Vector3(0.45, 0.55, -0.7).normalize() : SNOW ? new THREE.Vector3(-0.55, 0.24, -0.8).normalize() : new THREE.Vector3(0.6, 0.48, -0.62).normalize();
-scene.add(ALP ? new THREE.HemisphereLight(0xd2e2f6, 0x56603e, 2.1) : SNOW ? new THREE.HemisphereLight(0xdbe6f5, 0x6f7f96, 2.0) : new THREE.HemisphereLight(0xc8d2cf, 0x2b3420, 2.3));
-const sunL = ALP ? new THREE.DirectionalLight(0xfff0d6, 2.2) : SNOW ? new THREE.DirectionalLight(0xffd2a6, 2.2) : new THREE.DirectionalLight(0xffefc8, 1.9); sunL.position.copy(SUN); scene.add(sunL);
+const SUN = CAN ? new THREE.Vector3(-0.62, 0.2, -0.76).normalize() : LAK ? new THREE.Vector3(0.7, 0.13, -0.7).normalize() : SNOW ? new THREE.Vector3(-0.55, 0.24, -0.8).normalize() : new THREE.Vector3(0.6, 0.48, -0.62).normalize();
+scene.add(CAN ? new THREE.HemisphereLight(0xf2c9a0, 0x6a3a26, 2.0) : LAK ? new THREE.HemisphereLight(0xd8c6d6, 0x34452f, 2.1) : SNOW ? new THREE.HemisphereLight(0xdbe6f5, 0x6f7f96, 2.0) : new THREE.HemisphereLight(0xc8d2cf, 0x2b3420, 2.3));
+const sunL = CAN ? new THREE.DirectionalLight(0xffb26b, 2.6) : LAK ? new THREE.DirectionalLight(0xffc09a, 2.4) : SNOW ? new THREE.DirectionalLight(0xffd2a6, 2.2) : new THREE.DirectionalLight(0xffefc8, 1.9); sunL.position.copy(SUN); scene.add(sunL);
 
 let LW = 320, LH = 180, U = 1, rt, post, hudCanvas, hud, hudTex;
 const PIX = [170, 220, 300]; let pixIdx = 0;
@@ -292,11 +287,14 @@ const barkTex = canvasTex(64, (g, S) => { g.fillStyle = "#6b4a33"; g.fillRect(0,
 const groundTex = canvasTex(128, (g, S) => { const id = g.createImageData(S, S);
   for (let i = 0; i < S * S; i++) { const v = 170 + (rnd() * 85 | 0) - (rnd() < 0.08 ? 60 : 0); id.data[i * 4] = id.data[i * 4 + 1] = id.data[i * 4 + 2] = v; id.data[i * 4 + 3] = 255; }
   g.putImageData(id, 0, 0); }, true);
-const gravelTex = ALP ? canvasTex(64, (g, S) => {   // worn tarmac with white edge lines and a dashed centre line
-  g.fillStyle = "rgb(74,76,80)"; g.fillRect(0, 0, S, S);
-  for (let i = 0; i < 1200; i++) { g.fillStyle = rnd() < 0.5 ? `rgba(40,42,46,${rr(0.2, 0.5)})` : `rgba(120,122,126,${rr(0.15, 0.4)})`; g.fillRect(rr(0, S) | 0, rr(0, S) | 0, 1, 1); }
-  for (const cx of [0.27, 0.73]) for (let y = 0; y < S; y++) { g.fillStyle = "rgba(48,50,54,0.35)"; g.fillRect(cx * S - 4, y, 8, 1); }
-  g.fillStyle = "rgb(214,212,204)"; g.fillRect(4, 0, 2, S); g.fillRect(S - 6, 0, 2, S); g.fillRect(S / 2 - 1, 0, 2, S / 2);
+const gravelTex = CAN ? canvasTex(64, (g, S) => {   // packed orange sand with soft ruts
+  g.fillStyle = "rgb(196,140,96)"; g.fillRect(0, 0, S, S);
+  for (let i = 0; i < 900; i++) { g.fillStyle = rnd() < 0.5 ? `rgba(150,96,60,${rr(0.2, 0.5)})` : `rgba(236,196,150,${rr(0.2, 0.5)})`; g.fillRect(rr(0, S) | 0, rr(0, S) | 0, rnd() < 0.2 ? 2 : 1, 1); }
+  for (const cx of [0.27, 0.73]) for (let y = 0; y < S; y++) { const w = 7 + (vnoise(y * 0.3, cx * 10) * 3 | 0); g.fillStyle = "rgba(140,88,54,0.42)"; g.fillRect(cx * S - w / 2 + (vnoise(y * 0.15, cx) * 3 | 0), y, w, 1); }
+}, true) : LAK ? canvasTex(64, (g, S) => {   // grey-brown Nordic gravel
+  g.fillStyle = "rgb(138,124,106)"; g.fillRect(0, 0, S, S);
+  for (let i = 0; i < 1000; i++) { g.fillStyle = rnd() < 0.5 ? `rgba(80,72,62,${rr(0.2, 0.5)})` : `rgba(200,190,172,${rr(0.2, 0.5)})`; g.fillRect(rr(0, S) | 0, rr(0, S) | 0, rnd() < 0.25 ? 2 : 1, 1); }
+  for (const cx of [0.27, 0.73]) for (let y = 0; y < S; y++) { const w = 6 + (vnoise(y * 0.3, cx * 10) * 3 | 0); g.fillStyle = "rgba(84,76,66,0.45)"; g.fillRect(cx * S - w / 2 + (vnoise(y * 0.15, cx) * 3 | 0), y, w, 1); }
 }, true) : SNOW ? canvasTex(64, (g, S) => {   // packed snow with icy wheel tracks
   g.fillStyle = "rgb(214,221,232)"; g.fillRect(0, 0, S, S);
   for (let i = 0; i < 700; i++) { g.fillStyle = rnd() < 0.6 ? `rgba(170,182,200,${rr(0.2, 0.5)})` : `rgba(250,252,255,${rr(0.3, 0.7)})`; g.fillRect(rr(0, S) | 0, rr(0, S) | 0, rnd() < 0.2 ? 2 : 1, 1); }
@@ -364,7 +362,8 @@ for (let tries = 0; tries < 32000 && trees.length < 1900; tries++) {
   const off = (ROAD + 2.3 + Math.pow(rnd(), SNOW ? 1.1 : 1.35) * (SNOW ? 36 : 46)) * side;
   const x = p[0] - tn[1] * off + rr(-1, 1), z = p[1] + tn[0] * off + rr(-1, 1);
   if (pathDist(x, z) < ROAD + 2.2) continue;
-  if (ALP ? (height(x, z) > 40 || rnd() > smooth(0.55, 0.75, fbm(x * 0.02 + 50, z * 0.02)) * 0.5) : SNOW ? rnd() > smooth(0.42, 0.72, fbm(x * 0.022 + 50, z * 0.022)) * 0.9 : rnd() > 0.3 + fbm(x * 0.03 + 50, z * 0.03) * 0.95) continue;
+  if (LAK && height(x, z) < WL + 0.5) continue;
+  if (CAN ? rnd() > 0.016 : SNOW ? rnd() > smooth(0.42, 0.72, fbm(x * 0.022 + 50, z * 0.022)) * 0.9 : rnd() > 0.3 + fbm(x * 0.03 + 50, z * 0.03) * 0.95) continue;
   const ci = Math.floor(x / 4), cj = Math.floor(z / 4); let ok = true;
   for (let a = -1; a <= 1 && ok; a++) for (let b = -1; b <= 1 && ok; b++) { const l = TH.get((ci + a) * 4096 + cj + b); if (l) for (const t of l) if ((t.x - x) ** 2 + (t.z - z) ** 2 < 16) { ok = false; break; } }
   if (!ok) continue;
@@ -377,6 +376,24 @@ for (const t of trees) for (let i = -7; i <= 7; i++) for (let j = -7; j <= 7; j+
 }
 const shadeAt = (x, z) => Math.min(1, bil(SH, x, z));
 
+/* ground palettes of the two warm stages, shared by the stage ground and the land beyond it */
+function groundCol(x, z, h, slope, n, n2) {
+  if (CAN) {   // sand, with banded red sandstone on the cliffs and mesa sides
+    let r = 0.8 + n * 0.08, g = 0.53 + n * 0.06, b = 0.34 + n * 0.04;
+    const rock = smooth(0.45, 0.85, slope + (n - 0.5) * 0.3), band = Math.sin(h * 0.55 + n * 2.5) * 0.5 + 0.5;
+    const rc = [0.6 + band * 0.2, 0.28 + band * 0.18, 0.18 + band * 0.12];
+    r += (rc[0] - r) * rock; g += (rc[1] - g) * rock; b += (rc[2] - b) * rock;
+    const dark = Math.max(0, n2 - 0.55) * 0.5; return [r * (1 - dark), g * (1 - dark), b * (1 - dark)];
+  }
+  // lakes: moss and heather greens, sandy shores, dark lake bed
+  const lit = Math.max(0, n2 - 0.5) * 1.4;
+  let r = 0.3 + n * 0.1 + lit * 0.1, g = 0.42 + n * 0.12, b = 0.2 + n * 0.05;
+  const heather = smooth(0.58, 0.7, n2) * 0.6; r += (0.46 - r) * heather; g += (0.34 - g) * heather; b += (0.36 - b) * heather;
+  const rock = smooth(0.55, 0.95, slope + (n - 0.5) * 0.3); r += (0.46 - r) * rock; g += (0.46 - g) * rock; b += (0.44 - b) * rock;
+  const shore = 1 - smooth(WL + 0.2, WL + 1.0, h); r += (0.56 - r) * shore; g += (0.5 - g) * shore; b += (0.38 - b) * shore;
+  if (h < WL - 0.05) { const k = smooth(0, 1.2, WL - h); r += (0.2 - r) * k; g += (0.23 - g) * k; b += (0.2 - b) * k; }
+  return [r, g, b];
+}
 /* ================= ground + gravel road ribbon ================= */
 {
   const SX = GXH * 2 - 4, SZ = GZH * 2 - 4, sx = Math.round(SX / 2), sz = Math.round(SZ / 2);
@@ -385,14 +402,12 @@ const shadeAt = (x, z) => Math.min(1, bil(SH, x, z));
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i), z = pos.getZ(i); pos.setY(i, height(x, z));
     const pd = pathDist(x, z), n = fbm(x * 0.15, z * 0.15), n2 = fbm(x * 0.04 + 7, z * 0.04);
-    if (ALP) {
+    if (CAN || LAK) {
       const slope = Math.hypot(height(x + 1, z) - height(x - 1, z), height(x, z + 1) - height(x, z - 1)) / 2, hh = height(x, z);
-      const rock = smooth(0.55, 0.95, slope + (n - 0.5) * 0.4) * (pd > ROAD + 1.5 ? 1 : 0), snowK = smooth(95, 120, hh + (n2 - 0.5) * 40) * (1 - smooth(0.9, 1.3, slope));
-      let r = 0.3 + n * 0.1 + Math.max(0, n2 - 0.5) * 0.15, gg = 0.4 + n * 0.1, b = 0.17 + n * 0.04;
-      r += (0.43 - r) * rock; gg += (0.42 - gg) * rock; b += (0.41 - b) * rock;
-      r += (0.84 - r) * snowK; gg += (0.87 - gg) * snowK; b += (0.93 - b) * snowK;
-      const p = clamp((ROAD + 1.2 - pd) / 1.2, 0, 1) * 0.8; r += (0.44 - r) * p; gg += (0.43 - gg) * p; b += (0.4 - b) * p;
-      col[i * 3] = r; col[i * 3 + 1] = gg; col[i * 3 + 2] = b;
+      const c = groundCol(x, z, hh, slope, n, n2);
+      const p = clamp((ROAD + 1.1 - pd) / 1.4, 0, 1) * (0.75 + n * 0.3), rc = CAN ? [0.8, 0.6, 0.42] : [0.5, 0.43, 0.33];
+      for (let q = 0; q < 3; q++) c[q] += (rc[q] - c[q]) * p;
+      const sh = 1 - shadeAt(x, z) * 0.45; col[i * 3] = c[0] * sh; col[i * 3 + 1] = c[1] * sh; col[i * 3 + 2] = c[2] * sh;
     } else if (SNOW) {
       const slope = Math.hypot(height(x + 1, z) - height(x - 1, z), height(x, z + 1) - height(x, z - 1)) / 2;
       const rock = smooth(0.62, 0.95, slope + (n - 0.5) * 0.35) * (pd > ROAD + 2 ? 1 : 0);
@@ -416,7 +431,7 @@ const shadeAt = (x, z) => Math.min(1, bil(SH, x, z));
   for (let i = 0; i < NP; i++) { const px = PATH[i][0], pz = PATH[i][1], tn = TAN[i];
     for (let a = 0; a < NA; a++) { const s = AC[a] * ROAD, x = px - tn[1] * s, z = pz + tn[0] * s, q = i * NA + a;
       P[q * 3] = x; P[q * 3 + 1] = height(x, z) + 0.035; P[q * 3 + 2] = z; UVA[q * 2] = (AC[a] + 1.08) / 2.16; UVA[q * 2 + 1] = i / 7;
-      const edge = Math.abs(AC[a]) > 1 ? (SNOW ? 0.92 : ALP ? 0.9 : 0.72) : (SNOW ? 0.8 : 1), sh = (1 - shadeAt(x, z) * 0.45) * edge;
+      const edge = Math.abs(AC[a]) > 1 ? (SNOW ? 0.92 : CAN ? 0.86 : 0.72) : (SNOW ? 0.8 : 1), sh = (1 - shadeAt(x, z) * 0.45) * edge;
       CO[q * 3] = sh; CO[q * 3 + 1] = sh * (Math.abs(AC[a]) > 1 ? 1.06 : 1); CO[q * 3 + 2] = sh; } }
   for (let i = 0; i < NP; i++) { const n = (i + 1) % NP; for (let a = 0; a < NA - 1; a++) { const A0 = i * NA + a, B0 = n * NA + a; IDX.push(A0, B0, A0 + 1, A0 + 1, B0, B0 + 1); } }
   const rg = new THREE.BufferGeometry(); rg.setAttribute("position", new THREE.BufferAttribute(P, 3)); rg.setAttribute("uv", new THREE.BufferAttribute(UVA, 2));
@@ -427,18 +442,19 @@ const shadeAt = (x, z) => Math.min(1, bil(SH, x, z));
 /* ================= beyond the stage: land and forest out to the horizon =================
    One coarse mesh whose spacing grows with distance (6 m at the stage edge, ~80 m at the horizon), tucked just under
    the edge of the detailed stage ground, then low-poly trees in culled chunks. */
-const FAR = MAPN === "forest" ? 950 : SNOW ? 1400 : 1750;
+const FAR = MAPN === "forest" ? 950 : SNOW ? 1400 : CAN ? 1700 : 1500;
 const EX = GXH - 2, EZ = GZH - 2;   // detailed ground covers |x| <= EX, |z| <= EZ
 function relief(x, z) {
-  if (ALP) return ridged(x * 0.0021 + 5, z * 0.0021 + 9) * 560 - 110;
+  if (CAN) return (fbm(x * 0.0025 + 9, z * 0.0025 - 3, 3) - 0.5) * 80 + canyonMesa(x * 0.6, z * 0.6) * 2.2;
+  if (LAK) return (fbm(x * 0.003 + 4, z * 0.003 - 6, 3) - 0.5) * 110 + 6;
   if (SNOW) return ridged(x * 0.0024 - 3, z * 0.0024 + 6) * 460 - 80;
   return (fbm(x * 0.0035 + 2, z * 0.0035 - 5, 3) - 0.5) * 120 + 18;
 }
-const detail = ALP ? (x, z) => (fbm(x * 0.02, z * 0.02) - 0.5) * 6 + (fbm(x * 0.07, z * 0.07) - 0.5) * 1.2 : terrain;
+const detail = CAN ? (x, z) => terrain(x, z) + canyonMesa(x, z) : terrain;
 function farH(x, z) {
   const cx = clamp(x, -EX, EX), cz = clamp(z, -EZ, EZ), dOut = Math.hypot(x - cx, z - cz);
   if (dOut <= 0) return height(x, z);
-  return height(cx, cz) + detail(x, z) - detail(cx, cz) + relief(x, z) * smooth(0, ALP ? 520 : SNOW ? 480 : 380, dOut);
+  return height(cx, cz) + detail(x, z) - detail(cx, cz) + relief(x, z) * smooth(0, CAN ? 500 : LAK ? 450 : SNOW ? 480 : 380, dOut);
 }
 const roadDist = (x, z) => { const p = PATH[pathIdx(x, z)]; return Math.hypot(x - p[0], z - p[1]); };
 const ROADAVG = (() => { let a = 0; for (let i = 0; i < NP; i += 10) a += ROADH[i]; return a / Math.ceil(NP / 10); })();
@@ -450,11 +466,7 @@ const ROADAVG = (() => { let a = 0; for (let i = 0; i < NP; i += 10) a += ROADH[
   const pos = new Float32Array(NXa * NZa * 3), col = new Float32Array(NXa * NZa * 3), idx = [];
   const fcol = (x, z, h, slope) => {
     const n = fbm(x * 0.05, z * 0.05, 3), n2 = fbm(x * 0.011 + 7, z * 0.011, 3);
-    if (ALP) { let r = 0.3 + n * 0.1, g = 0.4 + n * 0.1, b = 0.17 + n * 0.04;
-      const rock = Math.max(smooth(0.5, 0.9, slope + (n - 0.5) * 0.4), smooth(150, 230, h + (n2 - 0.5) * 80));
-      const snowK = smooth(230, 290, h + (n2 - 0.5) * 90) * (1 - smooth(1.0, 1.5, slope));
-      r += (0.45 - r) * rock; g += (0.44 - g) * rock; b += (0.43 - b) * rock;
-      r += (0.86 - r) * snowK; g += (0.89 - g) * snowK; b += (0.95 - b) * snowK; return [r, g, b]; }
+    if (CAN || LAK) return groundCol(x, z, h, slope, n, n2);
     if (SNOW) { const rock = smooth(0.75, 1.15, slope + (n - 0.5) * 0.4); let r = 0.8 + n * 0.06, g = 0.84 + n * 0.05, b = 0.92 + n * 0.04;
       r += (0.27 - r) * rock; g += (0.28 - g) * rock; b += (0.33 - b) * rock; return [r * 0.96, g * 0.98, b]; }
     const lit = Math.max(0, n2 - 0.5) * 1.6; return [0.25 + n * 0.12 + lit * 0.1, 0.36 + n * 0.14, 0.17 + n * 0.06];
@@ -474,25 +486,41 @@ const ROADAVG = (() => { let a = 0; for (let i = 0; i < NP; i += 10) a += ROADH[
   g.setIndex(idx); g.computeVertexNormals();
   scene.add(new THREE.Mesh(g, new THREE.MeshLambertMaterial({ vertexColors: true })));
 }
+/* lakes: 90s console water - a tiled, unlit, see-through pixel texture with a second sparkle layer, both sliding slowly */
+const waterL = [];
+if (LAK) {
+  const k8 = Math.PI / 8;
+  const baseTex = canvasTex(32, (g, S) => { g.fillStyle = "rgb(40,104,178)"; g.fillRect(0, 0, S, S);
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) { const v = Math.sin((x + Math.sin(y * k8) * 3) * k8) + Math.sin((y + Math.sin(x * k8) * 3) * k8);
+      if (v > 1.0) { g.fillStyle = v > 1.6 ? "rgb(120,186,232)" : "rgb(78,146,214)"; g.fillRect(x, y, 1, 1); } else if (v < -1.2) { g.fillStyle = "rgb(30,82,150)"; g.fillRect(x, y, 1, 1); } } }, true);
+  const sparkTex = canvasTex(32, (g, S) => { g.clearRect(0, 0, S, S);
+    for (let i = 0; i < 14; i++) { const x = (i * 11 + (i * i * 5) % 7) % S, y = (i * 7 + (i * 13) % 5) % S, w = 2 + (i % 3) * 2; g.fillStyle = i % 4 ? "rgba(214,236,255,0.9)" : "rgba(255,255,255,1)"; g.fillRect(x, y, w, 1); } }, true);
+  baseTex.repeat.set(700, 700); sparkTex.repeat.set(560, 560);
+  for (const [tex, op, dy, ro] of [[baseTex, 0.84, 0, -2], [sparkTex, 0.55, 0.04, -1]]) {
+    const wg = new THREE.PlaneGeometry(4200, 4200, 1, 1); wg.rotateX(-Math.PI / 2);
+    const m = new THREE.Mesh(wg, new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: op, depthWrite: false }));
+    m.position.y = WL + dy; m.renderOrder = ro; scene.add(m); waterL.push(m);
+  }
+}
 const sky = new THREE.Mesh(new THREE.SphereGeometry(1600, 24, 12), new THREE.ShaderMaterial({
   side: THREE.BackSide, depthWrite: false, blending: THREE.NoBlending,
-  uniforms: { uSun: { value: SUN }, uFog: { value: FOG }, uTop: { value: ALP ? new THREE.Color(0.28, 0.5, 0.88) : SNOW ? new THREE.Color(0.36, 0.55, 0.84) : FOG.clone().add(new THREE.Color(0.12, 0.12, 0.1)) },
-    uGlow: { value: ALP ? new THREE.Color(0.3, 0.27, 0.2) : SNOW ? new THREE.Color(0.5, 0.32, 0.18) : new THREE.Color(0.32, 0.29, 0.2) }, uHalo: { value: SNOW ? 0.22 : ALP ? 0.12 : 0.0 } },
+  uniforms: { uSun: { value: SUN }, uFog: { value: FOG }, uTop: { value: CAN ? new THREE.Color(0.3, 0.45, 0.76) : LAK ? new THREE.Color(0.38, 0.45, 0.72) : SNOW ? new THREE.Color(0.36, 0.55, 0.84) : FOG.clone().add(new THREE.Color(0.12, 0.12, 0.1)) },
+    uGlow: { value: CAN ? new THREE.Color(0.75, 0.42, 0.16) : LAK ? new THREE.Color(0.7, 0.4, 0.3) : SNOW ? new THREE.Color(0.5, 0.32, 0.18) : new THREE.Color(0.32, 0.29, 0.2) }, uHalo: { value: SNOW ? 0.22 : CAN ? 0.35 : LAK ? 0.4 : 0.0 } },
   vertexShader: "varying vec3 vD; void main(){ vD = normalize(position); gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0); }",
   fragmentShader: "uniform vec3 uSun; uniform vec3 uFog; uniform vec3 uTop; uniform vec3 uGlow; uniform float uHalo; varying vec3 vD; void main(){ float s = max(dot(normalize(vD), uSun), 0.0); vec3 c = mix(uFog, uTop, smoothstep(0.0,0.6,vD.y)) + uGlow*pow(s,6.0) + uGlow*uHalo*pow(s,2.0)*(1.0-smoothstep(0.0,0.5,vD.y)); gl_FragColor = vec4(c,0.0); }"
 })); sky.renderOrder = -1; scene.add(sky); sky.material.userData.kind = "sky";
 /* snow map: two rings of distant peaks that travel with the camera (alpenglow on the sunward faces) */
 const peaks = new THREE.Group(); scene.add(peaks);
-if (SNOW || ALP) {
+if (SNOW || CAN) {
   let base = 0; for (let i = 0; i < NP; i += 10) base += ROADH[i]; base = base / Math.ceil(NP / 10) - 25;
   for (const [R, hMin, hAmp, haze, sd] of [[1780, 260, 600, 0.6, 5]]) {
     const N = 240, pos = [], col = [], idx = [];
     const fog = [FOG.r, FOG.g, FOG.b];
     for (let i = 0; i <= N; i++) {
       const a = i / N * Math.PI * 2, ca = Math.cos(a), sa = Math.sin(a);
-      const ht = hMin + hAmp * Math.pow(ridged(ca * 1.9 + sd, sa * 1.9 + sd * 2), 1.7) + 6 * vnoise(i * 0.4, sd);
+      const bt = vnoise(i * 0.09, sd), ht = CAN ? (bt > 0.5 ? 150 + 10 * vnoise(i * 0.5, 2) : 30 + 12 * bt) + 2 * vnoise(i * 0.9, 4) : hMin + hAmp * Math.pow(ridged(ca * 1.9 + sd, sa * 1.9 + sd * 2), 1.7) + 6 * vnoise(i * 0.4, sd);
       const glow = Math.max(0, ca * SUN.x + sa * SUN.z) * 0.6, rockN = vnoise(i * 0.7, sd + 3);
-      const top = ALP ? [0.95, 0.96, 0.98] : [0.96 + glow * 0.04, 0.93 - glow * 0.05, 0.95 - glow * 0.12], mid = ALP ? (rockN > 0.45 ? [0.46, 0.45, 0.45] : [0.38, 0.44, 0.3]) : rockN > 0.55 ? [0.52, 0.56, 0.66] : [0.86, 0.89, 0.95];
+      const top = CAN ? [0.78 + glow * 0.2, 0.46 + glow * 0.1, 0.32] : [0.96 + glow * 0.04, 0.93 - glow * 0.05, 0.95 - glow * 0.12], mid = CAN ? (rockN > 0.5 ? [0.62, 0.32, 0.22] : [0.7, 0.42, 0.28]) : rockN > 0.55 ? [0.52, 0.56, 0.66] : [0.86, 0.89, 0.95];
       const mix = (c, k) => c.map((v, j) => v + (fog[j] - v) * k);
       for (const [y, c] of [[-400, mix(fog, 0)], [ht * 0.45, mix(mid, haze + 0.15)], [ht * 0.8, mix(top, haze * 0.6)], [ht, mix(top, haze * 0.45)]]) { pos.push(ca * R, y, sa * R); col.push(...c); }
     }
@@ -508,24 +536,25 @@ const card = new THREE.PlaneGeometry(1, 1);
 {
   const trunkM = [], trunkC = [], leafM = [], leafC = [], needleM = [], needleC = [], snowM = [], snowC = [];
   for (const t of trees) {
-    const pine = SNOW || ALP ? true : rnd() < 0.22, autumn = !pine && rnd() < 0.07;
-    const H = pine ? rr(15, 22) : rr(11, 17), r = pine ? rr(0.18, 0.28) : rr(0.25, 0.5);
+    const pine = SNOW ? true : CAN ? false : LAK ? rnd() < 0.55 : rnd() < 0.22, autumn = !pine && !CAN && rnd() < (LAK ? 0.12 : 0.07), birch = LAK && !pine;
+    const H = pine ? rr(15, 22) : CAN ? rr(4, 7) : birch ? rr(12, 17) : rr(11, 17), r = pine ? rr(0.18, 0.28) : CAN ? rr(0.14, 0.24) : birch ? rr(0.14, 0.22) : rr(0.25, 0.5);
     obstacles.push({ x: t.x, z: t.z, r: r + 0.06 });
-    const bark = tmpC.setRGB(1, 1, 1).multiplyScalar(rr(0.7, 1.05)); if (pine) bark.setRGB(1.05, 0.78, 0.7);
+    const bark = tmpC.setRGB(1, 1, 1).multiplyScalar(rr(0.7, 1.05)); if (pine) bark.setRGB(1.05, 0.78, 0.7); if (birch) bark.setRGB(2.0, 2.25, 2.5).multiplyScalar(rr(0.85, 1.0)); if (CAN) bark.setRGB(1.1, 0.95, 0.85);
     tmpO.position.set(t.x, t.y - 0.3, t.z); tmpO.rotation.set(rr(-0.05, 0.05), rnd() * 6, rr(-0.05, 0.05));
     tmpO.scale.set(r, pine ? H : H * 0.72, r); pushT(trunkM, trunkC, tmpO, bark);
     if (!pine) {
       const nb = 3 + (rnd() * 3 | 0);
       for (let b = 0; b < nb; b++) { tmpO.position.set(t.x, t.y + H * rr(0.42, 0.66), t.z); tmpO.rotation.set(0, rnd() * 6.28, 0); tmpO.rotateZ(rr(0.6, 1.1));
         tmpO.scale.set(r * 0.42, rr(2.5, 4.5), r * 0.42); pushT(trunkM, trunkC, tmpO, bark); }
-      const cy = t.y + H * 0.78, rx = rr(4.5, 7), ry = rr(3, 4.6), rz = rr(4.5, 7);
-      const base = autumn ? new THREE.Color(0.86, 0.48, 0.18) : new THREE.Color().setHSL(rr(0.24, 0.30), rr(0.35, 0.5), rr(0.28, 0.36));
-      const n = 32 + (rnd() * 12 | 0);
+      const cs = CAN ? 0.42 : birch ? 0.62 : 1, cy = t.y + H * 0.78, rx = rr(4.5, 7) * cs, ry = rr(3, 4.6) * cs, rz = rr(4.5, 7) * cs;
+      const base = autumn ? (LAK ? new THREE.Color(0.95, 0.72, 0.2) : new THREE.Color(0.86, 0.48, 0.18)) : CAN ? new THREE.Color().setHSL(rr(0.17, 0.22), rr(0.18, 0.28), rr(0.28, 0.34))
+        : birch ? new THREE.Color().setHSL(rr(0.2, 0.25), rr(0.45, 0.55), rr(0.36, 0.42)) : new THREE.Color().setHSL(rr(0.24, 0.30), rr(0.35, 0.5), rr(0.28, 0.36));
+      const n = CAN ? 14 + (rnd() * 6 | 0) : birch ? 22 + (rnd() * 8 | 0) : 32 + (rnd() * 12 | 0);
       for (let i = 0; i < n; i++) {
         const u = rnd() * Math.PI * 2, v = Math.acos(rr(-0.7, 1)), s = Math.pow(rnd(), 0.35);
         const dx = Math.sin(v) * Math.cos(u) * s, dy = Math.cos(v) * s, dz = Math.sin(v) * Math.sin(u) * s;
         tmpO.position.set(t.x + dx * rx, cy + dy * ry, t.z + dz * rz); tmpO.rotation.set(rnd() * 3, rnd() * 3, rnd() * 3);
-        const sc = rr(2.8, 4.2); tmpO.scale.set(sc, sc, sc); const lit = Math.max(0, dx * SUN.x + dy * SUN.y + dz * SUN.z);
+        const sc = rr(2.8, 4.2) * (CAN ? 0.55 : birch ? 0.75 : 1); tmpO.scale.set(sc, sc, sc); const lit = Math.max(0, dx * SUN.x + dy * SUN.y + dz * SUN.z);
         pushT(leafM, leafC, tmpO, tmpC.copy(base).multiplyScalar((0.42 + 0.32 * (dy * 0.5 + 0.5) + 0.42 * lit * s + rr(-0.06, 0.06)) * 1.55));
       }
     } else {
@@ -562,7 +591,7 @@ const card = new THREE.PlaneGeometry(1, 1);
   const mat = new THREE.MeshBasicMaterial({ vertexColors: true });
   const chunks = new Map(), add = (geo, x, z, m4, c) => { const key = Math.floor(x / 400) * 64 + Math.floor(z / 400) + (geo === pineGeo ? 0 : geo === leafGeo ? 10000 : 20000);
     if (!chunks.has(key)) chunks.set(key, { geo, M: [], C: [] }); const ch = chunks.get(key); ch.M.push(m4); ch.C.push(c); };
-  const TREE_R = MAPN === "forest" ? 760 : SNOW ? 1050 : 1150, CELL = 9, NEAR_BAND = SNOW ? 46 : 52;
+  const TREE_R = MAPN === "forest" ? 760 : SNOW ? 1050 : CAN ? 900 : 1100, CELL = 9, NEAR_BAND = SNOW ? 46 : 52;
   const hr = (i, j, s) => hash2(i * 7 + s, j * 13 - s * 3);
   let nFar = 0;
   for (let gj = Math.floor(-TREE_R / CELL); gj <= TREE_R / CELL; gj++) for (let gi = Math.floor(-TREE_R / CELL); gi <= TREE_R / CELL; gi++) {
@@ -573,16 +602,19 @@ const card = new THREE.PlaneGeometry(1, 1);
     const rd = roadDist(x, z); if (rd < NEAR_BAND + hr(gi, gj, 4) * 8) continue;               // ...and never inside the detailed band
     const h = farH(x, z), slope = Math.hypot(farH(x + 3, z) - farH(x - 3, z), farH(x, z + 3) - farH(x, z - 3)) / 6;
     let dens;
-    if (ALP) dens = (h < 48 + (fbm(x * 0.01, z * 0.01) - 0.5) * 30 && slope < 0.7) ? smooth(0.45, 0.68, fbm(x * 0.02 + 50, z * 0.02)) * 0.9 : 0;
+    if (CAN) dens = (h < 22 && slope < 0.3) ? 0.035 : 0;
+    else if (LAK) dens = (h > WL + 1 && slope < 1.0) ? clamp(1.0 - fbm(x * 0.028 + 50, z * 0.028) * 0.85, 0, 1) : 0;
     else if (SNOW) dens = (h < ROADAVG + 70 + (fbm(x * 0.01, z * 0.01) - 0.5) * 50 && slope < 0.75) ? smooth(0.4, 0.66, fbm(x * 0.022 + 50, z * 0.022)) * 0.95 : 0;
     else dens = clamp(0.95 - fbm(x * 0.03 + 50, z * 0.03) * 0.9 + smooth(80, 400, rd) * 0.25, 0, 1) * (slope < 1.1 ? 1 : 0.3);
     if (hr(gi, gj, 5) > dens) continue;
-    const pine = SNOW || ALP || hr(gi, gj, 6) < 0.22, sc = Math.pow(thin, 0.75);
-    const H = (pine ? 15 + hr(gi, gj, 7) * 7 : 11 + hr(gi, gj, 7) * 6) * sc, W = H * (pine ? 0.46 : 0.62) * (0.85 + hr(gi, gj, 8) * 0.3);
+    const pine = SNOW || (LAK ? hr(gi, gj, 6) < 0.6 : !CAN && hr(gi, gj, 6) < 0.22), sc = Math.pow(thin, 0.75);
+    const H = (pine ? 15 + hr(gi, gj, 7) * 7 : CAN ? 4 + hr(gi, gj, 7) * 3 : 11 + hr(gi, gj, 7) * 6) * sc, W = H * (pine ? 0.46 : 0.62) * (0.85 + hr(gi, gj, 8) * 0.3);
     tmpO.position.set(x, h - 0.4, z); tmpO.rotation.set(0, hr(gi, gj, 9) * 6.28, 0); tmpO.scale.set(W, H, W); tmpO.updateMatrix();
     const v = 0.82 + hr(gi, gj, 10) * 0.3;
     const c = SNOW ? new THREE.Color(v, v, v) : pine ? new THREE.Color().setHSL(0.33 + hr(gi, gj, 11) * 0.05, 0.3, 0.2).multiplyScalar(1.45 * v)
-      : hr(gi, gj, 12) < 0.07 ? new THREE.Color(0.86, 0.48, 0.18).multiplyScalar(0.95 * v) : new THREE.Color().setHSL(0.24 + hr(gi, gj, 11) * 0.06, 0.42, 0.31).multiplyScalar(1.25 * v);
+      : CAN ? new THREE.Color().setHSL(0.19, 0.22, 0.3).multiplyScalar(1.2 * v)
+      : hr(gi, gj, 12) < (LAK ? 0.1 : 0.07) ? new THREE.Color(LAK ? 0.95 : 0.86, LAK ? 0.72 : 0.48, LAK ? 0.2 : 0.18).multiplyScalar(0.95 * v)
+      : new THREE.Color().setHSL((LAK ? 0.21 : 0.24) + hr(gi, gj, 11) * 0.06, LAK ? 0.48 : 0.42, LAK ? 0.36 : 0.31).multiplyScalar(1.25 * v);
     add(SNOW ? snowPineGeo : pine ? pineGeo : leafGeo, x, z, tmpO.matrix.clone(), c); nFar++;
     if (inGrid) obstacles.push({ x, z, r: 0.35 });
   }
@@ -598,9 +630,9 @@ function clumpGeo(n) {
   const out = new THREE.BufferGeometry(); out.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); out.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2)); out.setIndex(idx); return out;
 }
 const clump2 = clumpGeo(2), clump3 = clumpGeo(3);
-if (MAPN === "forest") { const M = [], C = [];
+if (MAPN === "forest" || LAK) { const M = [], C = [];
   for (let i = 0; i < 4000; i++) { const t = trees[(rnd() * trees.length) | 0], a = rnd() * 6.28, d = rr(1, 7), x = t.x + Math.cos(a) * d, z = t.z + Math.sin(a) * d;
-    if (pathDist(x, z) < ROAD + 1.3) continue;
+    if (pathDist(x, z) < ROAD + 1.3 || (LAK && height(x, z) < WL + 0.3)) continue;
     tmpO.position.set(x, height(x, z) - 0.1, z); tmpO.rotation.set(0, rnd() * 6, 0); const s = rr(1.0, 2.2); tmpO.scale.set(s * 1.3, s, s * 1.3);
     pushT(M, C, tmpO, tmpC.setHSL(rr(0.25, 0.32), rr(0.35, 0.5), rr(0.26, 0.38)).multiplyScalar(1.5)); }
   instanced(clump3, sway(new THREE.MeshBasicMaterial({ map: fernTex, alphaTest: 0.5, side: THREE.DoubleSide }), 0.12, true), M, C); }
@@ -618,51 +650,71 @@ if (SNOW) {   // snowbanks ploughed along both edges
     pushT(M, C, tmpO, tmpC.setRGB(1, 1, 1).multiplyScalar(rr(0.92, 1.05))); }
   instanced(geo, new THREE.MeshLambertMaterial({ vertexColors: true, map: groundTex }), M, C);
 }
-if (ALP) {   // alpine flowers scattered through the meadows
-  const M = [], C = [], pal = [[0.72, 0.42, 0.95], [1.1, 1.1, 1.05], [1.12, 1.0, 0.3], [0.5, 0.6, 1.1]];
-  for (let i = 0; i < 5000; i++) { const k = (rnd() * NP) | 0, p = PATH[k], tn = TAN[k], off = rr(ROAD + 1, 30) * (rnd() < 0.5 ? -1 : 1), x = p[0] - tn[1] * off + rr(-2, 2), z = p[1] + tn[0] * off + rr(-2, 2);
-    if (pathDist(x, z) < ROAD + 0.8 || height(x, z) > 95 || fbm(x * 0.08, z * 0.08) < 0.45) continue;
-    tmpO.position.set(x, height(x, z) - 0.05, z); tmpO.rotation.set(0, rnd() * 6, 0); const sc = rr(0.35, 0.6); tmpO.scale.set(sc * 1.3, sc, sc * 1.3);
-    const c = pal[(rnd() * pal.length) | 0]; pushT(M, C, tmpO, tmpC.setRGB(c[0], c[1], c[2])); }
-  instanced(clump2, sway(new THREE.MeshBasicMaterial({ map: flowerTex, alphaTest: 0.5, side: THREE.DoubleSide }), 0.08, true), M, C);
-  // dry-stone walls on the outside of drops and tornanti
-  const wg = new THREE.BoxGeometry(1.9, 0.6, 0.45); wg.translate(0, 0.3, 0); const WM = [], WC = [];
-  for (let i = 0; i < NP; i += 2) for (const sd of [-1, 1]) {
-    const pp = PATH[i], tn = TAN[i], nx = -tn[1] * sd, nz = tn[0] * sd, x = pp[0] + nx * (ROAD + 0.8), z = pp[1] + nz * (ROAD + 0.8);
-    if (pathDist(x, z) < ROAD + 0.5) continue;
-    const drop = ROADH[i] - height(pp[0] + nx * (ROAD + 5), pp[1] + nz * (ROAD + 5));
-    if (drop < 1.6 && !(VCURVE[i] < 14 && drop > 0.6)) continue;
-    tmpO.position.set(x, height(x, z) - 0.08, z); tmpO.rotation.set(0, Math.atan2(tn[0], tn[1]) + Math.PI / 2, 0); tmpO.scale.set(1, rr(0.85, 1.1), 1);
-    pushT(WM, WC, tmpO, tmpC.setRGB(0.95, 0.92, 0.86).multiplyScalar(rr(0.85, 1.05))); obstacles.push({ x, z, r: 0.45 }); }
-  if (WM.length) instanced(wg, new THREE.MeshLambertMaterial({ color: 0x8f8a80, map: groundTex }), WM, WC);
+if (CAN) {   // dry desert scrub and tufts along the sand
+  const M = [], C = [];
+  for (let i = 0; i < 3500; i++) { const k = (rnd() * NP) | 0, p = PATH[k], tn = TAN[k], off = rr(ROAD + 1, 40) * (rnd() < 0.5 ? -1 : 1), x = p[0] - tn[1] * off + rr(-2, 2), z = p[1] + tn[0] * off + rr(-2, 2);
+    if (pathDist(x, z) < ROAD + 0.8 || fbm(x * 0.06, z * 0.06) < 0.42) continue;
+    tmpO.position.set(x, height(x, z) - 0.05, z); tmpO.rotation.set(0, rnd() * 6, 0); const sc = rr(0.5, 1.2); tmpO.scale.set(sc * 1.5, sc, sc * 1.5);
+    pushT(M, C, tmpO, tmpC.setRGB(rr(0.85, 1.0), rr(0.68, 0.8), rr(0.42, 0.5))); }
+  instanced(clump3, sway(new THREE.MeshBasicMaterial({ map: fernTex, alphaTest: 0.5, side: THREE.DoubleSide }), 0.08, true), M, C);
 }
-if (MAPN === "forest") { const M = [], C = [];
+if (MAPN === "forest" || LAK) { const M = [], C = [];
   for (let i = 0; i < 6000; i++) { const k = (rnd() * NP) | 0, p = PATH[k], tn = TAN[k], side = rnd() < 0.5 ? -1 : 1, off = rr(ROAD + 0.5, ROAD + 2.8) * side;
     const x = p[0] - tn[1] * off + rr(-0.5, 0.5), z = p[1] + tn[0] * off + rr(-0.5, 0.5);
-    if (fbm(x * 0.09, z * 0.09) < 0.48 || pathDist(x, z) < ROAD + 0.4) continue;
+    if (fbm(x * 0.09, z * 0.09) < 0.48 || pathDist(x, z) < ROAD + 0.4 || (LAK && height(x, z) < WL + 0.3)) continue;
     tmpO.position.set(x, height(x, z) - 0.05, z); tmpO.rotation.set(0, rnd() * 6, 0); const s = rr(0.45, 0.85); tmpO.scale.set(s * 1.3, s, s * 1.3);
-    pushT(M, C, tmpO, rnd() < 0.06 ? tmpC.setRGB(0.85, 0.15, 0.12) : tmpC.setRGB(1.12, 1.02, 0.28)); }
+    pushT(M, C, tmpO, LAK ? (rnd() < 0.7 ? tmpC.setRGB(1.05, 0.45, 0.85) : tmpC.setRGB(1.1, 1.1, 1.05)) : rnd() < 0.06 ? tmpC.setRGB(0.85, 0.15, 0.12) : tmpC.setRGB(1.12, 1.02, 0.28)); }
   instanced(clump2, sway(new THREE.MeshBasicMaterial({ map: flowerTex, alphaTest: 0.5, side: THREE.DoubleSide }), 0.08, true), M, C); }
 { const geo = new THREE.IcosahedronGeometry(1, 2), p = geo.attributes.position, v = new THREE.Vector3();
   for (let i = 0; i < p.count; i++) { v.fromBufferAttribute(p, i); v.multiplyScalar(0.75 + fbm(v.x * 1.7 + 3, v.y * 1.7 + v.z) * 0.55); p.setXYZ(i, v.x, v.y * 0.7, v.z); }
   geo.computeVertexNormals(); const nor = geo.attributes.normal, col = new Float32Array(p.count * 3);
   for (let i = 0; i < p.count; i++) { const g = (SNOW ? 0.27 : 0.42) + rnd() * 0.08, m = Math.max(0, (nor.getY(i) - 0.35) * 1.6);
+    if (CAN) { const k = Math.min(1, m * 1.2), r0 = 0.6 + rnd() * 0.08; col[i * 3] = r0 + (0.8 - r0) * k; col[i * 3 + 1] = r0 * 0.52 + (0.56 - r0 * 0.52) * k; col[i * 3 + 2] = r0 * 0.36 + (0.38 - r0 * 0.36) * k; continue; }
     if (SNOW) { const k = Math.min(1, m * 1.3); col[i * 3] = g + (0.84 - g) * k; col[i * 3 + 1] = g + (0.88 - g) * k; col[i * 3 + 2] = g * 1.08 + (0.96 - g * 1.08) * k; continue; }
     col[i * 3] = g + (0.24 - g) * m; col[i * 3 + 1] = g + (0.36 - g) * m; col[i * 3 + 2] = g * 0.98 + (0.16 - g) * m; }
   geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
   const M = [], C = [];
-  for (let i = 0; i < (ALP ? 520 : 260); i++) { const k = (rnd() * NP) | 0, p = PATH[k], tn = TAN[k], off = rr(ROAD + 4, ALP ? 60 : 40) * (rnd() < 0.5 ? -1 : 1), x = p[0] - tn[1] * off, z = p[1] + tn[0] * off;
+  for (let i = 0; i < (CAN ? 640 : 260); i++) { const k = (rnd() * NP) | 0, p = PATH[k], tn = TAN[k], off = rr(ROAD + 4, CAN ? 60 : 40) * (rnd() < 0.5 ? -1 : 1), x = p[0] - tn[1] * off, z = p[1] + tn[0] * off;
     if (pathDist(x, z) < ROAD + 3.5) continue; const s = rnd() < 0.15 ? rr(2.5, 4) : rr(0.8, 2);
     tmpO.position.set(x, height(x, z) - s * 0.15, z); tmpO.rotation.set(0, rnd() * 6, 0); tmpO.scale.set(s * rr(1, 1.5), s, s * rr(1, 1.4));
     pushT(M, C, tmpO, tmpC.setRGB(1, 1, 1)); obstacles.push({ x, z, r: s * 0.95 }); }
   instanced(geo, new THREE.MeshLambertMaterial({ vertexColors: true, map: groundTex }), M, C); }
-if (!ALP) { const geo = new THREE.CylinderGeometry(1, 1, 1, 8, 1); geo.rotateZ(Math.PI / 2); const M = [], C = [];
+if (!CAN) { const geo = new THREE.CylinderGeometry(1, 1, 1, 8, 1); geo.rotateZ(Math.PI / 2); const M = [], C = [];
   for (let i = 0; i < 40; i++) { const k = (rnd() * NP) | 0, p = PATH[k], tn = TAN[k], off = rr(ROAD + 6, 35) * (rnd() < 0.5 ? -1 : 1), x = p[0] - tn[1] * off, z = p[1] + tn[0] * off;
     if (pathDist(x, z) < ROAD + 5) continue; const r = rr(0.3, 0.5), len = rr(4, 8), a = rnd() * 6;
     tmpO.position.set(x, height(x, z) + r * 0.6, z); tmpO.rotation.set(0, a, rr(-0.06, 0.06)); tmpO.scale.set(len, r, r); pushT(M, C, tmpO, tmpC.setRGB(0.8, 0.82, 0.7));
     for (let q = -1; q <= 1; q++) obstacles.push({ x: x + Math.cos(a) * q * len * 0.35, z: z - Math.sin(a) * q * len * 0.35, r: r + 0.15 }); }
   instanced(geo, new THREE.MeshLambertMaterial({ map: barkTex }), M, C); }
 
+/* ================= launch ramp ================= */
+{
+  const plank = canvasTex(32, (g, S) => { g.fillStyle = "rgb(150,108,66)"; g.fillRect(0, 0, S, S);
+    for (let y = 0; y < S; y += 4) { g.fillStyle = "rgba(60,38,20,0.75)"; g.fillRect(0, y, S, 1); g.fillStyle = `rgba(${190 + (y * 7) % 40},${140 + (y * 5) % 30},90,0.5)`; g.fillRect(0, y + 1, S, 1); }
+    for (let i = 0; i < 40; i++) { g.fillStyle = "rgba(70,45,25,0.5)"; g.fillRect(rr(0, S) | 0, rr(0, S) | 0, 1, 1); }
+    g.fillStyle = "rgb(40,40,40)"; for (let y = 1; y < S; y += 8) { g.fillRect(3, y + 1, 1, 1); g.fillRect(S - 4, y + 1, 1, 1); } }, true);
+  const hazard = canvasTex(32, (g, S) => { for (let x = -S; x < S * 2; x += 8) { g.fillStyle = "#f2c230"; g.beginPath(); g.moveTo(x, 0); g.lineTo(x + 4, 0); g.lineTo(x + 4 - S, S); g.lineTo(x - S, S); g.fill(); }
+    g.globalCompositeOperation = "destination-over"; g.fillStyle = "#161616"; g.fillRect(0, 0, S, S); }, true);
+  const half = ROAD - 0.15, P = [], UV = [], PH = [], UVH = [], IDX = [], IDH = [];
+  const at = (s, side, y) => { const k = (RAMP.i - RAMP.L + s + NP) % NP, p = PATH[k], tn = TAN[k], x = p[0] - tn[1] * half * side, z = p[1] + tn[0] * half * side;
+    return [x, y === undefined ? height(x, z) + 0.12 : y, z]; };
+  const baseY = (s, side) => { const q = at(s, side); return q[1] - RAMP.H * s / RAMP.L - 0.12; };
+  for (let s = 0; s <= RAMP.L; s++) { P.push(...at(s, -1), ...at(s, 1)); UV.push(0, s / 2, 1, s / 2); }
+  for (let s = 0; s < RAMP.L; s++) { const a = s * 2; IDX.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+  // sides and the back wall
+  const quad = (a, b, c, d, uvs) => { const o = PH.length / 3; PH.push(...a, ...b, ...c, ...d); UVH.push(...uvs); IDH.push(o, o + 1, o + 2, o, o + 2, o + 3); };
+  for (const side of [-1, 1]) for (let s = 0; s < RAMP.L; s++) {
+    const t0 = at(s, side), t1 = at(s + 1, side), b0 = [t0[0], baseY(s, side), t0[2]], b1 = [t1[0], baseY(s + 1, side), t1[2]];
+    quad(b0, b1, t1, t0, [s / 4, 0, (s + 1) / 4, 0, (s + 1) / 4, (t1[1] - b1[1]) / 1.4, s / 4, (t0[1] - b0[1]) / 1.4]); }
+  { const tl = at(RAMP.L, -1), tr = at(RAMP.L, 1), bl = [tl[0], baseY(RAMP.L, -1), tl[2]], br = [tr[0], baseY(RAMP.L, 1), tr[2]]; quad(bl, br, tr, tl, [0, 0, 3, 0, 3, 0.7, 0, 0.7]); }
+  const mk = (pos, uv, idx, tex, col) => { const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2));
+    g.setIndex(idx); g.computeVertexNormals(); const m = new THREE.Mesh(g, new THREE.MeshLambertMaterial({ map: tex, color: col, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -8 })); scene.add(m); };
+  mk(P, UV, IDX, plank, 0xffffff); mk(PH, UVH, IDH, hazard, 0xffffff);
+  // marker flags either side of the lip
+  for (const side of [-1, 1]) { const q = at(RAMP.L, side * 1.25); const pole = new THREE.Mesh(new THREE.BoxGeometry(0.1, 2.6, 0.1), new THREE.MeshLambertMaterial({ color: 0xeeeeee }));
+    const gy = height(q[0], q[2]); pole.position.set(q[0], gy + 1.3, q[2]); scene.add(pole); obstacles.push({ x: q[0], z: q[2], r: 0.15 });
+    const flag = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 0.55), new THREE.MeshLambertMaterial({ color: side < 0 ? 0xd8342a : 0xf2c230, side: THREE.DoubleSide }));
+    const tn = TAN[RAMP.i]; flag.position.set(q[0] + tn[0] * 0.45, gy + 2.3, q[2] + tn[1] * 0.45); flag.rotation.y = Math.atan2(tn[0], tn[1]) + Math.PI / 2; scene.add(flag); }
+}
 /* ================= rally furniture: start gantry, chevrons, straw bales ================= */
 {
   const postM = new THREE.MeshLambertMaterial({ color: 0x2a2a2a });
@@ -672,7 +724,7 @@ if (!ALP) { const geo = new THREE.CylinderGeometry(1, 1, 1, 8, 1); geo.rotateZ(M
   const bannerTex = textTex(128, 24, (g) => {
     g.fillStyle = "#e9e6dc"; g.fillRect(0, 0, 128, 24);
     for (let i = 0; i < 32; i++) for (let j = 0; j < 2; j++) { g.fillStyle = (i + j) % 2 ? "#151515" : "#e9e6dc"; g.fillRect(i * 4, j * 4, 4, 4); g.fillRect(i * 4, 16 + j * 4, 4, 4); }
-    text(g, "FOGWOOD", 6, 8, 1, "#c23a2c", null); text(g, "RALLY", 52, 8, 1, "#22324f", null); text(g, SNOW ? "SS2" : ALP ? "SS3" : "SS1", 90, 8, 1, "#151515", null); });
+    text(g, "FOGWOOD", 6, 8, 1, "#c23a2c", null); text(g, "RALLY", 52, 8, 1, "#22324f", null); text(g, SNOW ? "SS2" : CAN ? "SS3" : LAK ? "SS4" : "SS1", 90, 8, 1, "#151515", null); });
   const ban = new THREE.Mesh(new THREE.PlaneGeometry((ROAD + 1.3) * 2, 1.1), new THREE.MeshLambertMaterial({ map: bannerTex, side: THREE.DoubleSide }));
   ban.rotation.y = yaw; ban.position.set(p0[0], h0 + 4.6, p0[1]); scene.add(ban);
   const line = new THREE.Mesh(new THREE.PlaneGeometry(ROAD * 2, 0.5), new THREE.MeshLambertMaterial({ color: 0xd9d4c4, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -4 }));
@@ -736,11 +788,12 @@ function updateGrass(px, pz) {
     for (let k = 0; k < 2; k++) {
       const hx = hash2(ci * 3 + k, cj), hz = hash2(ci, cj * 5 + k), hs = hash2(ci + 77 * k, cj - 31);
       const x = (ci + hx - 0.5) * GCELL, z = (cj + hz - 0.5) * GCELL, pd = pathDist(x, z);
-      if (pd < ROAD + 0.3 + hs * 0.6 || hs > fbm(x * 0.07 + 3, z * 0.07) * 1.6 + 0.15) continue;
+      if (pd < ROAD + 0.3 + hs * 0.6 || hs > fbm(x * 0.07 + 3, z * 0.07) * (CAN ? 0.7 : 1.6) + (CAN ? 0.02 : 0.15)) continue;
+      if (LAK && height(x, z) < WL + 0.2) continue;
       const s = 0.45 + hs * 0.65 * (pd < ROAD + 1.5 ? 0.6 : 1);
       tmpO.position.set(x, height(x, z) - 0.04, z); tmpO.rotation.set(0, hx * 6.28, 0); tmpO.scale.set(s * 1.4, s, s * 1.4); tmpO.updateMatrix();
       grass.setMatrixAt(n, tmpO.matrix); const g = (0.55 + hz * 0.3) * (1 - shadeAt(x, z) * 0.45);
-      grass.setColorAt(n, tmpC.setRGB(0.36 * g + hs * 0.08, 0.62 * g, 0.24 * g)); n++;
+      grass.setColorAt(n, CAN ? tmpC.setRGB(0.95 * g + 0.2, 0.75 * g + 0.12, 0.42 * g + 0.06) : tmpC.setRGB(0.36 * g + hs * 0.08, 0.62 * g, 0.24 * g)); n++;
     }
   }
   grass.count = n; grass.instanceMatrix.needsUpdate = true; grass.instanceColor.needsUpdate = true;
@@ -921,7 +974,7 @@ const dGeo = new THREE.BufferGeometry();
 dGeo.setAttribute("position", new THREE.BufferAttribute(dPos, 3)); dGeo.setAttribute("aA", new THREE.BufferAttribute(dA, 1)); dGeo.setAttribute("aS", new THREE.BufferAttribute(dS, 1));
 const dMat = new THREE.ShaderMaterial({
   transparent: true, depthWrite: false,
-  uniforms: { uScale: { value: 100 }, uDens: { value: scene.fog.density }, uFog: { value: FOG }, uCol: { value: ALP ? new THREE.Color(0.78, 0.78, 0.76) : SNOW ? new THREE.Color(0.86, 0.9, 0.96) : new THREE.Color(0.6, 0.5, 0.37) } },
+  uniforms: { uScale: { value: 100 }, uDens: { value: scene.fog.density }, uFog: { value: FOG }, uCol: { value: CAN ? new THREE.Color(0.86, 0.64, 0.45) : LAK ? new THREE.Color(0.62, 0.56, 0.48) : SNOW ? new THREE.Color(0.86, 0.9, 0.96) : new THREE.Color(0.6, 0.5, 0.37) } },
   vertexShader: `attribute float aA; attribute float aS; uniform float uScale; uniform float uDens; varying float vA; varying float vF;
     void main(){ vec4 mv = modelViewMatrix*vec4(position,1.0); gl_Position = projectionMatrix*mv; gl_PointSize = aS*uScale/max(0.5,-mv.z); vA = aA; float d=-mv.z; vF = 1.0-exp(-uDens*uDens*d*d); }`,
   fragmentShader: `uniform vec3 uFog; uniform vec3 uCol; varying float vA; varying float vF;
@@ -976,7 +1029,7 @@ const TUNE = { lock: 0.9, lockFall: 70, steerRate: 5.5, returnRate: 6, rateFall:
   muRoad: 0.95, muGrass: 0.72, split: 0.5, power: 1, brake: 2300, brakeRear: 0.565, abs: 0.13, hb: 2600, camFollow: 16,
   arcade: 0.75, aGrip: 2.6, aYaw: 10.2, aBrake: 6, aAccel: 3.2, tc: 1, aHbYaw: 5, aYawCap: 1.68 };
 if (SNOW) { TUNE.muRoad = 0.74; TUNE.muGrass = 0.5; }
-if (ALP) { TUNE.muRoad = 1.05; TUNE.muGrass = 0.62; }
+if (CAN) { TUNE.muRoad = 0.88; TUNE.muGrass = 0.6; }
 const VEH = { m: 1180, Iz: 1750, a: WB_F, b: -WB_R, L: WB_F - WB_R, hcg: 0.5, Iw: 1.25, R: TIRE_R, drag: 0.44 };
 const GEARS = [3.15, 2.1, 1.55, 1.21, 0.98], FINAL = 4.1, REV = 3.3, SPLIT = [0.5, 0.5, 0.5, 0.5];
 const TQ_R = [800, 1500, 2500, 3500, 4500, 5500, 6500, 7200, 7600], TQ_N = [170, 290, 410, 520, 575, 560, 505, 420, 0];
@@ -1005,7 +1058,8 @@ function physicsStep(dt, ctl, gx, gz) {
     w.comp = comp; w.d = d; w.hg = hg;
     let F = 0;
     if (comp > 0) { F = SUSP.K * comp + SUSP.C * rate; if (comp > SUSP.STOP) F += SUSP.K * 10 * (comp - SUSP.STOP) + SUSP.C * 2 * Math.max(0, rate); }
-    w.fz = F; w.mu = w.road ? TUNE.muRoad : TUNE.muGrass; w.rr = w.road ? (SNOW ? 0.03 : ALP ? 0.015 : 0.02) : w.bank ? 0.2 : (SNOW ? 0.11 : 0.06);
+    const wet = LAK && hg < WL - 0.05;   // wading through a lake
+    w.fz = F; w.mu = wet ? 0.5 : w.road ? TUNE.muRoad : TUNE.muGrass; w.rr = wet ? 0.45 : w.road ? (SNOW ? 0.03 : CAN ? 0.026 : 0.02) : w.bank ? 0.2 : (SNOW ? 0.11 : CAN ? 0.13 : 0.06);
   }
   for (const [ia, ib] of [[0, 1], [2, 3]]) { const ca = WH[ia].comp, cb = WH[ib].comp; if (ca > 0 && cb > 0) { const fa = SUSP.KARB * (ca - cb); WH[ia].fz += fa; WH[ib].fz -= fa; } }
   for (const w of WH) { w.fz = Math.max(0, w.fz); Fsum += w.fz; if (w.fz > 0) contacts++; }
@@ -1186,7 +1240,7 @@ addEventListener("keydown", e => { if (!alive) return;
   if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"].includes(e.code)) e.preventDefault();
   keys.add(e.code);
   if (game.state === "title" && (e.code === "Enter" || e.code === "Space")) startGame();
-  if (game.state === "title" && /^Digit[123]$/.test(e.code)) { const want = ["forest", "snow", "stelvio"][+e.code[5] - 1]; if (want !== MAPN) { setTimeout(() => switchMap(want), 0); return; } }
+  if (game.state === "title" && /^Digit[1234]$/.test(e.code)) { const want = ["forest", "snow", "canyon", "lakes"][+e.code[5] - 1]; if (want !== MAPN) { setTimeout(() => switchMap(want), 0); return; } }
   if (e.code === "KeyC") cycleCam(); if (e.code === "KeyR") resetCar(); if (e.code === "KeyM") toggleSound(); if (e.code === "Escape") toTitle();
 }, SIG);
 addEventListener("keyup", e => keys.delete(e.code), SIG);
@@ -1194,7 +1248,7 @@ const touches = new Map(); let touchUsed = false, UI = {};
 const lowXY = (e) => [e.clientX / innerWidth * LW, e.clientY / innerHeight * LH];
 const TOPB = ["snd", "vib", "cam", "pix", "rst", "menu"];
 function hitButton(x, y) {
-  if (game.state === "title") for (const k of ["mapF", "mapS", "mapA"]) { const b = UI[k]; if (b && x >= b.x - 2 && x <= b.x + b.w + 2 && y >= b.y - 3 && y <= b.y + b.h + 3) return k; }
+  if (game.state === "title") for (const k of ["mapF", "mapS", "mapC", "mapL"]) { const b = UI[k]; if (b && x >= b.x - 2 && x <= b.x + b.w + 2 && y >= b.y - 3 && y <= b.y + b.h + 3) return k; }
   for (const k of TOPB) { const b = UI[k]; if (b && x >= b.x - 2 && x <= b.x + b.w + 2 && y >= b.y - 2 && y <= b.y + b.h + 3) return k; }
   if (!touchUsed || !UI.left || !UI.gas) return null;
   if (x >= UI.hb.x - 3 && x <= UI.hb.x + UI.hb.w + 3 && y >= UI.hb.y - 3 && y <= UI.hb.y + UI.hb.h + 2) return "hb";
@@ -1208,7 +1262,7 @@ canvas.addEventListener("pointerdown", e => {
   const [x, y] = lowXY(e), b = hitButton(x, y);
   if (b) buzz("tap", TOPB.includes(b) || b.startsWith("map") ? 0.55 : 0.4); else if (game.state === "title") buzz("tap", 0.55);
   if (b === "snd") toggleSound(); else if (b === "vib") { vibOn = !vibOn; try { localStorage.setItem("fogwood-vib", vibOn ? "1" : "0"); } catch (_) {} if (vibOn) buzz("shift", 0.7); flashMsg(vibOn ? "HAPTICS ON" : "HAPTICS OFF", 1); } else if (b === "pix") { pixIdx = (pixIdx + 1) % PIX.length; resize(); }
-  else if (b === "mapF" || b === "mapS" || b === "mapA") { const want = b === "mapS" ? "snow" : b === "mapA" ? "stelvio" : "forest"; if (want !== MAPN) setTimeout(() => switchMap(want), 0); }
+  else if (b === "mapF" || b === "mapS" || b === "mapC" || b === "mapL") { const want = { mapF: "forest", mapS: "snow", mapC: "canyon", mapL: "lakes" }[b]; if (want !== MAPN) setTimeout(() => switchMap(want), 0); }
   else if (game.state === "title") startGame();
   else if (b === "menu") toTitle(); else if (b === "cam") cycleCam(); else if (b === "rst") resetCar(); else if (b) touches.set(e.pointerId, b);
 }, SIG);
@@ -1284,7 +1338,7 @@ function initAudio() {
   A.master = ac.createGain(); A.master.gain.value = 0; A.master.connect(comp);
   A.amb = ac.createGain(); A.amb.gain.value = 0.3; A.amb.connect(A.master);
   A.windG = ac.createGain(); A.windG.connect(A.amb); loopSrc(decoded.wind, 1, A.windG);
-  A.birdG = ac.createGain(); A.birdG.gain.value = SNOW ? 0.06 : ALP ? 0.3 : 0.8; A.birdG.connect(A.amb); loopSrc(decoded.birds, 1, A.birdG, 12);
+  A.birdG = ac.createGain(); A.birdG.gain.value = SNOW ? 0.06 : CAN ? 0.12 : 0.8; A.birdG.connect(A.amb); loopSrc(decoded.birds, 1, A.birdG, 12);
   A.engLP = ac.createBiquadFilter(); A.engLP.type = "lowpass"; A.engLP.frequency.value = 1400; A.engLP.Q.value = 0.7;
   A.shaper = ac.createWaveShaper(); A.shaper.curve = makeCurve(1.6); A.shaper.oversample = "2x";
   A.engG = ac.createGain(); A.engG.gain.value = 0.55; A.shaper.connect(A.engLP); A.engLP.connect(A.engG); A.engG.connect(A.master);
@@ -1313,13 +1367,13 @@ function updateAudio(dt, inp, gust) {
   A.lowG.gain.setTargetAtTime(0.85 - n * 0.35, t, 0.05); A.highG.gain.setTargetAtTime(0.1 + n * 0.75 * (0.5 + thr * 0.5), t, 0.05);
   A.engLP.frequency.setTargetAtTime(900 + thr * 3800 + n * 2200, t, 0.06);
   if (S.shiftT <= 0) A.engG.gain.setTargetAtTime(0.42 + thr * 0.2 + n * 0.08, t, 0.08);
-  const slide = SNOW ? clamp((S.slide - 5.5) / 9, 0, 1) : ALP ? clamp((S.slide - 3.4) / 7, 0, 1) : clamp((S.slide - 3.0) / 7, 0, 1);
-  A.skidG.gain.setTargetAtTime(slide * slide * (SNOW ? 0.2 : ALP && S.onRoad ? 0.36 : S.onRoad ? 0.4 : 0.22), t, 0.12);
-  A.skid.playbackRate.setTargetAtTime(SNOW ? 0.5 + slide * 0.1 : ALP && S.onRoad ? 1.0 + slide * 0.2 : S.onRoad ? 0.76 + slide * 0.22 : 0.6, t, 0.1);
-  A.skidLP.frequency.setTargetAtTime(SNOW ? 900 : ALP && S.onRoad ? 4500 : S.onRoad ? 2600 : 1100, t, 0.1);
+  const slide = SNOW ? clamp((S.slide - 5.5) / 9, 0, 1) : clamp((S.slide - 3.0) / 7, 0, 1);
+  A.skidG.gain.setTargetAtTime(slide * slide * (SNOW ? 0.2 : CAN ? 0.3 : S.onRoad ? 0.4 : 0.22), t, 0.12);
+  A.skid.playbackRate.setTargetAtTime(SNOW ? 0.5 + slide * 0.1 : CAN ? 0.62 + slide * 0.15 : S.onRoad ? 0.76 + slide * 0.22 : 0.6, t, 0.1);
+  A.skidLP.frequency.setTargetAtTime(SNOW ? 900 : CAN ? 1500 : S.onRoad ? 2600 : 1100, t, 0.1);
   const sp = clamp(Math.hypot(S.vx, S.vz) / 35, 0, 1);
-  A.rumG.gain.setTargetAtTime(sp * (ALP && S.onRoad ? 0.18 : S.onRoad ? 0.3 : 0.45), t, 0.1); A.rum.playbackRate.setTargetAtTime(0.32 + sp * 0.3, t, 0.1);
-  A.windG.gain.setTargetAtTime(ALP ? 0.7 + gust * 0.7 : SNOW ? 0.9 + gust * 0.8 : 0.45 + gust * 0.55, t, 0.5);
+  A.rumG.gain.setTargetAtTime(sp * (S.onRoad ? 0.3 : 0.45), t, 0.1); A.rum.playbackRate.setTargetAtTime(0.32 + sp * 0.3, t, 0.1);
+  A.windG.gain.setTargetAtTime(CAN ? 0.75 + gust * 0.8 : SNOW ? 0.9 + gust * 0.8 : 0.45 + gust * 0.55, t, 0.5);
   A.rushG.gain.setTargetAtTime(sp * sp * 1.4, t, 0.15); A.rush.playbackRate.setTargetAtTime(1.3 + sp * 0.9, t, 0.2);
   if (S.impact > 1.5) oneShot(decoded.impact, rr(0.75, 1.0), clamp(S.impact / 9, 0.25, 1.2));
   popCool -= dt;
@@ -1351,12 +1405,12 @@ function drawHUD(inp) {
     const sc = Math.max(2, Math.min(4 * U, Math.floor(LH / 42), Math.floor(LW / 46))), ty = Math.round(LH * 0.15);
     text(g, "FOGWOOD", (LW - textW("FOGWOOD", sc)) / 2, ty, sc, INK); text(g, "RALLY", (LW - textW("RALLY", sc)) / 2, ty + 9 * sc, sc, AMBER);
     if (!portrait) {
-      const sub = ALP ? "SS3 PASSO DELLO STELVIO - " + STAGE_KM + " KM TARMAC" : SNOW ? "SS2 COL DE GIVRE - " + STAGE_KM + " KM SNOW" : "SS1 FOGWOOD - " + STAGE_KM + " KM GRAVEL"; text(g, sub, (LW - textW(sub, U)) / 2, ty + 17 * sc, U, "rgba(233,236,226,0.8)");
+      const sub = CAN ? "SS3 CANYON ROUGE - " + STAGE_KM + " KM SAND" : LAK ? "SS4 LAKELAND - " + STAGE_KM + " KM GRAVEL" : SNOW ? "SS2 COL DE GIVRE - " + STAGE_KM + " KM SNOW" : "SS1 FOGWOOD - " + STAGE_KM + " KM GRAVEL"; text(g, sub, (LW - textW(sub, U)) / 2, ty + 17 * sc, U, "rgba(233,236,226,0.8)");
       const tp = audioReady ? "TAP TO START" : "LOADING SOUND"; if ((performance.now() / 500 | 0) % 2 === 0 || !audioReady) text(g, tp, (LW - textW(tp, U)) / 2, ty + 17 * sc + 12 * U, U, INK);
       const hint = matchMedia("(pointer: coarse)").matches ? "LEFT THUMB STEERS - RIGHT THUMB ON THE PEDALS" : "ARROWS DRIVE - SPACE HANDBRAKE - C CAMERA - R RESET";
       text(g, hint, (LW - textW(hint, U)) / 2, ty + 17 * sc + 24 * U, U, "rgba(233,236,226,0.7)");
-      { const mw = 64 * U, mh = 13 * U, gp = 5 * U, my = ty + 17 * sc + 35 * U, mx0 = Math.round(LW / 2 - mw * 1.5 - gp);
-        for (const [k, label, on, x] of [["mapF", "SS1 FOREST", MAPN === "forest", mx0], ["mapS", "SS2 SNOW", SNOW, mx0 + mw + gp], ["mapA", "SS3 STELVIO", ALP, mx0 + 2 * (mw + gp)]]) {
+      { const gp = 4 * U, mw = Math.min(56 * U, Math.floor((LW - 8 * U - 3 * gp) / 4)), mh = 13 * U, my = ty + 17 * sc + 35 * U, mx0 = Math.round(LW / 2 - mw * 2 - gp * 1.5);
+        for (const [k, label, on, n] of [["mapF", "1 FOREST", MAPN === "forest", 0], ["mapS", "2 SNOW", SNOW, 1], ["mapC", "3 CANYON", CAN, 2], ["mapL", "4 LAKES", LAK, 3]]) { const x = mx0 + n * (mw + gp);
           UI[k] = { x, y: my, w: mw, h: mh }; box(g, x, my, mw, mh, on ? "rgba(243,207,98,0.3)" : PANEL, on ? AMBER : EDGE);
           text(g, label, x + (mw - textW(label, U)) / 2, my + 3 * U, U, on ? AMBER : INK); } }
       const c1 = "SOUNDS CC0: KENNEY, LANDEPLAGE, HARGISSSOUND, THREADBARE";
@@ -1408,6 +1462,33 @@ function drawHUD(inp) {
 }
 
 const hapT = { t: 0, cool: 0 };
+/* title screen: a little film crew follows the demo car - trackside telephoto, low tracking shot, drone */
+function cinematic(dt) {
+  if (window.__camOv) return null;
+  camState.cutT = (camState.cutT ?? 0) + dt;
+  const idx = pathIdx(S.x, S.z), sh = Math.sin(S.h), ch = Math.cos(S.h);
+  const newShot = camState.shot === undefined || camState.shot < 0 || camState.cutT > 7.5 || (camState.shot === 0 && camState.passed > 22);
+  if (newShot) {
+    camState.shot = ((camState.shot ?? -1) + 1 + (camState.shot < 0 ? 0 : 0)) % 3; camState.cutT = 0; camState.passed = 0;
+    if (camState.shot === 0) { let k = (idx + 70) % NP; for (let q = 55; q <= 95; q += 5) { const c = (idx + q) % NP; if (VCURVE[c] > 20) { k = c; break; } }
+      const p = PATH[k], tn = TAN[k], side = hash2(k, 3) < 0.5 ? -1 : 1, off = ROAD + 6 + hash2(k, 5) * 4;
+      const x = p[0] - tn[1] * off * side, z = p[1] + tn[0] * off * side; camState.anchor = [x, Math.max(height(x, z) + 1.9, ROADH[k] + 1.6), z]; }
+    camState.side = hash2(idx, 9) < 0.5 ? -1 : 1;
+  }
+  let fov = 54;
+  if (camState.shot === 0) {   // trackside: locked-off telephoto as the car flies past
+    const a = camState.anchor; camera.position.set(a[0], a[1], a[2]); camera.lookAt(S.x, S.y + 0.8, S.z);
+    const dx = a[0] - S.x, dz = a[2] - S.z; if (dx * sh + dz * ch < 0) camState.passed += dt * 8; fov = clamp(16 + Math.hypot(dx, dz) * 0.35, 18, 50);
+  } else if (camState.shot === 1) {   // low tracking alongside, slightly ahead
+    const sd = camState.side, x = S.x + ch * 5.5 * sd + sh * 2.5, z = S.z - sh * 5.5 * sd + ch * 2.5, y = Math.max(height(x, z) + 1.0, S.y + 0.9);
+    camera.position.set(x, y, z); camera.lookAt(S.x - sh * 1.5, S.y + 0.6, S.z - ch * 1.5); fov = 44;
+  } else {   // drone: high and behind, slowly orbiting
+    const R = CAN ? 16 : 22, up = CAN ? 9 : 26;   // above the canopy where there are trees
+    const a = S.h + Math.PI + 0.5 * Math.sin(camState.cutT * 0.25) * camState.side, x = S.x + Math.sin(a) * R, z = S.z + Math.cos(a) * R;
+    camera.position.set(x, Math.max(S.y + up, height(x, z) + 4), z); camera.lookAt(S.x + sh * 10, S.y, S.z + ch * 10); fov = CAN ? 50 : 46;
+  }
+  return fov;
+}
 /* ================= native renderer bridge =================
    Scene packet: u32 magic "FWS1", u32 json length, json (materials, geometries, textures, objects, lights), then one blob
    holding every buffer (4-byte aligned). Frame packet: Float32Array, see nglFrame. Objects are mirrored generically:
@@ -1522,7 +1603,7 @@ function frame(now) {
 
   const sp = Math.hypot(S.vx, S.vz);
   for (const w of WH) {
-    let e = ((w.road ? (ALP ? 0 : sp / 30) : sp / (SNOW ? 22 : 70)) + clamp(w.slide - 1.5, 0, 10) / 5) * 18 * dt * (SNOW ? 1.4 : 1);
+    let e = ((w.road ? sp / (CAN ? 20 : 30) : sp / (SNOW ? 22 : CAN ? 26 : 70)) + clamp(w.slide - 1.5, 0, 10) / 5) * 18 * dt * (SNOW ? 1.4 : CAN ? 1.35 : 1);
     while (e > 0) { if (rnd() < e) emitDust(w.wx, height(w.wx, w.wz) + 0.2, w.wz, -S.vx * 0.1 + rr(-0.8, 0.8), rr(0.3, 1.2), -S.vz * 0.1 + rr(-0.8, 0.8), rr(0.5, 0.9) * (w.road ? 1 : 0.6)); e -= 1; }
   }
   for (let i = 0; i < DN; i++) { if (dLife[i] <= 0) { dA[i] = 0; continue; } dAge[i] += dt; const k = dAge[i] / dLife[i];
@@ -1549,9 +1630,13 @@ function frame(now) {
     camera.position.set(cxp + rr(-1, 1) * shk + (vnoise(tt * 19, 1.3) - 0.5) * rum, camState.y + rr(-1, 1) * shk + (vnoise(tt * 23, 7.1) - 0.5) * rum * 1.6, czp + rr(-1, 1) * shk);
     lookT.set(S.x + sh * 4, S.y + 1.05, S.z + ch * 4); camera.lookAt(lookT);
   }
-  const fovT = 54 + spK * 20; camState.fov += (fovT - camState.fov) * Math.min(1, dt * 3);
+  let fovT = 54 + spK * 20;
+  if (game.state === "title") fovT = cinematic(dt) ?? fovT; else camState.shot = -1;
+  if (game.state === "title" && camState.shot >= 0 && camState.cutT < 0.05) camState.fov = fovT;
+  camState.fov += (fovT - camState.fov) * Math.min(1, dt * 3);
   camera.fov = innerWidth > innerHeight ? camState.fov : camState.fov + 20; camera.updateProjectionMatrix();
   sky.position.copy(camera.position); peaks.position.x = camera.position.x; peaks.position.z = camera.position.z; updateSnowfall(dt);
+  if (waterL.length) { const t = uTime.value; waterL[0].position.x = (t * 0.55) % 6; waterL[0].position.z = (t * 0.2) % 6; waterL[1].position.x = -((t * 0.35) % 7.5); waterL[1].position.z = (t * 0.6) % 7.5; }
   updateGrass(S.x, S.z);
   dMat.uniforms.uScale.value = LH / (2 * Math.tan(camera.fov * Math.PI / 360));
 
@@ -1573,7 +1658,7 @@ requestAnimationFrame(frame);
 window.__ready = true; window.__S = S; window.__game = game; window.__WH = WH;
 window.__sim = (secs, inp, start) => { if (start != null) placeAt(start); const out = []; for (let t = 0; t < secs; t += 1 / 60) { vehicleUpdate(1 / 60, typeof inp === "function" ? inp(t) : inp); if (Math.round(t * 60) % 30 === 0) out.push([+t.toFixed(1), +(S.u * 3.6).toFixed(0), S.gear, S.rpm | 0, +S.slide.toFixed(1), +S.r.toFixed(2), +S.vl.toFixed(1)]); } return out; };
 window.__info = () => ({ calls: renderer.info.render.calls, tris: renderer.info.render.triangles }); window.__cam = (m) => { camState.mode = m; camState.init = false; };
-window.__native = () => ({ grids: gridsNative, phys: physNative, ms: nativeMs }); window.__packSim = packSim; window.__unpackSim = unpackSim; window.__vehicleUpdateJS = vehicleUpdateJS;
+window.__ramp = RAMP; window.__native = () => ({ grids: gridsNative, phys: physNative, ms: nativeMs }); window.__packSim = packSim; window.__unpackSim = unpackSim; window.__vehicleUpdateJS = vehicleUpdateJS;
 window.__gridsJS = () => ({ pd: pdG, h: hG, pi: piG, GXH, GZH, PATH, ROADH, obstacles }); window.__setPhysNative = (b) => { physNative = b && gridsNative; };
 window.__ai = () => aiInput(); window.__NP = NP; window.__J = JUMPS; window.placeAt = placeAt; window.vehicleUpdate = vehicleUpdate; window.__pd = () => pathDist(S.x, S.z); window.__idx = () => pathIdx(S.x, S.z);
 
@@ -1584,5 +1669,5 @@ return () => {
   for (const id of ["tuneBtn", "tunePanel", "tuneStyle"]) document.getElementById(id)?.remove();
 };
 }
-CURRENT = boot(location.hash === "#snow" ? "snow" : location.hash === "#stelvio" ? "stelvio" : "forest");
+CURRENT = boot({ "#snow": "snow", "#canyon": "canyon", "#lakes": "lakes" }[location.hash] || "forest");
 </script>

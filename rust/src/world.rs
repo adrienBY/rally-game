@@ -4,8 +4,10 @@ use crate::noise::*;
 pub const ROAD: f64 = 3.4;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Map { Forest = 0, Snow = 1, Stelvio = 2 }
-impl Map { pub fn from_id(i: i32) -> Map { match i { 1 => Map::Snow, 2 => Map::Stelvio, _ => Map::Forest } } }
+pub enum Map { Forest = 0, Snow = 1, Canyon = 2, Lakes = 3 }
+impl Map { pub fn from_id(i: i32) -> Map { match i { 1 => Map::Snow, 2 => Map::Canyon, 3 => Map::Lakes, _ => Map::Forest } } }
+/// Lakes: water level
+pub const WL: f64 = -4.5;
 
 pub struct World {
     pub map: Map,
@@ -15,10 +17,15 @@ pub struct World {
 
 fn terrain(map: Map, x: f64, z: f64) -> f64 {
     match map {
-        Map::Stelvio => ridged(x * 0.0062 + 11.0, z * 0.0062 + 4.0) * 70.0 + (fbm(x * 0.02, z * 0.02, 4) - 0.5) * 8.0,
+        Map::Canyon => (fbm(x * 0.008 + 3.0, z * 0.008 - 2.0, 4) - 0.5) * 18.0 + (fbm(x * 0.05, z * 0.05, 4) - 0.5) * 1.2,
+        Map::Lakes => (fbm(x * 0.006 + 5.0, z * 0.006 + 1.0, 4) - 0.5) * 44.0 + (fbm(x * 0.02, z * 0.02, 4) - 0.5) * 8.0 + (fbm(x * 0.07, z * 0.07, 4) - 0.5) * 1.2,
         Map::Snow => ridged(x * 0.0052 + 3.0, z * 0.0052 - 7.0) * 58.0 + (fbm(x * 0.016, z * 0.016, 4) - 0.5) * 12.0 + (fbm(x * 0.07, z * 0.07, 4) - 0.5) * 1.4,
         Map::Forest => (fbm(x * 0.014 + 10.0, z * 0.014 - 4.0, 4) - 0.5) * 16.0 + (fbm(x * 0.06, z * 0.06, 4) - 0.5) * 1.6,
     }
+}
+/// Canyon: flat-topped mesas with cliff edges
+fn canyon_mesa(x: f64, z: f64) -> f64 {
+    smooth(0.53, 0.585, fbm(x * 0.0065 + 21.0, z * 0.0065 + 7.0, 4)) * (24.0 + fbm(x * 0.03 + 5.0, z * 0.03, 4) * 14.0)
 }
 
 /// `path` = road centreline every metre, `roadh` = road height per point (both as the JS build computed them).
@@ -57,41 +64,16 @@ pub fn build(map: Map, path: &[(f64, f64)], roadh: &[f64], gxh: i32, gzh: i32) -
             for jj in j..(j + 8).min(gnz) { for ii in i..(i + 8).min(gnx) { let q = jj * gnx + ii; if pd[q] >= 20.0 { pi[q] = bk as i16; } } }
         }
         i += 8; } j += 8; }
-    if map == Map::Stelvio {
-        // membrane stretched through every leg of the road (Jacobi relaxation on a 4 m grid), peaks further out
-        let cs = 4usize; let cx = (gnx + cs - 1) / cs + 1; let cz = (gnz + cs - 1) / cs + 1;
-        let mut m = vec![0f32; cx * cz]; let mut fix = vec![false; cx * cz];
-        for j in 0..cz { for i in 0..cx { let gi = (i * cs).min(gnx - 1); let gj = (j * cs).min(gnz - 1); let id = gj * gnx + gi;
-            m[j * cx + i] = roadh[pi[id] as usize] as f32; if (pd[id] as f64) < ROAD + 2.0 { fix[j * cx + i] = true; } } }
-        let mut t = vec![0f32; cx * cz];
-        for _ in 0..260 {
-            for j in 0..cz { for i in 0..cx { let k = j * cx + i; if fix[k] { t[k] = m[k]; continue; }
-                let (mut s, mut c) = (0f64, 0f64);
-                if i > 0 { s += m[k - 1] as f64; c += 1.0; } if i < cx - 1 { s += m[k + 1] as f64; c += 1.0; }
-                if j > 0 { s += m[k - cx] as f64; c += 1.0; } if j < cz - 1 { s += m[k + cx] as f64; c += 1.0; }
-                t[k] = (s / c) as f32; } }
-            m.copy_from_slice(&t);
-        }
-        let (m, pd_r, pi_r) = (&m, &pd, &pi);
-        par_rows(&mut h, gnx, |j, row| { for i in 0..gnx {
-            let id = j * gnx + i; let x = i as f64 - gxh as f64; let z = j as f64 - gzh as f64; let pdv = pd_r[id] as f64;
-            let fx = i as f64 / cs as f64; let fz = j as f64 / cs as f64;
-            let ci = ((fx as usize).min(cx - 2)) as usize; let cj = ((fz as usize).min(cz - 2)) as usize; let u = fx - ci as f64; let v = fz - cj as f64; let k = cj * cx + ci;
-            let mut hv = (m[k] as f64 * (1.0 - u) + m[k + 1] as f64 * u) * (1.0 - v) + (m[k + cx] as f64 * (1.0 - u) + m[k + cx + 1] as f64 * u) * v;
-            hv += (ridged(x * 0.0062 + 11.0, z * 0.0062 + 4.0) * 70.0 - 22.0) * smooth(28.0, 110.0, pdv)
-                + (fbm(x * 0.02, z * 0.02, 4) - 0.5) * 7.0 * smooth(6.0, 24.0, pdv)
-                + (fbm(x * 0.07, z * 0.07, 4) - 0.5) * 1.2 * smooth(3.0, 9.0, pdv);
-            let w = 1.0 - smooth(ROAD + 1.0, ROAD + 6.0, pdv);
-            hv = hv + (roadh[pi_r[id] as usize] - 0.05 - hv) * w;
-            row[i] = hv as f32;
-        } });
-    } else {
+    {
         let (pd_r, pi_r) = (&pd, &pi);
         par_rows(&mut h, gnx, |j, row| { for i in 0..gnx {
             let id = j * gnx + i; let x = i as f64 - gxh as f64; let z = j as f64 - gzh as f64; let pdv = pd_r[id] as f64;
             let mut hv = terrain(map, x, z);
-            let w = 1.0 - if map == Map::Snow { smooth(ROAD + 1.5, ROAD + 22.0, pdv) } else { smooth(ROAD + 1.0, ROAD + 10.0, pdv) };
+            if map == Map::Canyon { hv += canyon_mesa(x, z) * smooth(ROAD + 6.0, ROAD + 16.0, pdv); }
+            let w = 1.0 - match map { Map::Snow => smooth(ROAD + 1.5, ROAD + 22.0, pdv), Map::Canyon => smooth(ROAD + 1.0, ROAD + 9.0, pdv),
+                Map::Lakes => smooth(ROAD + 1.0, ROAD + 14.0, pdv), Map::Forest => smooth(ROAD + 1.0, ROAD + 10.0, pdv) };
             hv = hv + (roadh[pi_r[id] as usize] - 0.12 - hv) * w;
+            if map == Map::Lakes && hv < WL { hv = WL - (1.6f64).min((WL - hv) * 0.2); }
             row[i] = hv as f32;
         } });
     }
