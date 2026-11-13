@@ -58,11 +58,12 @@ SHARED.promise = (async () => { try {
   window.__AUDIO = null; SHARED.ready = true;
   if (SHARED.native) for (const m of SHARED.msgs) SHARED.native.postMessage(m.slice(0));
 } catch (e) { console.warn("sound load", e); SHARED.ready = false; } })();
-const WORKLET = `class F extends AudioWorkletProcessor { constructor() { super(); this.ex = null; this.q = []; this.port.onmessage = (e) => this.msg(e.data); }
+const WORKLET = `class F extends AudioWorkletProcessor { constructor() { super(); this.ex = null; this.q = []; this.port.onmessage = (e) => this.msg(e.data); this.port.onmessageerror = () => this.port.postMessage({ err: "messageerror" }); }
   boot(mod) { const imp = {}; for (const i of WebAssembly.Module.imports(mod)) { (imp[i.module] = imp[i.module] || {})[i.name] = i.kind === "function" ? () => 0 : undefined; }
-    this.ex = new WebAssembly.Instance(mod, imp).exports; this.ex.fa_init(sampleRate); for (const m of this.q) this.feed(m); this.q = []; }
+    this.ex = new WebAssembly.Instance(mod, imp).exports; this.ex.fa_init(sampleRate); for (const m of this.q) this.feed(m); this.q = []; this.port.postMessage({ ok: 1 }); }
   feed(ab) { const u = new Uint8Array(ab); const p = this.ex.fa_msg_ptr(u.length); new Uint8Array(this.ex.memory.buffer, p, u.length).set(u); this.ex.fa_message(u.length); }
-  msg(d) { if (d && d.wasm) { try { this.boot(d.wasm instanceof WebAssembly.Module ? d.wasm : new WebAssembly.Module(d.wasm)); } catch (e) { if (d.bytes) this.boot(new WebAssembly.Module(d.bytes)); } return; }
+  msg(d) { if (d && d.wasm) { try { this.boot(d.wasm instanceof WebAssembly.Module ? d.wasm : new WebAssembly.Module(d.wasm)); }
+      catch (e) { try { if (d.bytes) this.boot(new WebAssembly.Module(d.bytes)); else throw e; } catch (e2) { this.port.postMessage({ err: String(e2) }); } } return; }
     if (d instanceof ArrayBuffer) { if (this.ex) this.feed(d); else this.q.push(d); } }
   process(i, o) { const out = o[0]; if (!this.ex || out.length < 2) return true; const n = out[0].length, p = this.ex.fa_render(n), f = new Float32Array(this.ex.memory.buffer, p, n * 2);
     const L = out[0], R = out[1]; for (let k = 0; k < n; k++) { L[k] = f[k * 2]; R[k] = f[k * 2 + 1]; } return true; } }
@@ -73,16 +74,18 @@ SHARED.start = async () => {
   try {
     const AC = window.AudioContext || window.webkitAudioContext; const ac = SHARED.ac = new AC({ latencyHint: "interactive" });
     const bytes = new Uint8Array(atob(window.__AUDIOWASM).split("").map(c => c.charCodeAt(0)));
-    const url = URL.createObjectURL(new Blob([WORKLET], { type: "application/javascript" })); await ac.audioWorklet.addModule(url);
+    try { await ac.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], { type: "application/javascript" }))); }
+    catch (_) { await ac.audioWorklet.addModule("data:application/javascript;base64," + btoa(WORKLET)); }   // local files: blob: URLs have no origin
     const node = new AudioWorkletNode(ac, "fogwood", { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] }); node.connect(ac.destination);
-    let mod = null; try { mod = await WebAssembly.compile(bytes); } catch (_) {}
-    try { node.port.postMessage({ wasm: mod || bytes.buffer, bytes: bytes.buffer.slice(0) }); } catch (_) { node.port.postMessage({ wasm: bytes.buffer }); }
+    node.port.onmessage = (e) => { SHARED.wstat = e.data; if (e.data && e.data.err) console.warn("sound engine", e.data.err); };
+    node.port.postMessage({ wasm: bytes.buffer });   // compiled inside the worklet (compiled modules don't always cross into it)
     await SHARED.promise; for (const m of SHARED.msgs) node.port.postMessage(m.slice(0));
     SHARED.node = node; for (const m of SHARED.queue) node.port.postMessage(m, [m]); SHARED.queue = [];
     ac.resume();
   } catch (e) { console.warn("sound engine", e); }
 };
 /* app lifecycle (Android app calls __appPause; browsers fire visibilitychange): silence audio while in the background */
+window.__snd = SHARED;
 const appPause = (p) => { const ac = SHARED.ac; if (!ac) return; try { if (p) ac.suspend(); else if (window.__audioOn) ac.resume(); } catch (_) {} };
 document.addEventListener("visibilitychange", () => appPause(document.hidden)); window.__appPause = appPause;
 /* long presses must never open Android's selection / copy-paste menu */
