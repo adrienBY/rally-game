@@ -62,8 +62,6 @@ function boot(MAPN) {
 const ABORT = new AbortController(), SIG = { signal: ABORT.signal }; let alive = true;
 { const old = document.getElementById("view"), fresh = old.cloneNode(false); old.replaceWith(fresh); }
 
-/* art style: "64" (soft filtered textures, saturated colour, clear skies, sprite trees) or the original pixel look */
-let STYLE64 = true; try { STYLE64 = localStorage.getItem("fogwood-style") !== "pix"; } catch (_) {}
 /* ================= noise / rng ================= */
 function hash2(x, y) { let h = x * 374761393 + y * 668265263; h = (h ^ (h >>> 13)) * 1274126177; h ^= h >>> 16; return (h >>> 0) / 4294967295; }
 function vnoise(x, y) {
@@ -235,13 +233,13 @@ const renderer = NGL ? { outputColorSpace: "", setPixelRatio() {}, setClearColor
   : new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: "high-performance" });
 if (NGL) { document.documentElement.style.background = "transparent"; document.body.style.background = "transparent"; canvas.style.background = "transparent"; }
 renderer.outputColorSpace = THREE.LinearSRGBColorSpace; renderer.setPixelRatio(1);
-const FOG = STYLE64 ? (CAN ? new THREE.Color(0.96, 0.82, 0.64) : SNOW ? new THREE.Color(0.84, 0.91, 1.0) : new THREE.Color(0.74, 0.86, 0.99)) : SNOW ? new THREE.Color(0.79, 0.84, 0.9) : CAN ? new THREE.Color(0.88, 0.66, 0.5) : LAK ? new THREE.Color(0.84, 0.74, 0.76) : new THREE.Color(0.60, 0.65, 0.64);
+const FOG = SNOW ? new THREE.Color(0.79, 0.84, 0.9) : CAN ? new THREE.Color(0.88, 0.66, 0.5) : LAK ? new THREE.Color(0.84, 0.74, 0.76) : new THREE.Color(0.60, 0.65, 0.64);
 renderer.setClearColor(FOG, 0);
-const scene = new THREE.Scene(); scene.fog = new THREE.FogExp2(FOG, (SNOW ? 0.0034 : CAN ? 0.0024 : LAK ? 0.0029 : 0.0056) * (STYLE64 ? 0.42 : 1));
+const scene = new THREE.Scene(); scene.fog = new THREE.FogExp2(FOG, SNOW ? 0.0034 : CAN ? 0.0024 : LAK ? 0.0029 : 0.0056);
 const camera = new THREE.PerspectiveCamera(58, 16 / 9, 0.12, 1900);
-const SUN = STYLE64 ? (CAN ? new THREE.Vector3(-0.55, 0.45, -0.7).normalize() : new THREE.Vector3(0.5, 0.68, -0.54).normalize()) : CAN ? new THREE.Vector3(-0.62, 0.2, -0.76).normalize() : LAK ? new THREE.Vector3(0.7, 0.13, -0.7).normalize() : SNOW ? new THREE.Vector3(-0.55, 0.24, -0.8).normalize() : new THREE.Vector3(0.6, 0.48, -0.62).normalize();
-scene.add(STYLE64 ? new THREE.HemisphereLight(CAN ? 0xffe2c4 : 0xe4eeff, CAN ? 0x7c4a2a : SNOW ? 0x8a9ab8 : 0x4f6a34, 2.25) : CAN ? new THREE.HemisphereLight(0xf2c9a0, 0x6a3a26, 2.0) : LAK ? new THREE.HemisphereLight(0xd8c6d6, 0x34452f, 2.1) : SNOW ? new THREE.HemisphereLight(0xdbe6f5, 0x6f7f96, 2.0) : new THREE.HemisphereLight(0xc8d2cf, 0x2b3420, 2.3));
-const sunL = STYLE64 ? new THREE.DirectionalLight(CAN ? 0xffd8a8 : 0xfff6e0, 2.15) : CAN ? new THREE.DirectionalLight(0xffb26b, 2.6) : LAK ? new THREE.DirectionalLight(0xffc09a, 2.4) : SNOW ? new THREE.DirectionalLight(0xffd2a6, 2.2) : new THREE.DirectionalLight(0xffefc8, 1.9); sunL.position.copy(SUN); scene.add(sunL);
+const SUN = CAN ? new THREE.Vector3(-0.62, 0.2, -0.76).normalize() : LAK ? new THREE.Vector3(0.7, 0.13, -0.7).normalize() : SNOW ? new THREE.Vector3(-0.55, 0.24, -0.8).normalize() : new THREE.Vector3(0.6, 0.48, -0.62).normalize();
+scene.add(CAN ? new THREE.HemisphereLight(0xf2c9a0, 0x6a3a26, 2.0) : LAK ? new THREE.HemisphereLight(0xd8c6d6, 0x34452f, 2.1) : SNOW ? new THREE.HemisphereLight(0xdbe6f5, 0x6f7f96, 2.0) : new THREE.HemisphereLight(0xc8d2cf, 0x2b3420, 2.3));
+const sunL = CAN ? new THREE.DirectionalLight(0xffb26b, 2.6) : LAK ? new THREE.DirectionalLight(0xffc09a, 2.4) : SNOW ? new THREE.DirectionalLight(0xffd2a6, 2.2) : new THREE.DirectionalLight(0xffefc8, 1.9); sunL.position.copy(SUN); scene.add(sunL);
 
 let LW = 320, LH = 180, U = 1, rt, post, hudCanvas, hud, hudTex;
 // render heights; the sharpest (340) is the default and draws the HUD at 2x, so it is exactly as big as on the 170 preset
@@ -258,7 +256,7 @@ function resize() {
   hudCanvas.width = LW; hudCanvas.height = LH; hud = hudCanvas.getContext("2d"); hud.imageSmoothingEnabled = false;
   if (hudTex) hudTex.dispose();
   hudTex = new THREE.CanvasTexture(hudCanvas); hudTex.minFilter = hudTex.magFilter = THREE.NearestFilter; hudTex.generateMipmaps = false;
-  if (post) { post.uniforms.tScene.value = rt.texture; post.uniforms.tHud.value = hudTex; post.uniforms.uTexel.value.set(1 / LW, 1 / LH); }
+  if (post) { post.uniforms.tScene.value = rt.texture; post.uniforms.tHud.value = hudTex; }
   const cs = getComputedStyle(document.getElementById("probe")), k = LW / w;
   inset.t = parseFloat(cs.paddingTop) * k || 0; inset.r = parseFloat(cs.paddingRight) * k || 0; inset.b = parseFloat(cs.paddingBottom) * k || 0; inset.l = parseFloat(cs.paddingLeft) * k || 0;
 }
@@ -267,7 +265,7 @@ function resize() {
 function canvasTex(w, draw, repeat, h) {
   const c = document.createElement("canvas"); c.width = w; c.height = h || w;
   const g = c.getContext("2d"); g.imageSmoothingEnabled = false; draw(g, w, h || w);
-  const t = new THREE.CanvasTexture(c); t.magFilter = STYLE64 ? THREE.LinearFilter : THREE.NearestFilter; t.minFilter = STYLE64 ? THREE.LinearMipmapLinearFilter : THREE.NearestMipmapNearestFilter;
+  const t = new THREE.CanvasTexture(c); t.magFilter = THREE.NearestFilter; t.minFilter = THREE.NearestMipmapNearestFilter;
   if (repeat) t.wrapS = t.wrapT = THREE.RepeatWrapping; return t;
 }
 const leafTex = canvasTex(128, (g, S) => {
@@ -288,11 +286,7 @@ const flowerTex = canvasTex(64, (g, S) => {
   for (let i = 0; i < 70; i++) { const l = 200 + rnd() * 55 | 0; g.fillStyle = `rgb(${l},${l},${l * 0.85 | 0})`; g.fillRect(rr(4, S - 4), rr(S * 0.1, S * 0.62), rr(2, 4), rr(2, 4)); } });
 const barkTex = canvasTex(64, (g, S) => { g.fillStyle = "#6b4a33"; g.fillRect(0, 0, S, S);
   for (let i = 0; i < 160; i++) { g.fillStyle = rnd() < 0.5 ? `rgba(30,20,14,${rr(0.2, 0.6)})` : `rgba(160,110,70,${rr(0.1, 0.35)})`; g.fillRect(rr(0, S), rr(-10, S), rr(1, 3), rr(8, 30)); } }, true);
-const groundTex = STYLE64 ? canvasTex(32, (g, S) => { const id = g.createImageData(S, S);
-  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) { const i = y * S + x, k = Math.PI * 2 / S;
-    const v = 214 + 26 * Math.sin(x * k * 2 + Math.sin(y * k * 3) * 1.5) * Math.cos(y * k * 2 + Math.sin(x * k) * 1.2) + (rnd() * 18 | 0);
-    id.data[i * 4] = id.data[i * 4 + 1] = id.data[i * 4 + 2] = Math.min(255, v); id.data[i * 4 + 3] = 255; }
-  g.putImageData(id, 0, 0); }, true) : canvasTex(128, (g, S) => { const id = g.createImageData(S, S);
+const groundTex = canvasTex(128, (g, S) => { const id = g.createImageData(S, S);
   for (let i = 0; i < S * S; i++) { const v = 170 + (rnd() * 85 | 0) - (rnd() < 0.08 ? 60 : 0); id.data[i * 4] = id.data[i * 4 + 1] = id.data[i * 4 + 2] = v; id.data[i * 4 + 3] = 255; }
   g.putImageData(id, 0, 0); }, true);
 const gravelTex = CAN ? canvasTex(64, (g, S) => {   // packed orange sand with soft ruts
@@ -336,18 +330,7 @@ function text(g, s, x, y, sc, col, shadow = "rgba(0,0,0,0.55)") {
     for (let n = 0; n < s.length; n++) { const gl = F[s[n]] || F["?"];
       for (let r = 0; r < 7; r++) { const row = gl[r]; if (!row) continue;
         for (let b = 0; b < 5; b++) if (row & (16 >> b)) g.fillRect(x + ox + (n * 6 + b) * sc, y + oy + r * sc, sc, sc); } } };
-  if (STYLE64 && shadow) {   // 64-style lettering: thick black outline, warm or cool two-tone fill
-    for (const [ox, oy] of [[-1, -1], [0, -1], [1, -1], [-1, 0], [1, 0], [-1, 1], [0, 1], [1, 1], [1, 2], [2, 2], [0, 2]]) pass(ox * sc, oy * sc, "#101018");
-    const grad = col === "#f3cf62" ? ["#fff06a", "#ffb02e"] : col === "#e9ece2" ? ["#ffffff", "#b9cdf2"] : null;
-    if (!grad) { pass(0, 0, col); return; }
-    passRows(grad); return;
-  }
   if (shadow) pass(sc, sc, shadow); pass(0, 0, col);
-  function passRows(gr) {
-    for (let n = 0; n < s.length; n++) { const gl = F[s[n]] || F["?"];
-      for (let r = 0; r < 7; r++) { const row = gl[r]; if (!row) continue; g.fillStyle = r < 3 ? gr[0] : gr[1];
-        for (let b = 0; b < 5; b++) if (row & (16 >> b)) g.fillRect(x + (n * 6 + b) * sc, y + r * sc, sc, sc); } }
-  }
 }
 function textTex(w, h, draw) { return canvasTex(w, (g) => draw(g), false, h); }
 
@@ -441,7 +424,7 @@ function groundCol(x, z, h, slope, n, n2) {
     r += (0.47 - r) * p; gg += (0.39 - gg) * p; b += (0.27 - b) * p;
     const sh = 1 - shadeAt(x, z) * 0.5; col[i * 3] = r * sh; col[i * 3 + 1] = gg * sh; col[i * 3 + 2] = b * sh * 1.05;
     }
-    uv.setXY(i, x / (STYLE64 ? 6 : 3.2), z / (STYLE64 ? 6 : 3.2));
+    uv.setXY(i, x / 3.2, z / 3.2);
   }
   geo.setAttribute("color", new THREE.BufferAttribute(col, 3)); geo.computeVertexNormals();
   scene.add(new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true, map: groundTex })));
@@ -521,27 +504,12 @@ if (LAK) {
     m.position.y = WL + dy; m.renderOrder = ro; scene.add(m); waterL.push(m);
   }
 }
-/* sky: gradient + sun glow, and in the 64 style big puffy cartoon clouds (the Rust renderer uses the same GLSL) */
-const SKY_FS = `uniform vec3 uSun; uniform vec3 uFog; uniform vec3 uTop; uniform vec3 uGlow; uniform float uHalo; uniform float uClouds; varying vec3 vD;
-float skh(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
-float skn(vec2 p){ vec2 i = floor(p), f = fract(p), u = f * f * (3.0 - 2.0 * f);
-  return mix(mix(skh(i), skh(i + vec2(1.0, 0.0)), u.x), mix(skh(i + vec2(0.0, 1.0)), skh(i + vec2(1.0, 1.0)), u.x), u.y); }
-vec3 skyColor(vec3 dir){ vec3 d = normalize(dir); float s = max(dot(d, uSun), 0.0);
-  vec3 c = mix(uFog, uTop, smoothstep(0.0, 0.6, d.y)) + uGlow * pow(s, 6.0) + uGlow * uHalo * pow(s, 2.0) * (1.0 - smoothstep(0.0, 0.5, d.y));
-  if (uClouds > 0.0 && d.y > 0.0) { vec2 p = d.xz / (d.y + 0.12) * 1.5;
-    float n = skn(p) * 0.6 + skn(p * 2.1 + 3.7) * 0.3 + skn(p * 4.3 + 9.1) * 0.1;
-    float m = smoothstep(0.55, 0.59, n) * smoothstep(0.02, 0.14, d.y);
-    vec3 cc = mix(vec3(0.78, 0.84, 0.96), vec3(1.0), smoothstep(0.57, 0.7, n) * (0.6 + 0.4 * d.y));
-    c = mix(c, cc, m * uClouds); }
-  return c; }
-`;
 const sky = new THREE.Mesh(new THREE.SphereGeometry(1600, 24, 12), new THREE.ShaderMaterial({
   side: THREE.BackSide, depthWrite: false, blending: THREE.NoBlending,
-  uniforms: { uSun: { value: SUN }, uFog: { value: FOG }, uClouds: { value: STYLE64 ? 1 : 0 }, uTop: { value: STYLE64 ? (CAN ? new THREE.Color(0.3, 0.52, 0.92) : new THREE.Color(0.2, 0.44, 0.95)) : CAN ? new THREE.Color(0.3, 0.45, 0.76) : LAK ? new THREE.Color(0.38, 0.45, 0.72) : SNOW ? new THREE.Color(0.36, 0.55, 0.84) : FOG.clone().add(new THREE.Color(0.12, 0.12, 0.1)) },
-    uGlow: { value: STYLE64 ? new THREE.Color(0.3, 0.28, 0.2) : CAN ? new THREE.Color(0.75, 0.42, 0.16) : LAK ? new THREE.Color(0.7, 0.4, 0.3) : SNOW ? new THREE.Color(0.5, 0.32, 0.18) : new THREE.Color(0.32, 0.29, 0.2) }, uHalo: { value: STYLE64 ? 0.05 : SNOW ? 0.22 : CAN ? 0.35 : LAK ? 0.4 : 0.0 } },
+  uniforms: { uSun: { value: SUN }, uFog: { value: FOG }, uTop: { value: CAN ? new THREE.Color(0.3, 0.45, 0.76) : LAK ? new THREE.Color(0.38, 0.45, 0.72) : SNOW ? new THREE.Color(0.36, 0.55, 0.84) : FOG.clone().add(new THREE.Color(0.12, 0.12, 0.1)) },
+    uGlow: { value: CAN ? new THREE.Color(0.75, 0.42, 0.16) : LAK ? new THREE.Color(0.7, 0.4, 0.3) : SNOW ? new THREE.Color(0.5, 0.32, 0.18) : new THREE.Color(0.32, 0.29, 0.2) }, uHalo: { value: SNOW ? 0.22 : CAN ? 0.35 : LAK ? 0.4 : 0.0 } },
   vertexShader: "varying vec3 vD; void main(){ vD = normalize(position); gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0); }",
-  fragmentShader: SKY_FS
-    + "void main(){ gl_FragColor = vec4(skyColor(vD), 0.0); }"
+  fragmentShader: "uniform vec3 uSun; uniform vec3 uFog; uniform vec3 uTop; uniform vec3 uGlow; uniform float uHalo; varying vec3 vD; void main(){ float s = max(dot(normalize(vD), uSun), 0.0); vec3 c = mix(uFog, uTop, smoothstep(0.0,0.6,vD.y)) + uGlow*pow(s,6.0) + uGlow*uHalo*pow(s,2.0)*(1.0-smoothstep(0.0,0.5,vD.y)); gl_FragColor = vec4(c,0.0); }"
 })); sky.renderOrder = -1; scene.add(sky); sky.material.userData.kind = "sky";
 /* snow map: two rings of distant peaks that travel with the camera (alpenglow on the sunward faces) */
 const peaks = new THREE.Group(); scene.add(peaks);
@@ -572,7 +540,6 @@ const card = new THREE.PlaneGeometry(1, 1);
   for (const t of trees) {
     const pine = SNOW ? true : CAN ? false : LAK ? rnd() < 0.55 : rnd() < 0.22, autumn = !pine && !CAN && rnd() < (LAK ? 0.12 : 0.07), birch = LAK && !pine;
     const H = pine ? rr(15, 22) : CAN ? rr(4, 7) : birch ? rr(12, 17) : rr(11, 17), r = pine ? rr(0.18, 0.28) : CAN ? rr(0.14, 0.24) : birch ? rr(0.14, 0.22) : rr(0.25, 0.5);
-    t.pine = pine; t.birch = birch; t.autumn = autumn; t.H = H;
     obstacles.push({ x: t.x, z: t.z, r: r + 0.06 });
     const bark = tmpC.setRGB(1, 1, 1).multiplyScalar(rr(0.7, 1.05)); if (pine) bark.setRGB(1.05, 0.78, 0.7); if (birch) bark.setRGB(2.0, 2.25, 2.5).multiplyScalar(rr(0.85, 1.0)); if (CAN) bark.setRGB(1.1, 0.95, 0.85);
     tmpO.position.set(t.x, t.y - 0.3, t.z); tmpO.rotation.set(rr(-0.05, 0.05), rnd() * 6, rr(-0.05, 0.05));
@@ -602,35 +569,10 @@ const card = new THREE.PlaneGeometry(1, 1);
             pushT(snowM, snowC, tmpO, tmpC.setRGB(0.92, 0.95, 1.0).multiplyScalar(0.85 + 0.2 * f)); } } }
     }
   }
-  if (!STYLE64) {
   instanced(unitCyl, new THREE.MeshLambertMaterial({ map: barkTex }), trunkM, trunkC);
   instanced(card, sway(new THREE.MeshBasicMaterial({ map: leafTex, alphaTest: 0.5, side: THREE.DoubleSide }), 0.16, false), leafM, leafC);
   instanced(card, sway(new THREE.MeshBasicMaterial({ map: needleTex, alphaTest: 0.5, side: THREE.DoubleSide }), 0.08, false), needleM, needleC);
   if (snowM.length) instanced(card, sway(new THREE.MeshBasicMaterial({ map: leafTex, alphaTest: 0.5, side: THREE.DoubleSide }), 0.06, false), snowM, snowC);
-  } else {   // 64 style: chunky painted sprite trees on two crossed cards
-    const spr = (draw) => canvasTex(64, (g) => { g.clearRect(0, 0, 64, 64); draw(g); }, false);
-    const disc = (g, x, y, r, c) => { g.fillStyle = c; g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill(); };
-    const round = (dark, mid, light, trunk, marks) => spr((g) => { const tw = marks ? 4 : 6; g.fillStyle = trunk; g.fillRect(32 - tw / 2, 34, tw, 30);
-      if (marks) { g.fillStyle = "#2a2a2a"; for (let y = 38; y < 62; y += 6) g.fillRect(30 + (y % 4 ? 1 : 0), y, 2, 2); } else { g.fillStyle = "rgba(0,0,0,0.25)"; g.fillRect(32, 34, tw / 2, 30); }
-      disc(g, 32, 24, 22, dark); disc(g, 22, 30, 13, dark); disc(g, 42, 30, 13, dark); disc(g, 30, 21, 19, mid); disc(g, 21, 27, 10, mid); disc(g, 40, 27, 10, mid); disc(g, 24, 15, 8, light); disc(g, 37, 12, 5, light); });
-    const pineS = (dark, mid, snow) => spr((g) => { g.fillStyle = "#5a3a22"; g.fillRect(29, 52, 6, 12);
-      for (let l = 0; l < 4; l++) { const y0 = 6 + l * 12, w = 10 + l * 7; g.fillStyle = dark; g.beginPath(); g.moveTo(32, y0); g.lineTo(32 - w, y0 + 18); g.lineTo(32 + w, y0 + 18); g.fill();
-        g.fillStyle = mid; g.beginPath(); g.moveTo(32, y0 + 1); g.lineTo(32 - w * 0.75, y0 + 16); g.lineTo(32 + w * 0.15, y0 + 16); g.fill();
-        if (snow) { g.fillStyle = "#f4f8ff"; g.beginPath(); g.moveTo(32, y0); g.lineTo(32 - w * 0.5, y0 + 8); g.lineTo(32 + w * 0.5, y0 + 8); g.fill(); } } });
-    const kinds = {
-      round: round("#1f6a1c", "#3e9a2a", "#7fd04a", "#7a4e2a"), autumn: round("#a2481a", "#e07b22", "#ffc04a", "#7a4e2a"),
-      birch: round("#4f8a1e", "#86c234", "#c6ee6a", "#eeeee6", true), scrub: round("#5d6a2a", "#86933c", "#b9c46a", "#8a5a34"),
-      pine: pineS("#14502a", "#2c7a3a", false), snowPine: pineS("#1d4a36", "#2e6a4a", true) };
-    const groups = {};
-    for (const t of trees) {
-      const k = SNOW ? "snowPine" : t.pine ? "pine" : CAN ? "scrub" : t.autumn ? "autumn" : t.birch ? "birch" : "round";
-      const W = t.H * (t.pine ? 0.55 : CAN ? 1.0 : 0.75), v = 0.88 + hash2(Math.round(t.x * 7), Math.round(t.z * 7)) * 0.2;
-      tmpO.position.set(t.x, t.y - 0.2, t.z); tmpO.rotation.set(0, hash2(Math.round(t.x), Math.round(t.z)) * 3.14, 0); tmpO.scale.set(W, t.H * (CAN ? 1.1 : 1), W);
-      (groups[k] = groups[k] || [[], []]); pushT(groups[k][0], groups[k][1], tmpO, tmpC.setRGB(v, v, v));
-    }
-    const cross = clumpGeo(2);
-    for (const k in groups) instanced(cross, sway(new THREE.MeshBasicMaterial({ map: kinds[k], alphaTest: 0.5, side: THREE.DoubleSide }), 0.05, true), groups[k][0], groups[k][1]);
-  }
 }
 /* far forest: faceted low-poly pines and broadleaves with baked light, grouped in 400 m chunks so off-screen ones are culled */
 {
@@ -690,7 +632,7 @@ function clumpGeo(n) {
   const out = new THREE.BufferGeometry(); out.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); out.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2)); out.setIndex(idx); return out;
 }
 const clump2 = clumpGeo(2), clump3 = clumpGeo(3);
-if ((MAPN === "forest" || LAK) && !STYLE64) { const M = [], C = [];
+if (MAPN === "forest" || LAK) { const M = [], C = [];
   for (let i = 0; i < 4000; i++) { const t = trees[(rnd() * trees.length) | 0], a = rnd() * 6.28, d = rr(1, 7), x = t.x + Math.cos(a) * d, z = t.z + Math.sin(a) * d;
     if (pathDist(x, z) < ROAD + 1.3 || (LAK && height(x, z) < WL + 0.3)) continue;
     tmpO.position.set(x, height(x, z) - 0.1, z); tmpO.rotation.set(0, rnd() * 6, 0); const s = rr(1.0, 2.2); tmpO.scale.set(s * 1.3, s, s * 1.3);
@@ -837,9 +779,9 @@ const GR = 22, GCELL = 1.1, GMAX = (GR * 2 + 1) ** 2 * 2;
 const grass = new THREE.InstancedMesh(clump2, sway(new THREE.MeshBasicMaterial({ map: grassTex, alphaTest: 0.5, side: THREE.DoubleSide }), 0.14, true), GMAX);
 grass.frustumCulled = false; scene.add(grass); grass.setColorAt(0, tmpC.setRGB(1, 1, 1));
 let gcx = 1e9, gcz = 1e9;
-if (SNOW || STYLE64) grass.count = 0;
+if (SNOW) grass.count = 0;
 function updateGrass(px, pz) {
-  if (SNOW || STYLE64) return;
+  if (SNOW) return;
   const cx = Math.round(px / GCELL), cz = Math.round(pz / GCELL);
   if (Math.abs(cx - gcx) < 3 && Math.abs(cz - gcz) < 3) return; gcx = cx; gcz = cz;
   let n = 0;
@@ -1047,12 +989,10 @@ function emitDust(x, y, z, vx, vy, vz, size) { const i = dHead; dHead = (dHead +
 /* ================= post: god rays + HUD + grade + dither ================= */
 const postScene = new THREE.Scene(), postCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 post = new THREE.ShaderMaterial({
-  uniforms: { tScene: { value: null }, tHud: { value: null }, uSun: { value: new THREE.Vector2(0.5, 0.8) }, uSunVis: { value: 0 }, uTime: uTime, uFlash: { value: 0 }, uSpeed: { value: 0 },
-    uStyle: { value: STYLE64 ? 1 : 0 }, uTexel: { value: new THREE.Vector2(1 / 320, 1 / 180) } },
+  uniforms: { tScene: { value: null }, tHud: { value: null }, uSun: { value: new THREE.Vector2(0.5, 0.8) }, uSunVis: { value: 0 }, uTime: uTime, uFlash: { value: 0 }, uSpeed: { value: 0 } },
   vertexShader: "varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy,0.0,1.0); }",
   fragmentShader: `
     uniform sampler2D tScene; uniform sampler2D tHud; uniform vec2 uSun; uniform float uSunVis; uniform float uTime; uniform float uFlash; uniform float uSpeed;
-    uniform float uStyle; uniform vec2 uTexel;
     varying vec2 vUv;
     float bayer(vec2 p){ vec2 q = mod(floor(p),4.0); int i = int(q.x + q.y*4.0); float v = 0.0;
       if(i==0)v=0.;else if(i==1)v=8.;else if(i==2)v=2.;else if(i==3)v=10.;else if(i==4)v=12.;else if(i==5)v=4.;else if(i==6)v=14.;else if(i==7)v=6.;
@@ -1060,8 +1000,6 @@ post = new THREE.ShaderMaterial({
       return v/16.0 - 0.47; }
     void main(){
       vec3 c = texture2D(tScene, vUv).rgb;
-      if (uStyle > 0.5) c = c * 0.4 + (texture2D(tScene, vUv + vec2(uTexel.x, 0.0)).rgb + texture2D(tScene, vUv - vec2(uTexel.x, 0.0)).rgb
-        + texture2D(tScene, vUv + vec2(0.0, uTexel.y)).rgb + texture2D(tScene, vUv - vec2(0.0, uTexel.y)).rgb) * 0.15;   // console video blur
       vec2 fromC = vUv - vec2(0.5, 0.52); float edge = smoothstep(0.12, 0.62, length(fromC)) * uSpeed;
       if (edge > 0.002) { vec3 bl = c; for (int i = 1; i <= 5; i++) bl += texture2D(tScene, vUv - fromC * 0.028 * uSpeed * float(i)).rgb; c = mix(c, bl / 6.0, edge); }
       vec2 d = uSun - vUv; float L = length(d); if (L > 1.3) d *= 1.3 / L;
@@ -1069,14 +1007,14 @@ post = new THREE.ShaderMaterial({
       for (int i = 0; i < 20; i++) { p += st; vec4 s = texture2D(tScene, clamp(p, 0.001, 0.999));
         float l = dot(s.rgb, vec3(0.3,0.59,0.11)); acc += smoothstep(0.66, 0.92, l) * (1.0 - s.a) * w; w *= 0.952; }
       acc /= 13.0;
-      c += vec3(1.0, 0.93, 0.74) * acc * 0.85 * uSunVis * (uStyle > 0.5 ? 0.3 : 1.0) * (0.9 + 0.1 * sin(uTime * 0.7 + vUv.x * 3.0));
-      float g = dot(c, vec3(0.3,0.59,0.11));
-      vec2 vv = vUv - 0.5;
-      if (uStyle > 0.5) { c = mix(vec3(g), c, 1.3); c = (c - 0.5) * 1.05 + 0.5; c *= 1.04; c *= 1.0 - dot(vv, vv) * (0.22 + uSpeed * 0.6); }
-      else { c = mix(vec3(g), c, 0.86); c = (c - 0.5) * 1.08 + 0.5; c *= vec3(1.0, 1.0, 0.97); c *= 1.0 - dot(vv, vv) * (0.5 + uSpeed * 0.7); }
+      c += vec3(1.0, 0.93, 0.74) * acc * 0.85 * uSunVis * (0.9 + 0.1 * sin(uTime * 0.7 + vUv.x * 3.0));
+      float g = dot(c, vec3(0.3,0.59,0.11)); c = mix(vec3(g), c, 0.86);
+      c = (c - 0.5) * 1.08 + 0.5; c *= vec3(1.0, 1.0, 0.97);
+      vec2 vv = vUv - 0.5; c *= 1.0 - dot(vv, vv) * (0.5 + uSpeed * 0.7);
       c += vec3(0.25, 0.2, 0.15) * uFlash;
       vec4 h = texture2D(tHud, vUv); c = mix(c, h.rgb, h.a);
-      if (uStyle < 0.5) { c += bayer(gl_FragCoord.xy) / 26.0; c = floor(clamp(c, 0.0, 1.0) * 26.0 + 0.5) / 26.0; }
+      c += bayer(gl_FragCoord.xy) / 26.0;
+      c = floor(clamp(c, 0.0, 1.0) * 26.0 + 0.5) / 26.0;
       gl_FragColor = vec4(c, 1.0);
     }`,
   depthTest: false, depthWrite: false
@@ -1304,14 +1242,13 @@ addEventListener("keydown", e => { if (!alive) return;
   if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"].includes(e.code)) e.preventDefault();
   keys.add(e.code);
   if (game.state === "title" && (e.code === "Enter" || e.code === "Space")) startGame();
-  if (game.state === "title" && e.code === "KeyT") { toggleStyle(); return; }
   if (game.state === "title" && /^Digit[1234]$/.test(e.code)) { const want = ["forest", "snow", "canyon", "lakes"][+e.code[5] - 1]; if (want !== MAPN) { setTimeout(() => switchMap(want), 0); return; } }
   if (e.code === "KeyC") cycleCam(); if (e.code === "KeyR") resetCar(); if (e.code === "KeyM") toggleSound(); if (e.code === "Escape") toTitle();
 }, SIG);
 addEventListener("keyup", e => keys.delete(e.code), SIG);
 const touches = new Map(); let touchUsed = false, UI = {};
 const lowXY = (e) => [e.clientX / innerWidth * LW, e.clientY / innerHeight * LH];
-const TOPB = ["snd", "vib", "art", "cam", "pix", "rst", "menu"];
+const TOPB = ["snd", "vib", "cam", "pix", "rst", "menu"];
 function hitButton(x, y) {
   if (game.state === "title") for (const k of ["mapF", "mapS", "mapC", "mapL"]) { const b = UI[k]; if (b && x >= b.x - 2 && x <= b.x + b.w + 2 && y >= b.y - 3 && y <= b.y + b.h + 3) return k; }
   for (const k of TOPB) { const b = UI[k]; if (b && x >= b.x - 2 && x <= b.x + b.w + 2 && y >= b.y - 2 && y <= b.y + b.h + 3) return k; }
@@ -1326,7 +1263,6 @@ canvas.addEventListener("pointerdown", e => {
   try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
   const [x, y] = lowXY(e), b = hitButton(x, y);
   if (b) buzz("tap", TOPB.includes(b) || b.startsWith("map") ? 0.55 : 0.4); else if (game.state === "title") buzz("tap", 0.55);
-  if (b === "art") { toggleStyle(); return; }
   if (b === "snd") toggleSound(); else if (b === "vib") { vibOn = !vibOn; try { localStorage.setItem("fogwood-vib", vibOn ? "1" : "0"); } catch (_) {} if (vibOn) buzz("shift", 0.7); flashMsg(vibOn ? "HAPTICS ON" : "HAPTICS OFF", 1); } else if (b === "pix") { pixIdx = (pixIdx + 1) % PIX.length; try { localStorage.setItem("fogwood-pix", String(pixIdx)); } catch (_) {} resize(); flashMsg(["CHUNKY PIXELS", "MEDIUM PIXELS", "FINE PIXELS"][pixIdx], 1); }
   else if (b === "mapF" || b === "mapS" || b === "mapC" || b === "mapL") { const want = { mapF: "forest", mapS: "snow", mapC: "canyon", mapL: "lakes" }[b]; if (want !== MAPN) setTimeout(() => switchMap(want), 0); }
   else if (game.state === "title") startGame();
@@ -1422,7 +1358,6 @@ function initAudio() {
 function oneShot(buf, rate, gain, lp) { if (!A.master || !soundOn) return; const s = ac.createBufferSource(); s.buffer = buf; s.playbackRate.value = rate;
   const g = ac.createGain(); g.gain.value = gain; let n = s; if (lp) { const f = ac.createBiquadFilter(); f.type = lp[0]; f.frequency.value = lp[1]; s.connect(f); n = f; } n.connect(g); g.connect(A.master); s.start(); }
 function shiftEvent() { if (game.state === "drive") buzz("shift", 0.45); if (!A.master) return; const t = ac.currentTime; A.engG.gain.cancelScheduledValues(t); A.engG.gain.setValueAtTime(A.engG.gain.value, t); A.engG.gain.linearRampToValueAtTime(0.2, t + 0.05); A.engG.gain.linearRampToValueAtTime(0.6, t + 0.24); }
-function toggleStyle() { try { localStorage.setItem("fogwood-style", STYLE64 ? "pix" : "64"); } catch (_) {} setTimeout(() => switchMap(MAPN), 0); }
 function toggleSound() { soundOn = !soundOn; if (A.master) { ac.resume(); A.master.gain.setTargetAtTime(soundOn ? 0.9 : 0, ac.currentTime, 0.15); } flashMsg(soundOn ? "SOUND ON" : "SOUND OFF", 1); }
 let popCool = 0;
 function updateAudio(dt, inp, gust) {
@@ -1465,11 +1400,10 @@ function drawHUD(inp) {
     box(g, x, pt, w, bh, on ? "rgba(243,207,98,0.28)" : PANEL, on ? AMBER : EDGE);
     text(g, label, x + (w - textW(label, U)) / 2, pt + 3 * U, U, on ? AMBER : INK); bx = x - gap - bw; };
   btn("snd", "SND", soundOn); if (HAPTIC) btn("vib", "VIB", vibOn); else UI.vib = null; btn("pix", "PIX", false);
-  if (game.state === "title") btn("art", STYLE64 ? "STYLE 64" : "STYLE PIXEL", false); else UI.art = null;
   if (game.state === "drive") { btn("cam", "CAM", false); btn("rst", "RST", false); btn("menu", "MENU", false); } else { UI.cam = UI.rst = UI.menu = null; }
 
   if (game.state === "title") {
-    g.fillStyle = STYLE64 ? "rgba(6,9,20,0.16)" : "rgba(6,9,6,0.42)"; g.fillRect(0, 0, LW, LH);
+    g.fillStyle = "rgba(6,9,6,0.42)"; g.fillRect(0, 0, LW, LH);
     const sc = Math.max(2, Math.min(4 * U, Math.floor(LH / 42), Math.floor(LW / 46))), ty = Math.round(LH * 0.15);
     text(g, "FOGWOOD", (LW - textW("FOGWOOD", sc)) / 2, ty, sc, INK); text(g, "RALLY", (LW - textW("RALLY", sc)) / 2, ty + 9 * sc, sc, AMBER);
     if (!portrait) {
@@ -1584,7 +1518,7 @@ function nglExport() {
     const e = { id: mats.size, kind, color: col(m.color), spec: col(m.specular), shin: m.shininess || 30, emis: m.emissive ? col(m.emissive) : [0, 0, 0], map: texId(m.map),
       at: m.alphaTest || 0, tr: m.transparent ? 1 : 0, op: m.opacity, side: m.side, vc: m.vertexColors ? 1 : 0, fog: m.fog ? 1 : 0, dw: m.depthWrite ? 1 : 0, dt: m.depthTest ? 1 : 0,
       po: m.polygonOffset ? [m.polygonOffsetFactor, m.polygonOffsetUnits] : null, blend: m.blending, sway: m.userData.sway || null, size: m.size || 1 };
-    if (kind === "sky") { const u = m.uniforms; e.u = { sun: u.uSun.value.toArray(), fog: col(u.uFog.value), top: col(u.uTop.value), glow: col(u.uGlow.value), halo: u.uHalo.value, clouds: u.uClouds.value }; }
+    if (kind === "sky") { const u = m.uniforms; e.u = { sun: u.uSun.value.toArray(), fog: col(u.uFog.value), top: col(u.uTop.value), glow: col(u.uGlow.value), halo: u.uHalo.value }; }
     if (kind === "dust") { const u = m.uniforms; e.u = { dens: u.uDens.value, fog: col(u.uFog.value), col: col(u.uCol.value) }; }
     mats.set(m, e); return e.id; };
   const visible = (o) => { for (let p = o; p; p = p.parent) if (!p.visible) return false; return true; };
@@ -1603,7 +1537,7 @@ function nglExport() {
   const lights = { hemi: [], dir: [] };
   scene.traverse((o) => { if (o.isHemisphereLight) lights.hemi.push({ sky: col(o.color).map(v => v * o.intensity), ground: col(o.groundColor).map(v => v * o.intensity), d: o.position.clone().normalize().toArray() });
     if (o.isDirectionalLight) lights.dir.push({ c: col(o.color).map(v => v * o.intensity), d: o.position.clone().sub(o.target.position).normalize().toArray() }); });
-  const head = { v: 1, map: MAPN, style: STYLE64 ? 1 : 0, fog: { c: col(scene.fog.color), d: scene.fog.density }, clear: [FOG.r, FOG.g, FOG.b, 0], lights,
+  const head = { v: 1, map: MAPN, fog: { c: col(scene.fog.color), d: scene.fog.density }, clear: [FOG.r, FOG.g, FOG.b, 0], lights,
     texs: [...texs.values()], geos: [...geos.values()], mats: [...mats.values()], objs };
   const json = new TextEncoder().encode(JSON.stringify(head)), jl = (json.length + 3) & ~3;
   const out = new Uint8Array(8 + jl + blobLen), dv = new DataView(out.buffer); dv.setUint32(0, 0x31535746, true); dv.setUint32(4, json.length, true);
