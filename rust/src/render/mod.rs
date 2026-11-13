@@ -17,7 +17,7 @@ enum MatKind { Basic, Lambert, Phong, Points, Sky, Dust }
 
 struct Material {
     kind: MatKind, color: [f32; 3], spec: [f32; 3], shin: f32, emis: [f32; 3], map: i32, alpha_test: f32, transparent: bool, opacity: f32,
-    side: i32, vcolor: bool, fog: bool, depth_write: bool, depth_test: bool, poly: Option<(f32, f32)>, blend: i32, sway: Option<(f32, bool)>, size: f32,
+    side: i32, vcolor: bool, fog: bool, depth_write: bool, depth_test: bool, poly: Option<(f32, f32)>, blend: i32, sway: Option<(f32, bool, f32, f32)>, size: f32,
     sky: Option<([f32; 3], [f32; 3], [f32; 3], [f32; 3], f32)>, dust: Option<(f32, [f32; 3], [f32; 3])>,
 }
 struct Texture { tex: glow::Texture, m: [f32; 9] }
@@ -155,7 +155,7 @@ impl Renderer {
                 alpha_test: f(&m["at"]), transparent: m["tr"].as_i64() == Some(1), opacity: f(&m["op"]), side: m["side"].as_i64().unwrap_or(0) as i32,
                 vcolor: m["vc"].as_i64() == Some(1), fog: m["fog"].as_i64() == Some(1), depth_write: m["dw"].as_i64() != Some(0), depth_test: m["dt"].as_i64() != Some(0),
                 poly: m["po"].as_array().map(|a| (f(&a[0]), f(&a[1]))), blend: m["blend"].as_i64().unwrap_or(1) as i32,
-                sway: m["sway"].as_array().map(|a| (f(&a[0]), a[1].as_i64() == Some(1))), size: f(&m["size"]), sky, dust });
+                sway: m["sway"].as_array().map(|a| (f(&a[0]), a[1].as_i64() == Some(1), a.get(2).map(f).unwrap_or(0.0), a.get(3).map(f).unwrap_or(0.0))), size: f(&m["size"]), sky, dust });
         }
         let mut objs = vec![];
         for o in head["objs"].as_array().cloned().unwrap_or_default() {
@@ -201,7 +201,7 @@ impl Renderer {
         let lit = match m.kind { MatKind::Basic => 0, MatKind::Lambert => 1, MatKind::Phong => 2, _ => return None };
         let has = |n: &str| g.attrs.iter().any(|a| a.name == n);
         Some(MeshKey { lit, map: m.map >= 0 && (m.map as usize) < s.texs.len() && has("uv"), vcolor: m.vcolor && has("color"), inst: o.kind == ObjKind::Inst, icolor: o.cbuf.is_some(),
-            sway: m.sway.map(|(a, u)| ((a * 1000.0).round() as u32, u)), alpha_test: m.alpha_test > 0.0, double_side: m.side == 2, fog: m.fog, transparent: m.transparent })
+            sway: m.sway.map(|(a, u, fne, ffa)| ((a * 1000.0).round() as u32, u, (fne * 10.0).round() as u32, (ffa * 10.0).round() as u32)), alpha_test: m.alpha_test > 0.0, double_side: m.side == 2, fog: m.fog, transparent: m.transparent })
     }
     unsafe fn mesh_prog(&mut self, k: &MeshKey) -> Result<(), String> {
         if !self.mesh_progs.contains_key(k) { let p = compile(&self.gl, &mesh_vs(k), &mesh_fs(k))?; self.mesh_progs.insert(k.clone(), p); }
@@ -295,7 +295,9 @@ impl Renderer {
         for list in [&opaque, &transp] { for &(_, _, i) in list.iter() {
             let o = &s.objs[i]; let m = &s.mats[o.mat]; let g = &s.geos[o.geo];
             // state
-            if m.transparent && m.blend != 0 { gl.enable(glow::BLEND); gl.blend_equation(glow::FUNC_ADD);
+            if m.transparent && m.blend == 2 { gl.enable(glow::BLEND); gl.blend_equation(glow::FUNC_ADD);   // additive (aurora)
+                gl.blend_func_separate(glow::SRC_ALPHA, glow::ONE, glow::ZERO, glow::ONE); }
+            else if m.transparent && m.blend != 0 { gl.enable(glow::BLEND); gl.blend_equation(glow::FUNC_ADD);
                 gl.blend_func_separate(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA, glow::ONE, glow::ONE_MINUS_SRC_ALPHA); } else { gl.disable(glow::BLEND); }
             if m.depth_test { gl.enable(glow::DEPTH_TEST); } else { gl.disable(glow::DEPTH_TEST); }
             gl.depth_mask(m.depth_write);

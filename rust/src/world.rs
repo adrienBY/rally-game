@@ -35,7 +35,8 @@ fn tou_hill(x: f64, z: f64) -> f64 { ridged(x * 0.006 + 4.0, z * 0.006 - 9.0) * 
 
 /// Canyon: flat-topped mesas with cliff edges
 fn canyon_mesa(x: f64, z: f64) -> f64 {
-    smooth(0.53, 0.585, fbm(x * 0.0065 + 21.0, z * 0.0065 + 7.0, 4)) * (24.0 + fbm(x * 0.03 + 5.0, z * 0.03, 4) * 14.0)
+    let h = smooth(0.545, 0.57, fbm(x * 0.0065 + 21.0, z * 0.0065 + 7.0, 4)) * (24.0 + fbm(x * 0.03 + 5.0, z * 0.03, 4) * 14.0); let t = h / 6.0; let f = t - t.floor();
+    (t.floor() + smooth(0.7, 1.0, f)) * 6.0
 }
 
 /// `path` = road centreline every metre, `roadh` = road height per point (both as the JS build computed them).

@@ -48,3 +48,18 @@ pub extern "system" fn Java_com_fogwood_rally_NativeCore_glMessage<'l>(env: JNIE
 pub extern "system" fn Java_com_fogwood_rally_NativeCore_glStatus<'l>(mut env: JNIEnv<'l>, _c: JClass<'l>) -> jstring {
     let s = crate::gfx::status(); out(&mut env, s)
 }
+
+// ---- sound engine (rust/audio): AudioTrack thread pulls audioRender, the page posts binary messages ----
+use jni::objects::JFloatArray;
+#[no_mangle]
+pub extern "system" fn Java_com_fogwood_rally_NativeCore_audioInit<'l>(_env: JNIEnv<'l>, _c: JClass<'l>, sr: jint) { fogwood_audio::native::init(sr as f32); }
+#[no_mangle]
+pub extern "system" fn Java_com_fogwood_rally_NativeCore_audioMessage<'l>(env: JNIEnv<'l>, _c: JClass<'l>, data: JByteArray<'l>) {
+    if let Ok(v) = env.convert_byte_array(&data) { fogwood_audio::native::message(&v); }
+}
+#[no_mangle]
+pub extern "system" fn Java_com_fogwood_rally_NativeCore_audioRender<'l>(env: JNIEnv<'l>, _c: JClass<'l>, out: JFloatArray<'l>, frames: jint) {
+    thread_local! { static BUF: std::cell::RefCell<Vec<f32>> = const { std::cell::RefCell::new(Vec::new()) }; }
+    BUF.with(|b| { let mut b = b.borrow_mut(); let n = (frames.max(0) as usize) * 2; if b.len() < n { b.resize(n, 0.0); }
+        fogwood_audio::native::render(&mut b[..n]); let _ = env.set_float_array_region(&out, 0, &b[..n]); });
+}

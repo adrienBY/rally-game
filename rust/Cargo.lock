@@ -37,9 +37,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fogwood_audio"
+version = "0.1.0"
+dependencies = [
+ "libm",
+]
+
+[[package]]
 name = "fogwood_core"
 version = "0.1.0"
 dependencies = [
+ "fogwood_audio",
  "glow",
  "jni",
  "libm",

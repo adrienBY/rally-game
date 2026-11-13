@@ -36,6 +36,7 @@ class MainActivity : Activity() {
     private lateinit var haptics: Haptics
     private var glView: GLSurfaceView? = null
     private val main = Handler(Looper.getMainLooper())
+    private val audio = AudioOut()
 
     /** Exposed to the game as window.FogwoodNative. Only present when the Rust library loaded. */
     inner class Bridge {
@@ -148,6 +149,13 @@ class MainActivity : Activity() {
                 }
             }
         }
+        if (NativeCore.loaded) {
+            // window.FogwoodAudio.postMessage(ArrayBuffer): the page drives the Rust sound engine
+            WebViewCompat.addWebMessageListener(web, "FogwoodAudio", setOf("https://appassets.androidplatform.net")) { _, message, _, _, _ ->
+                if (message.type == WebMessageCompat.TYPE_ARRAY_BUFFER) NativeCore.audioMessage(message.arrayBuffer)
+            }
+            audio.start()
+        }
         root.addView(web, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         setContentView(root)
         hideBars()
@@ -180,13 +188,13 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         web.evaluateJavascript("window.__appPause && window.__appPause(true)", null)
-        web.onPause(); glView?.onPause(); super.onPause()
+        web.onPause(); glView?.onPause(); audio.stop(); super.onPause()
     }
     override fun onResume() {
-        super.onResume(); web.onResume(); glView?.onResume(); hideBars()
+        super.onResume(); web.onResume(); glView?.onResume(); hideBars(); if (NativeCore.loaded) audio.start()
         web.evaluateJavascript("window.__appPause && window.__appPause(false)", null)
     }
-    override fun onDestroy() { web.destroy(); super.onDestroy() }
+    override fun onDestroy() { audio.stop(); web.destroy(); super.onDestroy() }
 
     companion object { private const val TAG = "Fogwood" }
 }

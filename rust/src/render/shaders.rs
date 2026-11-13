@@ -6,16 +6,17 @@ pub const ATTRS: [(&str, u32); 9] = [("position", 0), ("normal", 1), ("uv", 2), 
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct MeshKey { pub lit: u8 /*0 basic 1 lambert 2 phong*/, pub map: bool, pub vcolor: bool, pub inst: bool, pub icolor: bool,
-    pub sway: Option<(u32 /*amp*1000*/, bool)>, pub alpha_test: bool, pub double_side: bool, pub fog: bool, pub transparent: bool }
+    pub sway: Option<(u32 /*amp*1000*/, bool, u32 /*fade near*10*/, u32 /*fade far*10*/)>, pub alpha_test: bool, pub double_side: bool, pub fog: bool, pub transparent: bool }
 
 pub fn mesh_vs(k: &MeshKey) -> String {
     let mut d = String::from("#version 300 es\nprecision highp float;\n");
     if k.vcolor { d += "#define USE_VCOLOR\n"; } if k.inst { d += "#define USE_INST\n"; } if k.icolor { d += "#define USE_ICOLOR\n"; }
-    if let Some((a, uvk)) = k.sway { d += &format!("#define SWAY {:.4}\n", a as f32 / 1000.0); if uvk { d += "#define SWAY_UV\n"; } }
+    if let Some((a, uvk, fne, ffa)) = k.sway { d += &format!("#define SWAY {:.4}\n", a as f32 / 1000.0); if uvk { d += "#define SWAY_UV\n"; }
+        if ffa > 0 { d += &format!("#define FADE_NEAR {:.1}\n#define FADE_FAR {:.1}\n", fne as f32 / 10.0, ffa as f32 / 10.0); } }
     d + r#"
 layout(location=0) in vec3 position; layout(location=1) in vec3 normal; layout(location=2) in vec2 uv; layout(location=3) in vec4 color;
 layout(location=4) in mat4 instanceMatrix; layout(location=8) in vec3 instanceColor;
-uniform mat4 uModel; uniform mat4 uView; uniform mat4 uProj; uniform mat3 uNormalM; uniform mat3 uMapM; uniform float uTime; uniform float uWind;
+uniform mat4 uModel; uniform mat4 uView; uniform mat4 uProj; uniform mat3 uNormalM; uniform mat3 uMapM; uniform float uTime; uniform float uWind; uniform vec3 uCamPos;
 out vec3 vN; out vec2 vUv; out vec3 vColor; out float vFogDepth; out vec3 vWorld;
 void main() {
   vec3 transformed = position;
@@ -39,6 +40,9 @@ void main() {
   float k = 1.0;
 #endif
   transformed.x += sw * k; transformed.z += sw * 0.5 * k;
+#ifdef FADE_FAR
+  transformed *= smoothstep(FADE_FAR, FADE_NEAR, distance((uModel * wpI).xyz, uCamPos));
+#endif
 #endif
   vec4 world = uModel * (im * vec4(transformed, 1.0));
   vec4 mv = uView * world;

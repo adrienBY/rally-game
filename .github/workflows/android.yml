@@ -17,7 +17,7 @@ jobs:
       - name: Rust toolchain with Android targets
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,wasm32-unknown-unknown
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -28,6 +28,13 @@ jobs:
         run: |
           cargo test --release
           cargo build --release --features jni-host
+
+      - name: Sound engine as WebAssembly (browser build and in-app fallback)
+        run: |
+          cd rust/audio && cargo build --release --target wasm32-unknown-unknown --lib
+          cp target/wasm32-unknown-unknown/release/fogwood_audio.wasm ../../web/fogwood_audio.wasm
+          ls -l ../../web/fogwood_audio.wasm
+          cd ../../web && python3 build.py
 
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
@@ -79,4 +86,6 @@ jobs:
         with:
           tag_name: build-${{ github.run_number }}
           name: Fogwood Rally build ${{ github.run_number }}
-          files: FogwoodRally-${{ github.run_number }}.apk
+          files: |
+            FogwoodRally-${{ github.run_number }}.apk
+            web/fogwood_audio.wasm

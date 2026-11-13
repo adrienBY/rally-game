@@ -20,4 +20,11 @@ object NativeCore {
     /** A scene or frame packet posted by the page. */
     @JvmStatic external fun glMessage(data: ByteArray)
     @JvmStatic external fun glStatus(): String
+
+    // sound engine
+    @JvmStatic external fun audioInit(sampleRate: Int)
+    /** A binary message from the page (params, events, emitters, recordings, stage preset). */
+    @JvmStatic external fun audioMessage(data: ByteArray)
+    /** Fills [out] with [frames] interleaved stereo frames. */
+    @JvmStatic external fun audioRender(out: FloatArray, frames: Int)
 }

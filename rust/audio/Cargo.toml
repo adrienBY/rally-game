@@ -1,0 +1,23 @@
+[package]
+name = "fogwood_audio"
+version = "0.1.0"
+edition = "2021"
+description = "Fogwood Rally stereo sound engine: spatial ambience, procedural wildlife, engine and tyre synthesis, reverb"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+libm = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.prof]
+inherits = "release"
+debug = true
+strip = false
