@@ -42,3 +42,10 @@ pass (god rays, zoom blur, grade, 4x4 dither) at the game's low resolution and u
 itself only draws the HUD. If the WebView can't post binary messages, the game falls back to WebGL.
 
 `cargo run --release --bin render_host <scene> <frame|.stream> out.ppm` renders dumped packets headlessly (Mesa EGL).
+
+## Signing
+
+Every APK is signed with the same permanent key, so a new build installs over the previous one.
+The keystore is committed encrypted (`android/signing/fogwood-release.jks.enc`, AES-256, PBKDF2) and CI
+unlocks it with the `FOGWOOD_KEYSTORE_PASSWORD` repository secret (Settings → Secrets and variables → Actions).
+Without that secret the build still succeeds but falls back to a throwaway debug key.

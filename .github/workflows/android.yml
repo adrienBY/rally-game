@@ -44,11 +44,19 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Keep the signing key between builds (so updates install over the old app)
-        uses: actions/cache@v4
-        with:
-          path: ~/.android/debug.keystore
-          key: fogwood-debug-keystore-v1
+      - name: Unlock the permanent signing key (same key every build, so updates install over the old app)
+        env:
+          KS_PASS: ${{ secrets.FOGWOOD_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$KS_PASS" ]; then
+            echo "::warning::FOGWOOD_KEYSTORE_PASSWORD secret is not set - this APK is signed with a throwaway debug key and will not update over other builds."
+            exit 0
+          fi
+          printf '%s' "$KS_PASS" > "$RUNNER_TEMP/kspass"
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass file:"$RUNNER_TEMP/kspass" -in android/signing/fogwood-release.jks.enc -out "$RUNNER_TEMP/fogwood-release.jks"
+          rm "$RUNNER_TEMP/kspass"
+          echo "FOGWOOD_KEYSTORE=$RUNNER_TEMP/fogwood-release.jks" >> "$GITHUB_ENV"
+          echo "FOGWOOD_KEYSTORE_PASSWORD=$KS_PASS" >> "$GITHUB_ENV"
 
       - uses: gradle/actions/setup-gradle@v4
         with:

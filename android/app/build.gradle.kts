@@ -16,11 +16,19 @@ android {
         versionName = "1.0.$runNumber"
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
     }
+    // One permanent key for every build, so each new APK installs over the previous one.
+    // CI decrypts android/signing/fogwood-release.jks.enc with the FOGWOOD_KEYSTORE_PASSWORD secret.
+    val ksFile = System.getenv("FOGWOOD_KEYSTORE")?.let { file(it) }?.takeIf { it.exists() }
+    val ksPass = System.getenv("FOGWOOD_KEYSTORE_PASSWORD")
+    signingConfigs {
+        if (ksFile != null && ksPass != null) create("fogwood") {
+            storeFile = ksFile; storePassword = ksPass; keyAlias = "fogwood"; keyPassword = ksPass
+        }
+    }
     buildTypes {
         release {
             isMinifyEnabled = false
-            // sideloaded build: signed with the (cached) debug key so it installs straight away
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("fogwood") ?: signingConfigs.getByName("debug")
         }
     }
     compileOptions {
