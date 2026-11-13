@@ -13,13 +13,12 @@ use std::collections::HashMap;
 type Gl = glow::Context;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
-enum MatKind { Basic, Lambert, Phong, Points, Sky, Dust, VClouds }
+enum MatKind { Basic, Lambert, Phong, Points, Sky, Dust }
 
 struct Material {
     kind: MatKind, color: [f32; 3], spec: [f32; 3], shin: f32, emis: [f32; 3], map: i32, alpha_test: f32, transparent: bool, opacity: f32,
     side: i32, vcolor: bool, fog: bool, depth_write: bool, depth_test: bool, poly: Option<(f32, f32)>, blend: i32, sway: Option<(f32, bool)>, size: f32,
     sky: Option<([f32; 3], [f32; 3], [f32; 3], [f32; 3], f32)>, dust: Option<(f32, [f32; 3], [f32; 3])>,
-    vc: Option<([f32; 3], [f32; 3], [f32; 3], [f32; 3], [f32; 3], f32)>,
 }
 struct Texture { tex: glow::Texture, m: [f32; 9] }
 struct Attr { name: String, size: i32, buf: glow::Buffer }
@@ -41,7 +40,7 @@ pub struct FrameState { pub lw: i32, pub lh: i32, pub view: M4, pub proj: M4, pu
 struct Program { prog: glow::Program, u: HashMap<&'static str, glow::UniformLocation> }
 
 pub struct Renderer {
-    gl: Gl, scene: Option<GpuScene>, mesh_progs: HashMap<MeshKey, Program>, sky: Program, points: Program, dust: Program, post: Program, vclouds: Program,
+    gl: Gl, scene: Option<GpuScene>, mesh_progs: HashMap<MeshKey, Program>, sky: Program, points: Program, dust: Program, post: Program,
     quad_vao: glow::VertexArray, _quad_buf: glow::Buffer,
     tgt: Option<(i32, i32, glow::Framebuffer, glow::Texture, glow::Renderbuffer, glow::Framebuffer, glow::Texture)>,
     pub frame: FrameState, pub stats: (u32, u32), pub only: Option<Vec<usize>>,
@@ -83,14 +82,14 @@ impl Renderer {
     /// Must be called on a thread with a current GLES 3 context.
     pub unsafe fn new(gl: Gl) -> Result<Renderer, String> {
         let sky = compile(&gl, SKY_VS, SKY_FS)?; let points = compile(&gl, POINTS_VS, POINTS_FS)?;
-        let dust = compile(&gl, DUST_VS, DUST_FS)?; let post = compile(&gl, POST_VS, POST_FS)?; let vclouds = compile(&gl, VCLOUD_VS, VCLOUD_FS)?;
+        let dust = compile(&gl, DUST_VS, DUST_FS)?; let post = compile(&gl, POST_VS, POST_FS)?;
         let quad_vao = gl.create_vertex_array()?; let qb = gl.create_buffer()?;
         gl.bind_vertex_array(Some(quad_vao)); gl.bind_buffer(glow::ARRAY_BUFFER, Some(qb));
         let tri: [f32; 6] = [-1.0, -1.0, 3.0, -1.0, -1.0, 3.0];
         gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, f32_bytes(&tri), glow::STATIC_DRAW);
         gl.enable_vertex_attrib_array(11); gl.vertex_attrib_pointer_f32(11, 2, glow::FLOAT, false, 8, 0);
         gl.bind_vertex_array(None);
-        Ok(Renderer { gl, scene: None, mesh_progs: HashMap::new(), sky, points, dust, post, vclouds, quad_vao, _quad_buf: qb, tgt: None, frame: FrameState::default(), stats: (0, 0), only: None })
+        Ok(Renderer { gl, scene: None, mesh_progs: HashMap::new(), sky, points, dust, post, quad_vao, _quad_buf: qb, tgt: None, frame: FrameState::default(), stats: (0, 0), only: None })
     }
 
     pub fn has_scene(&self) -> bool { self.scene.is_some() }
@@ -149,15 +148,14 @@ impl Renderer {
         }
         let mut mats = vec![];
         for m in head["mats"].as_array().cloned().unwrap_or_default() {
-            let kind = match m["kind"].as_str().unwrap_or("basic") { "lambert" => MatKind::Lambert, "phong" => MatKind::Phong, "points" => MatKind::Points, "sky" => MatKind::Sky, "dust" => MatKind::Dust, "vclouds" => MatKind::VClouds, _ => MatKind::Basic };
+            let kind = match m["kind"].as_str().unwrap_or("basic") { "lambert" => MatKind::Lambert, "phong" => MatKind::Phong, "points" => MatKind::Points, "sky" => MatKind::Sky, "dust" => MatKind::Dust, _ => MatKind::Basic };
             let sky = if kind == MatKind::Sky { let u = &m["u"]; Some((v3(&u["sun"]), v3(&u["fog"]), v3(&u["top"]), v3(&u["glow"]), f(&u["halo"]))) } else { None };
-            let vc = if kind == MatKind::VClouds { let u = &m["u"]; Some((v3(&u["col"]), v3(&u["sun"]), v3(&u["glow"]), v3(&u["top"]), v3(&u["fog"]), f(&u["dens"]))) } else { None };
             let dust = if kind == MatKind::Dust { let u = &m["u"]; Some((f(&u["dens"]), v3(&u["fog"]), v3(&u["col"]))) } else { None };
             mats.push(Material { kind, color: v3(&m["color"]), spec: v3(&m["spec"]), shin: f(&m["shin"]), emis: v3(&m["emis"]), map: m["map"].as_i64().unwrap_or(-1) as i32,
                 alpha_test: f(&m["at"]), transparent: m["tr"].as_i64() == Some(1), opacity: f(&m["op"]), side: m["side"].as_i64().unwrap_or(0) as i32,
                 vcolor: m["vc"].as_i64() == Some(1), fog: m["fog"].as_i64() == Some(1), depth_write: m["dw"].as_i64() != Some(0), depth_test: m["dt"].as_i64() != Some(0),
                 poly: m["po"].as_array().map(|a| (f(&a[0]), f(&a[1]))), blend: m["blend"].as_i64().unwrap_or(1) as i32,
-                sway: m["sway"].as_array().map(|a| (f(&a[0]), a[1].as_i64() == Some(1))), size: f(&m["size"]), sky, dust, vc });
+                sway: m["sway"].as_array().map(|a| (f(&a[0]), a[1].as_i64() == Some(1))), size: f(&m["size"]), sky, dust });
         }
         let mut objs = vec![];
         for o in head["objs"].as_array().cloned().unwrap_or_default() {
@@ -304,7 +302,7 @@ impl Renderer {
             match m.side { 2 => gl.disable(glow::CULL_FACE), 1 => { gl.enable(glow::CULL_FACE); gl.cull_face(glow::FRONT); } _ => { gl.enable(glow::CULL_FACE); gl.cull_face(glow::BACK); } }
             gl.front_face(if det3(&o.mw) < 0.0 { glow::CW } else { glow::CCW });
             if let Some((fa, un)) = m.poly { gl.enable(glow::POLYGON_OFFSET_FILL); gl.polygon_offset(fa, un); } else { gl.disable(glow::POLYGON_OFFSET_FILL); }
-            let prog = match m.kind { MatKind::Sky => &self.sky, MatKind::Points => &self.points, MatKind::Dust => &self.dust, MatKind::VClouds => &self.vclouds,
+            let prog = match m.kind { MatKind::Sky => &self.sky, MatKind::Points => &self.points, MatKind::Dust => &self.dust,
                 _ => match Self::mesh_key(s, o).and_then(|k| self.mesh_progs.get(&k)) { Some(p) => p, None => continue } };
             gl.use_program(Some(prog.prog));
             let u = |n: &str| prog.u.get(n);
@@ -314,11 +312,6 @@ impl Renderer {
                     gl.uniform_3_f32_slice(u("uSun"), &sun); gl.uniform_3_f32_slice(u("uFog"), &fog); gl.uniform_3_f32_slice(u("uTop"), &top); gl.uniform_3_f32_slice(u("uGlow"), &glow_); gl.uniform_1_f32(u("uHalo"), halo); }
                 MatKind::Points => { gl.uniform_1_f32(u("uSize"), m.size); gl.uniform_3_f32_slice(u("uColor"), &m.color); gl.uniform_1_f32(u("uOpacity"), o.opacity);
                     gl.uniform_3_f32_slice(u("uFogColor"), &s.fog_c); gl.uniform_1_f32(u("uFogDensity"), if m.fog { s.fog_d } else { 0.0 }); }
-                MatKind::VClouds => { let (c, sun, glow_, top, fog, dens) = m.vc.unwrap();
-                    gl.uniform_3_f32_slice(u("uCol"), &c); gl.uniform_3_f32_slice(u("uSun"), &sun); gl.uniform_3_f32_slice(u("uGlow"), &glow_); gl.uniform_3_f32_slice(u("uTop"), &top);
-                    gl.uniform_3_f32_slice(u("uFog"), &fog); gl.uniform_1_f32(u("uDens"), dens); gl.uniform_1_f32(u("uTime"), fr.time); gl.uniform_3_f32_slice(u("uCamPos"), &fr.cam);
-                    gl.uniform_1_i32(u("uMap"), 0);
-                    if m.map >= 0 { if let Some(t) = s.texs.get(m.map as usize) { gl.active_texture(glow::TEXTURE0); gl.bind_texture(glow::TEXTURE_2D, Some(t.tex)); } } }
                 MatKind::Dust => { let (dens, fog, col) = m.dust.unwrap(); gl.uniform_1_f32(u("uScale"), fr.dust_scale); gl.uniform_1_f32(u("uDens"), dens);
                     gl.uniform_3_f32_slice(u("uFog"), &fog); gl.uniform_3_f32_slice(u("uCol"), &col); }
                 _ => {
@@ -329,7 +322,7 @@ impl Renderer {
                     gl.uniform_3_f32_slice(u("uColor"), &m.color); gl.uniform_1_f32(u("uOpacity"), o.opacity); gl.uniform_1_f32(u("uAlphaTest"), m.alpha_test);
                     gl.uniform_3_f32_slice(u("uHemiSky"), &s.hemi.0); gl.uniform_3_f32_slice(u("uHemiGround"), &s.hemi.1); gl.uniform_3_f32_slice(u("uHemiDir"), &s.hemi.2);
                     gl.uniform_3_f32_slice(u("uDirColor"), &s.dir.0); gl.uniform_3_f32_slice(u("uDirDir"), &s.dir.1);
-                    gl.uniform_3_f32_slice(u("uFogColor"), &s.fog_c); gl.uniform_1_f32(u("uFogDensity"), s.fog_d); gl.uniform_3_f32_slice(u("uCamPos"), &fr.cam);
+                    gl.uniform_3_f32_slice(u("uFogColor"), &s.fog_c); gl.uniform_1_f32(u("uFogDensity"), if m.fog { s.fog_d } else { 0.0 }); gl.uniform_3_f32_slice(u("uCamPos"), &fr.cam);
                     gl.uniform_3_f32_slice(u("uSpec"), &m.spec); gl.uniform_1_f32(u("uShin"), m.shin.max(1e-4)); gl.uniform_3_f32_slice(u("uEmissive"), &m.emis);
                     gl.uniform_1_i32(u("uMap"), 0);
                     if m.map >= 0 { if let Some(t) = s.texs.get(m.map as usize) { gl.active_texture(glow::TEXTURE0); gl.bind_texture(glow::TEXTURE_2D, Some(t.tex)); } }
