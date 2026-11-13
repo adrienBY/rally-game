@@ -114,10 +114,19 @@ void main() { vD = normalize(position); gl_Position = uProj * uView * uModel * v
 "#;
 pub const SKY_FS: &str = r#"#version 300 es
 precision highp float;
-uniform vec3 uSun; uniform vec3 uFog; uniform vec3 uTop; uniform vec3 uGlow; uniform float uHalo; in vec3 vD; out vec4 fragColor;
-void main() { vec3 d = normalize(vD); float s = max(dot(d, uSun), 0.0);
-  vec3 c = mix(uFog, uTop, smoothstep(0.0, 0.6, vD.y)) + uGlow * pow(s, 6.0) + uGlow * uHalo * pow(s, 2.0) * (1.0 - smoothstep(0.0, 0.5, vD.y));
-  fragColor = vec4(c, 0.0); }
+uniform vec3 uSun; uniform vec3 uFog; uniform vec3 uTop; uniform vec3 uGlow; uniform float uHalo; uniform float uClouds; in vec3 vD; out vec4 fragColor;
+float skh(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float skn(vec2 p){ vec2 i = floor(p), f = fract(p), u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(skh(i), skh(i + vec2(1.0, 0.0)), u.x), mix(skh(i + vec2(0.0, 1.0)), skh(i + vec2(1.0, 1.0)), u.x), u.y); }
+vec3 skyColor(vec3 dir){ vec3 d = normalize(dir); float s = max(dot(d, uSun), 0.0);
+  vec3 c = mix(uFog, uTop, smoothstep(0.0, 0.6, d.y)) + uGlow * pow(s, 6.0) + uGlow * uHalo * pow(s, 2.0) * (1.0 - smoothstep(0.0, 0.5, d.y));
+  if (uClouds > 0.0 && d.y > 0.0) { vec2 p = d.xz / (d.y + 0.12) * 1.5;
+    float n = skn(p) * 0.6 + skn(p * 2.1 + 3.7) * 0.3 + skn(p * 4.3 + 9.1) * 0.1;
+    float m = smoothstep(0.55, 0.59, n) * smoothstep(0.02, 0.14, d.y);
+    vec3 cc = mix(vec3(0.78, 0.84, 0.96), vec3(1.0), smoothstep(0.57, 0.7, n) * (0.6 + 0.4 * d.y));
+    c = mix(c, cc, m * uClouds); }
+  return c; }
+void main() { fragColor = vec4(skyColor(vD), 0.0); }
 "#;
 
 pub const POINTS_VS: &str = r#"#version 300 es
@@ -152,11 +161,14 @@ void main() { vUv = vtx * 0.5 + 0.5; gl_Position = vec4(vtx, 0.0, 1.0); }
 pub const POST_FS: &str = r#"#version 300 es
 precision highp float;
 uniform sampler2D tScene; uniform vec2 uSun; uniform float uSunVis; uniform float uTime; uniform float uFlash; uniform float uSpeed;
+uniform float uStyle; uniform vec2 uTexel;
 in vec2 vUv; out vec4 fragColor;
 const float BAYER[16] = float[16](0., 8., 2., 10., 12., 4., 14., 6., 3., 11., 1., 9., 15., 7., 13., 5.);
 float bayer(vec2 p) { vec2 q = mod(floor(p), 4.0); int i = int(q.x + q.y * 4.0); return BAYER[i] / 16.0 - 0.47; }
 void main() {
   vec3 c = texture(tScene, vUv).rgb;
+  if (uStyle > 0.5) c = c * 0.4 + (texture(tScene, vUv + vec2(uTexel.x, 0.0)).rgb + texture(tScene, vUv - vec2(uTexel.x, 0.0)).rgb
+    + texture(tScene, vUv + vec2(0.0, uTexel.y)).rgb + texture(tScene, vUv - vec2(0.0, uTexel.y)).rgb) * 0.15;
   vec2 fromC = vUv - vec2(0.5, 0.52); float edge = smoothstep(0.12, 0.62, length(fromC)) * uSpeed;
   if (edge > 0.002) { vec3 bl = c; for (int i = 1; i <= 5; i++) bl += texture(tScene, vUv - fromC * 0.028 * uSpeed * float(i)).rgb; c = mix(c, bl / 6.0, edge); }
   vec2 d = uSun - vUv; float L = length(d); if (L > 1.3) d *= 1.3 / L;
@@ -164,13 +176,14 @@ void main() {
   for (int i = 0; i < 20; i++) { p += st; vec4 s = texture(tScene, clamp(p, 0.001, 0.999));
     float l = dot(s.rgb, vec3(0.3, 0.59, 0.11)); acc += smoothstep(0.66, 0.92, l) * (1.0 - s.a) * w; w *= 0.952; }
   acc /= 13.0;
-  c += vec3(1.0, 0.93, 0.74) * acc * 0.85 * uSunVis * (0.9 + 0.1 * sin(uTime * 0.7 + vUv.x * 3.0));
-  float g = dot(c, vec3(0.3, 0.59, 0.11)); c = mix(vec3(g), c, 0.86);
-  c = (c - 0.5) * 1.08 + 0.5; c *= vec3(1.0, 1.0, 0.97);
-  vec2 vv = vUv - 0.5; c *= 1.0 - dot(vv, vv) * (0.5 + uSpeed * 0.7);
+  c += vec3(1.0, 0.93, 0.74) * acc * 0.85 * uSunVis * (uStyle > 0.5 ? 0.3 : 1.0) * (0.9 + 0.1 * sin(uTime * 0.7 + vUv.x * 3.0));
+  float g = dot(c, vec3(0.3, 0.59, 0.11));
+  vec2 vv = vUv - 0.5;
+  if (uStyle > 0.5) { c = mix(vec3(g), c, 1.3); c = (c - 0.5) * 1.05 + 0.5; c *= 1.04; c *= 1.0 - dot(vv, vv) * (0.22 + uSpeed * 0.6); }
+  else { c = mix(vec3(g), c, 0.86); c = (c - 0.5) * 1.08 + 0.5; c *= vec3(1.0, 1.0, 0.97); c *= 1.0 - dot(vv, vv) * (0.5 + uSpeed * 0.7); }
   c += vec3(0.25, 0.2, 0.15) * uFlash;
-  c += bayer(gl_FragCoord.xy) / 26.0;
-  c = floor(clamp(c, 0.0, 1.0) * 26.0 + 0.5) / 26.0;
+  if (uStyle < 0.5) { c += bayer(gl_FragCoord.xy) / 26.0; c = floor(clamp(c, 0.0, 1.0) * 26.0 + 0.5) / 26.0; }
+  c = clamp(c, 0.0, 1.0);
   fragColor = vec4(c, 1.0);
 }
 "#;

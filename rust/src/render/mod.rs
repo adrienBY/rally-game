@@ -18,7 +18,7 @@ enum MatKind { Basic, Lambert, Phong, Points, Sky, Dust }
 struct Material {
     kind: MatKind, color: [f32; 3], spec: [f32; 3], shin: f32, emis: [f32; 3], map: i32, alpha_test: f32, transparent: bool, opacity: f32,
     side: i32, vcolor: bool, fog: bool, depth_write: bool, depth_test: bool, poly: Option<(f32, f32)>, blend: i32, sway: Option<(f32, bool)>, size: f32,
-    sky: Option<([f32; 3], [f32; 3], [f32; 3], [f32; 3], f32)>, dust: Option<(f32, [f32; 3], [f32; 3])>,
+    sky: Option<([f32; 3], [f32; 3], [f32; 3], [f32; 3], f32, f32)>, dust: Option<(f32, [f32; 3], [f32; 3])>,
 }
 struct Texture { tex: glow::Texture, m: [f32; 9] }
 struct Attr { name: String, size: i32, buf: glow::Buffer }
@@ -31,7 +31,7 @@ struct Object {
 }
 struct GpuScene {
     texs: Vec<Texture>, geos: Vec<Geometry>, mats: Vec<Material>, objs: Vec<Object>,
-    fog_c: [f32; 3], fog_d: f32, clear: [f32; 4], hemi: ([f32; 3], [f32; 3], [f32; 3]), dir: ([f32; 3], [f32; 3]),
+    fog_c: [f32; 3], fog_d: f32, clear: [f32; 4], style: f32, hemi: ([f32; 3], [f32; 3], [f32; 3]), dir: ([f32; 3], [f32; 3]),
 }
 #[derive(Clone, Copy, Default)]
 pub struct FrameState { pub lw: i32, pub lh: i32, pub view: M4, pub proj: M4, pub cam: [f32; 3], pub time: f32, pub wind: f32, pub sun: [f32; 2],
@@ -46,7 +46,7 @@ pub struct Renderer {
     pub frame: FrameState, pub stats: (u32, u32), pub only: Option<Vec<usize>>,
 }
 
-const UNIFORMS: [&str; 37] = ["uModel", "uView", "uProj", "uNormalM", "uMapM", "uTime", "uWind", "uColor", "uOpacity", "uMap", "uAlphaTest", "uHemiSky",
+const UNIFORMS: [&str; 40] = ["uClouds", "uStyle", "uTexel", "uModel", "uView", "uProj", "uNormalM", "uMapM", "uTime", "uWind", "uColor", "uOpacity", "uMap", "uAlphaTest", "uHemiSky",
     "uHemiGround", "uHemiDir", "uDirColor", "uDirDir", "uFogColor", "uFogDensity", "uCamPos", "uSpec", "uShin", "uEmissive", "uSun", "uFog", "uTop", "uGlow",
     "uHalo", "uSize", "uScale", "uDens", "uCol", "tScene", "uSunVis", "uFlash", "uSpeed", "uSunUv", "uDummy"];
 
@@ -149,7 +149,7 @@ impl Renderer {
         let mut mats = vec![];
         for m in head["mats"].as_array().cloned().unwrap_or_default() {
             let kind = match m["kind"].as_str().unwrap_or("basic") { "lambert" => MatKind::Lambert, "phong" => MatKind::Phong, "points" => MatKind::Points, "sky" => MatKind::Sky, "dust" => MatKind::Dust, _ => MatKind::Basic };
-            let sky = if kind == MatKind::Sky { let u = &m["u"]; Some((v3(&u["sun"]), v3(&u["fog"]), v3(&u["top"]), v3(&u["glow"]), f(&u["halo"]))) } else { None };
+            let sky = if kind == MatKind::Sky { let u = &m["u"]; Some((v3(&u["sun"]), v3(&u["fog"]), v3(&u["top"]), v3(&u["glow"]), f(&u["halo"]), f(&u["clouds"]))) } else { None };
             let dust = if kind == MatKind::Dust { let u = &m["u"]; Some((f(&u["dens"]), v3(&u["fog"]), v3(&u["col"]))) } else { None };
             mats.push(Material { kind, color: v3(&m["color"]), spec: v3(&m["spec"]), shin: f(&m["shin"]), emis: v3(&m["emis"]), map: m["map"].as_i64().unwrap_or(-1) as i32,
                 alpha_test: f(&m["at"]), transparent: m["tr"].as_i64() == Some(1), opacity: f(&m["op"]), side: m["side"].as_i64().unwrap_or(0) as i32,
@@ -189,7 +189,7 @@ impl Renderer {
         if let Some(h) = head["lights"]["hemi"].as_array().and_then(|a| a.first()) { hemi = (v3(&h["sky"]), v3(&h["ground"]), v3(&h["d"])); }
         if let Some(d) = head["lights"]["dir"].as_array().and_then(|a| a.first()) { dir = (v3(&d["c"]), v3(&d["d"])); }
         let clear = head["clear"].as_array().map(|a| [f(&a[0]), f(&a[1]), f(&a[2]), f(&a[3])]).unwrap_or([0.5, 0.5, 0.5, 0.0]);
-        self.scene = Some(GpuScene { texs, geos, mats, objs, fog_c: v3(&head["fog"]["c"]), fog_d: f(&head["fog"]["d"]), clear, hemi, dir });
+        self.scene = Some(GpuScene { texs, geos, mats, objs, fog_c: v3(&head["fog"]["c"]), fog_d: f(&head["fog"]["d"]), clear, hemi, dir, style: f(&head["style"]) });
         // compile every program the scene needs now, so the first frames don't hitch
         let keys: Vec<MeshKey> = { let s = self.scene.as_ref().unwrap(); s.objs.iter().filter_map(|o| Self::mesh_key(s, o)).collect() };
         for k in keys { self.mesh_prog(&k)?; }
@@ -308,7 +308,7 @@ impl Renderer {
             let u = |n: &str| prog.u.get(n);
             gl.uniform_matrix_4_f32_slice(u("uModel"), false, &o.mw); gl.uniform_matrix_4_f32_slice(u("uView"), false, &fr.view); gl.uniform_matrix_4_f32_slice(u("uProj"), false, &fr.proj);
             match m.kind {
-                MatKind::Sky => { let (sun, fog, top, glow_, halo) = m.sky.unwrap();
+                MatKind::Sky => { let (sun, fog, top, glow_, halo, clouds) = m.sky.unwrap(); gl.uniform_1_f32(u("uClouds"), clouds);
                     gl.uniform_3_f32_slice(u("uSun"), &sun); gl.uniform_3_f32_slice(u("uFog"), &fog); gl.uniform_3_f32_slice(u("uTop"), &top); gl.uniform_3_f32_slice(u("uGlow"), &glow_); gl.uniform_1_f32(u("uHalo"), halo); }
                 MatKind::Points => { gl.uniform_1_f32(u("uSize"), m.size); gl.uniform_3_f32_slice(u("uColor"), &m.color); gl.uniform_1_f32(u("uOpacity"), o.opacity);
                     gl.uniform_3_f32_slice(u("uFogColor"), &s.fog_c); gl.uniform_1_f32(u("uFogDensity"), if m.fog { s.fog_d } else { 0.0 }); }
@@ -350,6 +350,7 @@ impl Renderer {
         gl.active_texture(glow::TEXTURE0); gl.bind_texture(glow::TEXTURE_2D, Some(t1)); gl.uniform_1_i32(p.u.get("tScene"), 0);
         gl.uniform_2_f32(p.u.get("uSun"), fr.sun[0], fr.sun[1]); gl.uniform_1_f32(p.u.get("uSunVis"), fr.sun_vis); gl.uniform_1_f32(p.u.get("uTime"), fr.time);
         gl.uniform_1_f32(p.u.get("uFlash"), fr.flash); gl.uniform_1_f32(p.u.get("uSpeed"), fr.speed);
+        gl.uniform_1_f32(p.u.get("uStyle"), self.scene.as_ref().map(|s| s.style).unwrap_or(0.0)); gl.uniform_2_f32(p.u.get("uTexel"), 1.0 / lw as f32, 1.0 / lh as f32);
         gl.bind_vertex_array(Some(self.quad_vao)); gl.draw_arrays(glow::TRIANGLES, 0, 3); gl.bind_vertex_array(None);
         // nearest-neighbour upscale to the screen
         gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(f2)); gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, screen);
