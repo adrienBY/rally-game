@@ -1433,7 +1433,7 @@ addEventListener("keydown", e => { if (!alive) return;
   if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"].includes(e.code)) e.preventDefault();
   keys.add(e.code);
   if (game.state === "title" && (e.code === "Enter" || e.code === "Space")) startGame();
-  if (game.state === "title" && /^Digit[12345]$/.test(e.code)) { const want = ["forest", "snow", "canyon", "lakes", "andes"][+e.code[5] - 1]; if (want !== MAPN) { setTimeout(() => switchMap(want), 0); return; } }
+  if (game.state === "title" && /^Digit[1234]$/.test(e.code)) { const want = ["forest", "snow", "canyon", "lakes"][+e.code[5] - 1]; if (want !== MAPN) { setTimeout(() => switchMap(want), 0); return; } }
   if (e.code === "KeyC") cycleCam(); if (e.code === "KeyR") resetCar(); if (e.code === "KeyM") toggleSound(); if (e.code === "Escape") toTitle();
 }, SIG);
 addEventListener("keyup", e => keys.delete(e.code), SIG);
@@ -1441,7 +1441,7 @@ const touches = new Map(); let touchUsed = false, UI = {};
 const lowXY = (e) => [e.clientX / innerWidth * LW, e.clientY / innerHeight * LH];
 const TOPB = ["snd", "vib", "cam", "pix", "rst", "menu"];
 function hitButton(x, y) {
-  if (game.state === "title") for (const k of ["mapF", "mapS", "mapC", "mapL", "mapA"]) { const b = UI[k]; if (b && x >= b.x - 2 && x <= b.x + b.w + 2 && y >= b.y - 3 && y <= b.y + b.h + 3) return k; }
+  if (game.state === "title") for (const k of ["mapF", "mapS", "mapC", "mapL"]) { const b = UI[k]; if (b && x >= b.x - 2 && x <= b.x + b.w + 2 && y >= b.y - 3 && y <= b.y + b.h + 3) return k; }
   for (const k of TOPB) { const b = UI[k]; if (b && x >= b.x - 2 && x <= b.x + b.w + 2 && y >= b.y - 2 && y <= b.y + b.h + 3) return k; }
   if (!touchUsed || !UI.left || !UI.gas) return null;
   if (x >= UI.hb.x - 3 && x <= UI.hb.x + UI.hb.w + 3 && y >= UI.hb.y - 3 && y <= UI.hb.y + UI.hb.h + 2) return "hb";
@@ -1455,7 +1455,7 @@ canvas.addEventListener("pointerdown", e => {
   const [x, y] = lowXY(e), b = hitButton(x, y);
   if (b) buzz("tap", TOPB.includes(b) || b.startsWith("map") ? 0.55 : 0.4); else if (game.state === "title") buzz("tap", 0.55);
   if (b === "snd") toggleSound(); else if (b === "vib") { vibOn = !vibOn; try { localStorage.setItem("fogwood-vib", vibOn ? "1" : "0"); } catch (_) {} if (vibOn) buzz("shift", 0.7); flashMsg(vibOn ? "HAPTICS ON" : "HAPTICS OFF", 1); } else if (b === "pix") { pixIdx = (pixIdx + 1) % PIX.length; try { localStorage.setItem("fogwood-pix", String(pixIdx)); } catch (_) {} resize(); flashMsg(["CHUNKY PIXELS", "MEDIUM PIXELS", "FINE PIXELS"][pixIdx], 1); }
-  else if (b === "mapF" || b === "mapS" || b === "mapC" || b === "mapL" || b === "mapA") { const want = { mapF: "forest", mapS: "snow", mapC: "canyon", mapL: "lakes", mapA: "andes" }[b]; if (want !== MAPN) setTimeout(() => switchMap(want), 0); }
+  else if (b === "mapF" || b === "mapS" || b === "mapC" || b === "mapL") { const want = { mapF: "forest", mapS: "snow", mapC: "canyon", mapL: "lakes" }[b]; if (want !== MAPN) setTimeout(() => switchMap(want), 0); }
   else if (game.state === "title") startGame();
   else if (b === "menu") toTitle(); else if (b === "cam") cycleCam(); else if (b === "rst") resetCar(); else if (b) touches.set(e.pointerId, b);
 }, SIG);
@@ -1603,8 +1603,8 @@ function drawHUD(inp) {
       const tp = audioReady ? "TAP TO START" : "LOADING SOUND"; if ((performance.now() / 500 | 0) % 2 === 0 || !audioReady) text(g, tp, (LW - textW(tp, U)) / 2, ty + 17 * sc + 12 * U, U, INK);
       const hint = matchMedia("(pointer: coarse)").matches ? "LEFT THUMB STEERS - RIGHT THUMB ON THE PEDALS" : "ARROWS DRIVE - SPACE HANDBRAKE - C CAMERA - R RESET";
       text(g, hint, (LW - textW(hint, U)) / 2, ty + 17 * sc + 24 * U, U, "rgba(233,236,226,0.7)");
-      { const gp = 4 * U, mw = Math.min(56 * U, Math.floor((LW - 8 * U - 4 * gp) / 5)), mh = 13 * U, my = ty + 17 * sc + 35 * U, mx0 = Math.round(LW / 2 - mw * 2.5 - gp * 2);
-        for (const [k, label, on, n] of [["mapF", "1 FOREST", MAPN === "forest", 0], ["mapS", "2 SNOW", SNOW, 1], ["mapC", "3 CANYON", CAN, 2], ["mapL", "4 LAKES", LAK, 3], ["mapA", "5 ANDES", AND, 4]]) { const x = mx0 + n * (mw + gp);
+      { const gp = 4 * U, mw = Math.min(56 * U, Math.floor((LW - 8 * U - 3 * gp) / 4)), mh = 13 * U, my = ty + 17 * sc + 35 * U, mx0 = Math.round(LW / 2 - mw * 2 - gp * 1.5);
+        for (const [k, label, on, n] of [["mapF", "1 FOREST", MAPN === "forest", 0], ["mapS", "2 SNOW", SNOW, 1], ["mapC", "3 CANYON", CAN, 2], ["mapL", "4 LAKES", LAK, 3]]) { const x = mx0 + n * (mw + gp);
           UI[k] = { x, y: my, w: mw, h: mh }; box(g, x, my, mw, mh, on ? "rgba(243,207,98,0.3)" : PANEL, on ? AMBER : EDGE);
           text(g, label, x + (mw - textW(label, U)) / 2, my + 3 * U, U, on ? AMBER : INK); } }
       const c1 = "SOUNDS CC0: KENNEY, LANDEPLAGE, HARGISSSOUND, THREADBARE";
@@ -1875,6 +1875,6 @@ return () => {
   for (const id of ["tuneBtn", "tunePanel", "tuneStyle"]) document.getElementById(id)?.remove();
 };
 }
-CURRENT = boot({ "#snow": "snow", "#canyon": "canyon", "#lakes": "lakes", "#andes": "andes" }[location.hash] || "forest");
+CURRENT = boot({ "#snow": "snow", "#canyon": "canyon", "#lakes": "lakes" }[location.hash] || "forest");
 </script>
 </body></html>
