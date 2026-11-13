@@ -25,7 +25,7 @@ pub fn prepare(map: i32, path: &str, roadh: &str, gxh: i32, gzh: i32) -> String 
     let t0 = std::time::Instant::now();
     let p = parse_csv(path); let pts: Vec<(f64, f64)> = p.chunks_exact(2).map(|c| (c[0], c[1])).collect();
     let rh = parse_csv(roadh);
-    if pts.is_empty() || rh.len() != pts.len() { return format!("err path {} roadh {}", pts.len(), rh.len()); }
+    if pts.is_empty() || (rh.len() != pts.len() && rh.len() != pts.len() * 2) { return format!("err path {} roadh {}", pts.len(), rh.len()); }
     let w = world::build(Map::from_id(map), &pts, &rh, gxh, gzh);
     let grid = w.to_bytes(); let cells = w.pd.len();
     *ENGINE.lock().unwrap() = Some(Engine { world: w, obstacles: Obstacles::new(&[]), grid });
@@ -50,7 +50,8 @@ pub fn step(csv: &str) -> String {
     if v.len() < need { return format!("err {}", v.len()); }
     let g = ENGINE.lock().unwrap();
     let Some(e) = g.as_ref() else { return "err noworld".into() };
-    let input = Input { throttle: v[1], brake: v[2], hb: v[3] != 0.0, steer: v[4] };
+    let bridge = if v.len() >= need + 4 { Some([v[need], v[need + 1], v[need + 2], v[need + 3]]) } else { None };
+    let input = Input { throttle: v[1], brake: v[2], hb: v[3] != 0.0, steer: v[4], bridge };
     let tune = Tune::from_slice(&v[5..5 + NPARAM]);
     let mut car = Car::from_slice(&v[5 + NPARAM..]);
     let shifted = car.update(&e.world, &e.obstacles, &tune, v[0], &input);

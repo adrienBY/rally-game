@@ -1,7 +1,7 @@
 //! Vehicle dynamics: a straight port of the JavaScript model (same order of operations, same constants),
 //! so a car driven by the native engine behaves exactly like the browser build.
 use crate::noise::{clamp, js_round, sgn, vnoise, wrap_a};
-use crate::world::{Map, World, ROAD, WL};
+use crate::world::{Map, World, DECK, ROAD, WL};
 use std::collections::HashMap;
 
 #[inline] fn sin(x: f64) -> f64 { libm::sin(x) }
@@ -76,10 +76,10 @@ pub struct Car {
 pub const NSTATE: usize = 33; pub const NWHEEL: usize = 13;
 
 #[derive(Clone, Copy, Default, Debug)]
-pub struct Input { pub throttle: f64, pub brake: f64, pub hb: bool, pub steer: f64 }
+pub struct Input { pub throttle: f64, pub brake: f64, pub hb: bool, pub steer: f64, pub bridge: Option<[f64; 4]> }
 
 #[derive(Clone, Copy)]
-struct Ctl { throttle: f64, brake: f64, hb: bool, steer: f64 }
+struct Ctl { throttle: f64, brake: f64, hb: bool, steer: f64, bridge: Option<[f64; 4]> }
 
 #[derive(Clone, Copy, Debug)]
 pub struct Obstacle { pub x: f64, pub z: f64, pub r: f64 }
@@ -151,7 +151,7 @@ impl Car {
         self.steer += clamp(target - self.steer, -rate * dt, rate * dt);
         let gx = (world.height(self.x + 0.6, self.z) - world.height(self.x - 0.6, self.z)) / 1.2;
         let gz = (world.height(self.x, self.z + 0.6) - world.height(self.x, self.z - 0.6)) / 1.2;
-        let ctl = Ctl { throttle: thr, brake: brk, hb: input.hb, steer: input.steer };
+        let ctl = Ctl { throttle: thr, brake: brk, hb: input.hb, steer: input.steer, bridge: input.bridge };
         let n = clamp(js_round(dt * 360.0), 1.0, 24.0) as usize;
         let sdt = dt / n as f64;
         for _ in 0..n { self.step(world, t, sdt, &ctl, gx, gz); }
@@ -161,7 +161,7 @@ impl Car {
     }
 
     fn step(&mut self, world: &World, t: &Tune, dt: f64, ctl: &Ctl, gx: f64, gz: f64) {
-        let snow = world.map == Map::Snow; let can = world.map == Map::Canyon; let lak = world.map == Map::Lakes;
+        let snow = world.map == Map::Snow; let can = world.map == Map::Canyon; let lak = world.map == Map::Lakes; let and = world.map == Map::Andes;
         let sh = sin(self.h); let ch = cos(self.h); let lxw = ch; let lzw = -sh;
         let u = self.vx * sh + self.vz * ch; let vl = self.vx * lxw + self.vz * lzw;
         let (m, iz, r_, g) = (M, t.iz, TIRE_R, 9.81);
@@ -170,14 +170,15 @@ impl Car {
         for w in self.wh.iter_mut() {
             let wx = self.x + ch * w.lx + sh * w.lz; let wz = self.z - sh * w.lx + ch * w.lz; w.wx = wx; w.wz = wz;
             let wpd = world.path_dist(wx, wz); w.road = wpd < ROAD + 0.25; w.bank = snow && !w.road && wpd < ROAD + 1.8; if w.road { road_n += 1; }
-            let hg = world.height(wx, wz) + (vnoise(wx * 0.45 + 3.1, wz * 0.45) - 0.5) * (if w.road { 0.05 } else { 0.16 });
+            let mut hg = world.height(wx, wz) + (vnoise(wx * 0.45 + 3.1, wz * 0.45) - 0.5) * (if w.road { 0.05 } else { 0.16 });
+            if and && wpd < DECK + 0.5 { if let Some(b) = ctl.bridge { hg += bridge_off(world.path_idx(wx, wz), &b); } }
             let d = self.y + w.lz * sp + w.lx * sr - hg; let comp = REST - d; let rate = (comp - w.comp) / dt;
             w.comp = comp; w.d = d; w.hg = hg;
             let mut f = 0.0;
             if comp > 0.0 { f = t.k * comp + t.c * rate; if comp > STOP { f += t.k * 10.0 * (comp - STOP) + t.c * 2.0 * rate.max(0.0); } }
             let wet = lak && hg < WL - 0.05;
             w.fz = f; w.mu = if wet { 0.5 } else if w.road { t.mu_road } else { t.mu_grass };
-            w.rr = if wet { 0.45 } else if w.road { if snow { 0.03 } else if can { 0.026 } else { 0.02 } } else if w.bank { 0.2 } else if snow { 0.11 } else if can { 0.13 } else { 0.06 };
+            w.rr = if wet { 0.45 } else if w.road { if snow { 0.03 } else if can { 0.026 } else { 0.02 } } else if w.bank { 0.2 } else if snow { 0.11 } else if can { 0.13 } else if and { 0.08 } else { 0.06 };
         }
         for (ia, ib) in [(0usize, 1usize), (2, 3)] {
             let ca = self.wh[ia].comp; let cb = self.wh[ib].comp;
@@ -295,6 +296,15 @@ impl Car {
         if self.x.abs() > gxh - 10.0 { self.impact = self.impact.max(self.vx.abs()); self.x = sgn(self.x) * (gxh - 10.0); self.vx *= -0.3; }
         if self.z.abs() > gzh - 10.0 { self.impact = self.impact.max(self.vz.abs()); self.z = sgn(self.z) * (gzh - 10.0); self.vz *= -0.3; }
     }
+}
+
+/// Andes plank bridge: deflection of the active span under the car. b = [s0, s1, amplitude, car index]
+#[inline]
+fn bridge_off(k: f64, b: &[f64; 4]) -> f64 {
+    let (s0, s1, a, kc) = (b[0], b[1], b[2], b[3]);
+    if k < s0 || k > s1 { return 0.0; }
+    let q = (k - kc) / 16.0;
+    -a * sin(PI * (k - s0) / (s1 - s0)) * exp(-(q * q))
 }
 
 /// Math.max(0, v) with JS NaN semantics

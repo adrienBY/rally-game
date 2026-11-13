@@ -4,10 +4,12 @@ use crate::noise::*;
 pub const ROAD: f64 = 3.4;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Map { Forest = 0, Snow = 1, Canyon = 2, Lakes = 3 }
-impl Map { pub fn from_id(i: i32) -> Map { match i { 1 => Map::Snow, 2 => Map::Canyon, 3 => Map::Lakes, _ => Map::Forest } } }
+pub enum Map { Forest = 0, Snow = 1, Canyon = 2, Lakes = 3, Andes = 4 }
+impl Map { pub fn from_id(i: i32) -> Map { match i { 1 => Map::Snow, 2 => Map::Canyon, 3 => Map::Lakes, 4 => Map::Andes, _ => Map::Forest } } }
 /// Lakes: water level
 pub const WL: f64 = -4.5;
+/// Andes: half-width of the plank decks / ridge road
+pub const DECK: f64 = 2.2;
 
 pub struct World {
     pub map: Map,
@@ -17,12 +19,16 @@ pub struct World {
 
 fn terrain(map: Map, x: f64, z: f64) -> f64 {
     match map {
+        Map::Andes => andes_m(x, z),
         Map::Canyon => (fbm(x * 0.008 + 3.0, z * 0.008 - 2.0, 4) - 0.5) * 18.0 + (fbm(x * 0.05, z * 0.05, 4) - 0.5) * 1.2,
         Map::Lakes => (fbm(x * 0.006 + 5.0, z * 0.006 + 1.0, 4) - 0.5) * 44.0 + (fbm(x * 0.02, z * 0.02, 4) - 0.5) * 8.0 + (fbm(x * 0.07, z * 0.07, 4) - 0.5) * 1.2,
         Map::Snow => ridged(x * 0.0052 + 3.0, z * 0.0052 - 7.0) * 58.0 + (fbm(x * 0.016, z * 0.016, 4) - 0.5) * 12.0 + (fbm(x * 0.07, z * 0.07, 4) - 0.5) * 1.4,
         Map::Forest => (fbm(x * 0.014 + 10.0, z * 0.014 - 4.0, 4) - 0.5) * 16.0 + (fbm(x * 0.06, z * 0.06, 4) - 0.5) * 1.6,
     }
 }
+/// Andes: the ranges around the ridges and gorges
+fn andes_m(x: f64, z: f64) -> f64 { ridged(x * 0.004 + 7.0, z * 0.004 - 2.0) * 190.0 - 178.0 + (fbm(x * 0.03, z * 0.03, 4) - 0.5) * 10.0 }
+
 /// Canyon: flat-topped mesas with cliff edges
 fn canyon_mesa(x: f64, z: f64) -> f64 {
     smooth(0.53, 0.585, fbm(x * 0.0065 + 21.0, z * 0.0065 + 7.0, 4)) * (24.0 + fbm(x * 0.03 + 5.0, z * 0.03, 4) * 14.0)
@@ -41,7 +47,10 @@ fn par_rows<F: Fn(usize, &mut [f32]) + Sync>(g: &mut [f32], gnx: usize, f: F) {
     });
 }
 
-pub fn build(map: Map, path: &[(f64, f64)], roadh: &[f64], gxh: i32, gzh: i32) -> World {
+/// For the Andes `roadh` carries NP road heights followed by NP gorge flags.
+pub fn build(map: Map, path: &[(f64, f64)], roadh_in: &[f64], gxh: i32, gzh: i32) -> World {
+    let np0 = path.len();
+    let (roadh, gorge): (&[f64], &[f64]) = if roadh_in.len() >= np0 * 2 { (&roadh_in[..np0], &roadh_in[np0..np0 * 2]) } else { (roadh_in, &[]) };
     let gnx = (gxh * 2 + 1) as usize; let gnz = (gzh * 2 + 1) as usize; let n = gnx * gnz;
     let np = path.len();
     let mut pd = vec![20.0f32; n]; let mut pi = vec![0i16; n]; let mut h = vec![0f32; n];
@@ -68,10 +77,19 @@ pub fn build(map: Map, path: &[(f64, f64)], roadh: &[f64], gxh: i32, gzh: i32) -
         let (pd_r, pi_r) = (&pd, &pi);
         par_rows(&mut h, gnx, |j, row| { for i in 0..gnx {
             let id = j * gnx + i; let x = i as f64 - gxh as f64; let z = j as f64 - gzh as f64; let pdv = pd_r[id] as f64;
+            if map == Map::Andes {
+                let i0 = pi_r[id] as usize; let r = roadh[i0];
+                row[i] = (if pdv < DECK { r } else {
+                    let near = if gorge.get(i0).copied().unwrap_or(0.0) != 0.0 { r - 72.0 + (fbm(x * 0.02, z * 0.02, 4) - 0.5) * 24.0 }
+                               else { r - 0.15 - (pdv - (DECK + 0.6)).max(0.0) * 1.6 };
+                    let w = smooth(12.0, 20.0, pdv); near + (andes_m(x, z) - near) * w
+                }) as f32;
+                continue;
+            }
             let mut hv = terrain(map, x, z);
             if map == Map::Canyon { hv += canyon_mesa(x, z) * smooth(ROAD + 6.0, ROAD + 16.0, pdv); }
             let w = 1.0 - match map { Map::Snow => smooth(ROAD + 1.5, ROAD + 22.0, pdv), Map::Canyon => smooth(ROAD + 1.0, ROAD + 9.0, pdv),
-                Map::Lakes => smooth(ROAD + 1.0, ROAD + 14.0, pdv), Map::Forest => smooth(ROAD + 1.0, ROAD + 10.0, pdv) };
+                Map::Lakes => smooth(ROAD + 1.0, ROAD + 14.0, pdv), Map::Forest | Map::Andes => smooth(ROAD + 1.0, ROAD + 10.0, pdv) };
             hv = hv + (roadh[pi_r[id] as usize] - 0.12 - hv) * w;
             if map == Map::Lakes && hv < WL { hv = WL - (1.6f64).min((WL - hv) * 0.2); }
             row[i] = hv as f32;
@@ -89,6 +107,11 @@ impl World {
     }
     #[inline] pub fn height(&self, x: f64, z: f64) -> f64 { self.bil(&self.h, x, z) }
     #[inline] pub fn path_dist(&self, x: f64, z: f64) -> f64 { self.bil(&self.pd, x, z) }
+    /// nearest road point index (JS: piG at rounded, clamped cell)
+    #[inline] pub fn path_idx(&self, x: f64, z: f64) -> f64 {
+        let i = clamp(js_round(x) + self.gxh as f64, 0.0, self.gnx as f64 - 1.0) as usize; let j = clamp(js_round(z) + self.gzh as f64, 0.0, self.gnz as f64 - 1.0) as usize;
+        self.pi[j * self.gnx + i] as f64
+    }
 
     /// Packed for the JS side: [pd f32 * n][h f32 * n][pi i16 * n], little endian.
     pub fn to_bytes(&self) -> Vec<u8> {

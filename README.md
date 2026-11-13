@@ -1,6 +1,6 @@
 # Fogwood Rally — Android
 
-Pixel-art rally game (Forest, Snow, Canyon, Lakes stages) packaged as a native Android app with a custom Rust engine core.
+Pixel-art rally game (Forest, Snow, Canyon, Lakes, Andes stages) packaged as a native Android app with a custom Rust engine core.
 
 ```
 rust/      fogwood_core: stage generation + vehicle physics in Rust (JNI cdylib)
@@ -11,7 +11,7 @@ web/       game source (rally_template.html), audio, build.py
 
 ## How the pieces fit
 * **Rust core** (`rust/src`)
-  * `world.rs` — distance-to-road field, nearest-road index and terrain height on a 1 m grid for all four stages
+  * `world.rs` — distance-to-road field, nearest-road index and terrain height on a 1 m grid for all five stages
     rows generated on every CPU core.
   * `physics.rs` — four tyres with Pacejka-style curves and a friction circle, spring/damper suspension with bump stops
     and anti-roll bars, AWD drivetrain, torque curve, auto gearbox, ABS/TC, arcade assist layer, obstacle collisions,
