@@ -733,6 +733,47 @@ if (!CAN && !AND) { const geo = new THREE.CylinderGeometry(1, 1, 1, 8, 1); geo.r
   instanced(geo, new THREE.MeshLambertMaterial({ map: barkTex }), M, C); }
 
 /* ================= andes: plank suspension bridges, a sea of clouds, condors ================= */
+const VCLOUD_GLSL = `// volumetric cloud slab. uMap: 256x256 noise (G = R shifted by 37,17); uCol = (bottom, top, extinction); uSun = sun dir; uGlow = sun colour; uTop = sky colour; uFog/uDens = exp2 fog
+float vcN(vec3 x) { vec3 p = floor(x); vec3 f = fract(x); f = f * f * (3.0 - 2.0 * f);
+  vec2 uv = p.xz + vec2(37.0, 17.0) * p.y + f.xz; vec2 rg = textureLod(uMap, (uv + 0.5) / 256.0, 0.0).yx; return mix(rg.x, rg.y, f.y); }
+float vcCov(vec2 xz) { float c = vcN(vec3(xz * 0.0021, 3.5)) * 0.65 + vcN(vec3(xz * 0.0063, 9.5)) * 0.35; return 0.5 + smoothstep(0.28, 0.72, c) * 0.62; }
+float vcD(vec3 p, float cov, bool hi) {
+  float h = (p.y - uCol.x) / (uCol.y - uCol.x); if (h < 0.0 || h > 1.0) return 0.0;
+  vec3 q = (p + vec3(uTime * 1.1, 0.0, uTime * 0.45)) * 0.0135;
+  float b = vcN(q) * 0.6 + vcN(q * 2.17 + vec3(0.0, uTime * 0.012, 0.0)) * 0.4;
+  float d = clamp((b * cov * 1.25 - h) * 5.0, 0.0, 1.0) * smoothstep(0.0, 0.12, h);
+  if (hi && d > 0.0 && d < 0.95) { vec3 r = q * 5.3 + vec3(uTime * 0.03, 0.0, 0.0); float e = vcN(r) * 0.65 + vcN(r * 2.3) * 0.35; d = clamp(d - (1.0 - e) * 0.38 * (1.0 - d), 0.0, 1.0); }
+  return d; }
+float vcHG(float c, float g) { float g2 = g * g; return (1.0 - g2) / pow(1.0 + g2 - 2.0 * g * c, 1.5); }
+vec4 vcMarch(vec3 ro, vec3 pw, vec2 fc) {
+  vec3 rd = normalize(pw - ro);
+  float t0 = ro.y > uCol.y ? length(pw - ro) : 0.0;
+  float tb = rd.y < -1e-4 ? (uCol.x - ro.y) / rd.y : t0 + 700.0;
+  float t1 = min(tb, t0 + 700.0); if (t1 <= t0) return vec4(0.0);
+  vec3 L = normalize(uSun); float cs = dot(rd, L);
+  float ph = min(mix(1.0, vcHG(cs, 0.6), 0.5) + 0.3 * vcHG(cs, -0.3), 4.0);
+  float jit = fract(52.9829189 * fract(dot(fc, vec2(0.06711056, 0.00583715))));
+  vec3 col = vec3(0.0); float T = 1.0, tHit = -1.0, span = t1 - t0, sig = uCol.z;
+  for (int i = 0; i < 26; i++) {
+    float u = (float(i) + jit) / 26.0, tn = t0 + span * u * u;
+    float dt = span * 2.0 * max(u, 0.02) / 26.0;
+    vec3 p = ro + rd * tn; float cov = vcCov(p.xz); float d = vcD(p, cov, true);
+    if (d > 0.002) {
+      if (tHit < 0.0) tHit = tn;
+      float od = (vcD(p + L * 4.0, cov, false) * 4.0 + vcD(p + L * 12.0, cov, false) * 8.0 + vcD(p + L * 26.0, cov, false) * 14.0 + d * 2.0) * sig * 1.6;
+      float h = clamp((p.y - uCol.x) / (uCol.y - uCol.x), 0.0, 1.0);
+      float sun = exp(-od) + 0.18 * exp(-od * 0.25);
+      vec3 amb = mix(uFog * vec3(0.4, 0.44, 0.56), uFog * vec3(0.66, 0.69, 0.78) + uTop * 0.08, h * h);
+      vec3 S = uGlow * sun * ph + amb;
+      float a = 1.0 - exp(-d * sig * max(dt, 0.35));
+      col += T * a * S; T *= 1.0 - a;
+      if (T < 0.025) { T = 0.0; break; }
+    }
+  }
+  float A = 1.0 - T; if (A < 0.004) return vec4(0.0);
+  vec3 c = col / A; float fd = tHit < 0.0 ? t0 : tHit; float ff = 1.0 - exp(-uDens * uDens * fd * fd);
+  return vec4(mix(c, uFog, ff), A); }
+`;
 const BRIDGE_MESH = [], condors = [], cloudL = [], WISPS = { mesh: null, list: [] };
 if (AND) {
   const plankB = canvasTex(32, (g, S) => { g.fillStyle = "rgb(138,98,60)"; g.fillRect(0, 0, S, S);
@@ -760,52 +801,22 @@ if (AND) {
       const tw = new THREE.Mesh(new THREE.BoxGeometry(0.8, 15, 0.8), stoneM); tw.position.set(x, ROADH[k] - 1.0, z); scene.add(tw); obstacles.push({ x, z, r: 0.45 });
       const cap = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.3, 1.0), stoneM); cap.position.set(x, ROADH[k] + 6.65, z); scene.add(cap); }
   }
-  // sea of clouds: a soft base deck, thousands of sunlit billows rolling on top, and wisps drifting through the gorges
-  const cloudTex = (seed, dense, S0) => canvasTex(S0, (g, S) => { g.clearRect(0, 0, S, S);
-    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) { const k = Math.PI * 2 / S;
-      const v = Math.sin(x * k * 2 + seed + Math.sin(y * k * 3) * 1.4) * 0.5 + Math.sin(y * k * 2 + seed * 2 + Math.sin(x * k * 2) * 1.2) * 0.5 + Math.sin((x + y) * k * 4 + seed) * 0.25 + Math.sin((x - y) * k * 7 + seed * 3) * 0.12;
-      const a = dense ? 1 : clamp((v - 0.2) * 1.4, 0, 0.9);
-      if (a > 0.02) { const l = dense ? 214 + (v * 26 | 0) : 236 + (v * 14 | 0); g.fillStyle = `rgba(${l + 6},${l},${Math.min(255, l + 8)},${a.toFixed(2)})`; g.fillRect(x, y, 1, 1); } } }, true);
-  const t0 = cloudTex(0.7, true, 64), t1 = cloudTex(2.9, false, 64); t0.repeat.set(55, 55); t1.repeat.set(36, 36);
-  for (const [tex, op, dy, ro, tr] of [[t0, 1, -3, 0, false], [t1, 0.7, 3.5, -1, true]]) {
+  // sea of clouds: a raymarched volumetric slab (same GLSL runs in the native renderer), lit by the low sun
+  { const S = 256, cv = document.createElement("canvas"); cv.width = cv.height = S; const g = cv.getContext("2d"), id = g.createImageData(S, S), R = new Uint8Array(S * S);
+    for (let i = 0; i < S * S; i++) R[i] = Math.floor(hash2(i % S + 0.37, Math.floor(i / S) - 0.71) * 255.99);
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) { const o = (y * S + x) * 4; id.data[o] = R[y * S + x]; id.data[o + 1] = R[((y - 17) & 255) * S + ((x - 37) & 255)]; id.data[o + 2] = 0; id.data[o + 3] = 255; }
+    g.putImageData(id, 0, 0);
+    const nt = new THREE.CanvasTexture(cv); nt.flipY = false; nt.wrapS = nt.wrapT = THREE.RepeatWrapping; nt.magFilter = nt.minFilter = THREE.LinearFilter; nt.generateMipmaps = false;
+    const yb = Y_CL - 30, yt = Y_CL + 14;
+    const mat = new THREE.ShaderMaterial({ transparent: true, depthWrite: false, fog: false,
+      uniforms: { uMap: { value: nt }, uCol: { value: new THREE.Vector3(yb, yt, 0.085) }, uSun: { value: SUN }, uGlow: { value: new THREE.Color(1.0, 0.82, 0.64).multiplyScalar(0.78) },
+        uTop: { value: new THREE.Color(0.2, 0.35, 0.74) }, uFog: { value: FOG }, uDens: { value: scene.fog.density }, uTime: uTime },
+      vertexShader: "varying vec3 vW; void main(){ vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }",
+      fragmentShader: "uniform sampler2D uMap; uniform vec3 uCol; uniform vec3 uSun; uniform vec3 uGlow; uniform vec3 uTop; uniform vec3 uFog; uniform float uDens; uniform float uTime; varying vec3 vW;\n" +
+        VCLOUD_GLSL + "\nvoid main(){ vec4 c = vcMarch(cameraPosition, vW, gl_FragCoord.xy); if (c.a < 0.004) discard; gl_FragColor = c; }" });
+    mat.userData.kind = "vclouds"; mat.userData.tex = nt;
     const cg = new THREE.PlaneGeometry(4200, 4200, 1, 1); cg.rotateX(-Math.PI / 2);
-    const m = new THREE.Mesh(cg, tr ? new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: op, depthWrite: false, color: 0xfff4ec })
-                                    : new THREE.MeshLambertMaterial({ map: tex, color: 0xe6e8f2 }));
-    m.position.y = Y_CL + dy; m.renderOrder = ro; scene.add(m); cloudL.push(m);
-  }
-  { // billows: smooth-shaded flattened blobs, lit by the low sun (warm tops, blue-grey undersides), grouped in culled chunks
-    const mk = (detail) => { const g = new THREE.IcosahedronGeometry(1, detail); const p = g.attributes.position, nrm = new Float32Array(p.count * 3);
-      for (let i = 0; i < p.count; i++) { const x = p.getX(i), y = p.getY(i), z = p.getZ(i), l = Math.hypot(x, y, z); nrm[i * 3] = x / l; nrm[i * 3 + 1] = y / l; nrm[i * 3 + 2] = z / l; }
-      g.setAttribute("normal", new THREE.BufferAttribute(nrm, 3)); return g; };
-    const near = mk(1), far = mk(0), mat = new THREE.MeshLambertMaterial({ color: 0xffffff });
-    const chunks = new Map(); let n = 0;
-    const hc = (i, j, s) => hash2(i * 5 + s, j * 9 - s);
-    const put = (x, y, z, sx, sy, sz, ry, v) => { const d = Math.hypot(x, z), geo = d < 320 ? near : far, key = Math.floor(x / 400) * 64 + Math.floor(z / 400) + (geo === near ? 0 : 10000);
-      tmpO.position.set(x, y, z); tmpO.rotation.set(0, ry, 0); tmpO.scale.set(sx, sy, sz); tmpO.updateMatrix();
-      if (!chunks.has(key)) chunks.set(key, { geo, M: [], C: [] }); const ch = chunks.get(key); ch.M.push(tmpO.matrix.clone()); ch.C.push(new THREE.Color(v, v * 0.985, v * 1.02)); n++; };
-    for (let gj = -38; gj <= 38; gj++) for (let gi = -38; gi <= 38; gi++) {   // each site: a cauliflower cluster of 3-6 billows
-      const x = (gi + hc(gi, gj, 1)) * 30, z = (gj + hc(gi, gj, 2)) * 30, d = Math.hypot(x, z); if (d > 1150) continue;
-      const big = fbm(x * 0.0035 + 3, z * 0.0035, 3), dens = smooth(0.36, 0.6, big); if (hc(gi, gj, 3) > dens * 0.9 + 0.05) continue;
-      const R = (10 + hc(gi, gj, 4) * 16) * (0.75 + big * 0.7), base = Y_CL - 2 + big * 5, tall = hc(gi, gj, 8) < 0.12 ? 1.8 : 1;
-      if (base + R * 0.75 * tall > ROADAVG - 22) continue;
-      put(x, base, z, R * 1.4, R * 0.42, R * 1.2, hc(gi, gj, 5) * 6.28, 0.93);
-      const parts = 2 + Math.floor(hc(gi, gj, 6) * 4);
-      for (let q = 0; q < parts; q++) { const a = hc(gi * 3 + q, gj, 9) * 6.28, rr2 = R * (0.35 + hc(gi, gj * 3 + q, 10) * 0.45), off = R * (0.25 + hc(q, gi, 11) * 0.55);
-        put(x + Math.cos(a) * off, base + R * 0.18 + rr2 * 0.35 * tall, z + Math.sin(a) * off, rr2, rr2 * 0.72 * tall, rr2, a, 0.96 + hc(q, gj, 12) * 0.05); }
-    }
-    for (const ch of chunks.values()) { const im = new THREE.InstancedMesh(ch.geo, mat, ch.M.length);
-      ch.M.forEach((m, i) => { im.setMatrixAt(i, m); im.setColorAt(i, ch.C[i]); }); im.instanceMatrix.needsUpdate = true; im.instanceColor.needsUpdate = true; im.computeBoundingSphere(); scene.add(im); }
-    window.__billows = n;
-  }
-  { // wisps rolling through the gorges under and around the bridges
-    const wt = canvasTex(32, (g, S) => { g.clearRect(0, 0, S, S); for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) { const dx = (x - 15.5) / 16, dy = (y - 15.5) / 16;
-      const a = clamp(1 - Math.hypot(dx * 1.0, dy * 1.4) + (vnoise(x * 0.4, y * 0.4) - 0.5) * 0.5, 0, 1) * 0.85; if (a > 0.03) { g.fillStyle = `rgba(255,250,246,${a.toFixed(2)})`; g.fillRect(x, y, 1, 1); } } }, true);
-    const cross = clumpGeo(2); cross.translate(0, -0.5, 0);
-    const N = Math.min(60, SPANS.length * 9), im = new THREE.InstancedMesh(cross, new THREE.MeshBasicMaterial({ map: wt, transparent: true, depthWrite: false, side: THREE.DoubleSide, opacity: 0.75 }), N);
-    im.frustumCulled = false; im.renderOrder = 1; scene.add(im);
-    WISPS.mesh = im; WISPS.list = [];
-    for (let i = 0; i < N; i++) { const sp = SPANS[i % SPANS.length], k = sp.s0 + ((i * 37) % Math.max(1, sp.s1 - sp.s0)), tn = TAN[k];
-      WISPS.list.push({ k, ph: hash2(i, 11) * 200, sz: 9 + hash2(i, 12) * 12, y: ROADH[k] - 14 + hash2(i, 13) * 14, sp: 1.5 + hash2(i, 14) * 2, nx: -tn[1], nz: tn[0] }); }
+    const m = new THREE.Mesh(cg, mat); m.position.y = yt; m.renderOrder = 2; m.frustumCulled = false; scene.add(m); cloudL.push(m);
   }
   // condors circling over the gorges
   const wingG = new THREE.BufferGeometry(); wingG.setAttribute("position", new THREE.Float32BufferAttribute([0, 0, -0.35, 0, 0, 0.45, 1.6, 0.0, 0.1, 1.6, 0, 0.1, 2.6, 0.12, 0.25, 1.4, 0, -0.25], 3)); wingG.computeVertexNormals();
@@ -843,10 +854,6 @@ function updateAndes(dt) {
   }
   for (const c of condors) { const a = t * c.sp + c.ph; c.g.position.set(c.cx + Math.cos(a) * c.rad, c.y + Math.sin(t * 0.3 + c.ph) * 2, c.cz + Math.sin(a) * c.rad);
     c.g.rotation.set(0, -a, Math.sin(t * 0.5 + c.ph) * 0.12 - 0.25); const fl = Math.sin(t * 1.3 + c.ph) > 0.85 ? Math.sin(t * 9) * 0.4 : 0.05; c.L.rotation.z = fl; c.R.rotation.z = -fl; }
-  if (cloudL.length) { cloudL[0].position.x = (t * 0.8) % 76.4; cloudL[1].position.z = -((t * 1.1) % 116.7); cloudL[1].position.x = (t * 0.5) % 116.7; }
-  if (WISPS.mesh) { WISPS.list.forEach((w, i) => { const p = PATH[w.k], s = ((t * w.sp + w.ph) % 160) - 80, x = p[0] + w.nx * s, z = p[1] + w.nz * s;
-      const fade = 1 - Math.abs(s) / 80; tmpO.position.set(x, w.y + Math.sin(t * 0.2 + w.ph) * 1.5, z); tmpO.rotation.set(0, w.ph, 0); const sc = w.sz * (0.4 + 0.6 * fade); tmpO.scale.set(sc * 1.8, sc * 0.8, sc * 1.8); tmpO.updateMatrix(); WISPS.mesh.setMatrixAt(i, tmpO.matrix); });
-    WISPS.mesh.instanceMatrix.needsUpdate = true; }
 }
 /* ================= launch ramp ================= */
 if (RAMP.i >= 0) {
@@ -1705,10 +1712,11 @@ function nglExport() {
   const col = (c) => c ? [c.r, c.g, c.b] : [1, 1, 1];
   const matId = (m) => { if (mats.has(m)) return mats.get(m).id;
     const kind = m.userData.kind || (m.isMeshPhongMaterial ? "phong" : m.isMeshLambertMaterial ? "lambert" : m.isPointsMaterial ? "points" : "basic");
-    const e = { id: mats.size, kind, color: col(m.color), spec: col(m.specular), shin: m.shininess || 30, emis: m.emissive ? col(m.emissive) : [0, 0, 0], map: texId(m.map),
+    const e = { id: mats.size, kind, color: col(m.color), spec: col(m.specular), shin: m.shininess || 30, emis: m.emissive ? col(m.emissive) : [0, 0, 0], map: texId(m.map || m.userData.tex),
       at: m.alphaTest || 0, tr: m.transparent ? 1 : 0, op: m.opacity, side: m.side, vc: m.vertexColors ? 1 : 0, fog: m.fog ? 1 : 0, dw: m.depthWrite ? 1 : 0, dt: m.depthTest ? 1 : 0,
       po: m.polygonOffset ? [m.polygonOffsetFactor, m.polygonOffsetUnits] : null, blend: m.blending, sway: m.userData.sway || null, size: m.size || 1 };
     if (kind === "sky") { const u = m.uniforms; e.u = { sun: u.uSun.value.toArray(), fog: col(u.uFog.value), top: col(u.uTop.value), glow: col(u.uGlow.value), halo: u.uHalo.value }; }
+    if (kind === "vclouds") { const u = m.uniforms; e.u = { col: u.uCol.value.toArray(), sun: u.uSun.value.toArray(), glow: col(u.uGlow.value), top: col(u.uTop.value), fog: col(u.uFog.value), dens: u.uDens.value }; }
     if (kind === "dust") { const u = m.uniforms; e.u = { dens: u.uDens.value, fog: col(u.uFog.value), col: col(u.uCol.value) }; }
     mats.set(m, e); return e.id; };
   const visible = (o) => { for (let p = o; p; p = p.parent) if (!p.visible) return false; return true; };

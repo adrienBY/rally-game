@@ -174,3 +174,16 @@ void main() {
   fragColor = vec4(c, 1.0);
 }
 "#;
+
+pub const VCLOUD_VS: &str = r#"#version 300 es
+precision highp float;
+layout(location=0) in vec3 position; uniform mat4 uModel; uniform mat4 uView; uniform mat4 uProj; out vec3 vW;
+void main() { vec4 w = uModel * vec4(position, 1.0); vW = w.xyz; gl_Position = uProj * uView * w; }
+"#;
+pub const VCLOUD_FS: &str = concat!(r#"#version 300 es
+precision highp float;
+uniform sampler2D uMap; uniform vec3 uCol; uniform vec3 uSun; uniform vec3 uGlow; uniform vec3 uTop; uniform vec3 uFog; uniform float uDens; uniform float uTime; uniform vec3 uCamPos;
+in vec3 vW; out vec4 fragColor;
+"#, include_str!("vclouds.glsl"), r#"
+void main() { vec4 c = vcMarch(uCamPos, vW, gl_FragCoord.xy); if (c.a < 0.004) discard; fragColor = c; }
+"#);
