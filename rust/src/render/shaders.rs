@@ -63,11 +63,13 @@ pub fn mesh_fs(k: &MeshKey) -> String {
     d += &format!("#define LIT {}\n", k.lit);
     if k.map { d += "#define USE_MAP\n"; } if k.vcolor || k.icolor { d += "#define USE_COLOR\n"; } if k.alpha_test { d += "#define ALPHATEST\n"; }
     if k.double_side { d += "#define DOUBLE_SIDE\n"; } if k.fog { d += "#define USE_FOG\n"; } if k.transparent { d += "#define TRANSPARENT\n"; }
+    if k.sway.is_some() && k.lit == 0 { d += "#define FOLIAGE\n"; }
     d + r#"
 #define RECIPROCAL_PI 0.3183098861837907
 uniform vec3 uColor; uniform float uOpacity; uniform sampler2D uMap; uniform float uAlphaTest;
 uniform vec3 uHemiSky; uniform vec3 uHemiGround; uniform vec3 uHemiDir; uniform vec3 uDirColor; uniform vec3 uDirDir;
 uniform vec3 uFogColor; uniform float uFogDensity; uniform vec3 uCamPos; uniform vec3 uSpec; uniform float uShin; uniform vec3 uEmissive; uniform float uDim;
+uniform vec3 uSkySun; uniform vec3 uSkyGlow; uniform float uSkyHalo;
 in vec3 vN; in vec2 vUv; in vec3 vColor; in float vFogDepth; in vec3 vWorld;
 out vec4 fragColor;
 void main() {
@@ -103,8 +105,16 @@ void main() {
 #else
   float a = 1.0;
 #endif
+#if defined(USE_FOG) || defined(FOLIAGE)
+  vec3 vd = normalize(vWorld - uCamPos); float sunA = max(dot(vd, uSkySun), 0.0);
+#endif
+#ifdef FOLIAGE
+  outC += dc.rgb * uDirColor * 0.2 * pow(sunA, 3.0);   // leaves and grass glow when the sun is behind them
+#endif
 #ifdef USE_FOG
-  float f = 1.0 - exp(-uFogDensity * uFogDensity * vFogDepth * vFogDepth); outC = mix(outC, uFogColor, f);
+  // the haze takes the sky's own colour in that direction: towards the sun it glows like the sunset, so far hills melt into it
+  vec3 fc = uFogColor + uSkyGlow * (pow(sunA, 6.0) + uSkyHalo * pow(sunA, 2.0) * (1.0 - smoothstep(0.0, 0.5, vd.y)));
+  float f = 1.0 - exp(-uFogDensity * uFogDensity * vFogDepth * vFogDepth); outC = mix(outC, fc, f);
 #endif
   fragColor = vec4(outC, a);
 }

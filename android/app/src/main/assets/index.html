@@ -577,6 +577,33 @@ for (const t of trees) for (let i = -7; i <= 7; i++) for (let j = -7; j <= 7; j+
   const d = Math.hypot(gx - GXH - t.x, gz - GZH - t.z); if (d < 6.5) SH[gz * GNX + gx] += (1 - d / 6.5) * 0.6;
 }
 const shadeAt = (x, z) => Math.min(1, bil(SH, x, z));
+/* baked sun shadows (long low-sun shadows, capped at a ~21 degree sun so sunsets keep their lit patches of the canopies and trunks, cast along the sun, dappled, tinted by the sky): a 1 m grid of
+   how much of the sun each spot loses, applied to the ground, the road and the grass once every tree is known */
+const SS = new Float32Array(GNX * GNZ), sunShadowAt = (x, z) => Math.min(0.85, bil(SS, x, z));
+const SHADOW_TINT = RIV ? [0.52, 0.54, 0.72] : TOU ? [0.66, 0.66, 0.78] : SNOW ? [0.48, 0.56, 0.8] : CAN ? [0.42, 0.42, 0.58] : LAK ? [0.46, 0.5, 0.66] : [0.5, 0.55, 0.62];
+const shadowMul = (occ, c) => 1 - occ * (1 - SHADOW_TINT[c]);
+const BAKED = { ground: [], road: null };
+function bakeSunShadows() {
+  const sh = Math.hypot(SUN.x, SUN.z) || 1, elev = Math.max(Math.atan2(SUN.y, sh), 0.36), tanE = Math.tan(elev), sinE = Math.sin(elev);   // very low suns: shadows capped at ~14 degrees
+  const dx = -SUN.x / sh, dz = -SUN.z / sh;
+  const put = (x, z, v) => { const gx = Math.round(x) + GXH, gz = Math.round(z) + GZH; if (gx < 0 || gz < 0 || gx >= GNX || gz >= GNZ) return; const q = gz * GNX + gx; SS[q] = 1 - (1 - SS[q]) * (1 - v); };
+  for (const t of trees) { const c = t.cv; if (!c) continue;
+    const off = Math.max(0, c.y - t.y) / tanE, sx = c.x + dx * off, sz = c.z + dz * off;
+    const W = c.R, L = Math.min(c.R * 3, (c.L || c.R * 0.6) / tanE + c.R / sinE * 0.4 + c.R * 0.5), span = Math.ceil(Math.max(W, L)) + 1;
+    for (let j = -span; j <= span; j++) for (let i = -span; i <= span; i++) { const x = Math.round(sx) + i, z = Math.round(sz) + j, ax = x - sx, az = z - sz;
+      const a = ax * dx + az * dz, b = -ax * dz + az * dx, q = (a / L) ** 2 + (b / W) ** 2; if (q >= 1) continue;
+      const dap = 0.72 + 0.28 * vnoise(x * 0.55 + 11, z * 0.55 - 7);   // light through the gaps in the leaves
+      put(x, z, Math.min(1, c.d * 1.12) * smooth(1, 0.4, q) * dap); }
+    // the trunk, from its foot to the canopy's shadow
+    const tl = Math.max(0, off - L * 0.6), w = c.tr + 0.35;
+    for (let s2 = 0; s2 <= tl; s2 += 0.5) { const x = t.x + dx * s2, z = t.z + dz * s2; put(x, z, 0.5); put(x - dz * w * 0.5, z + dx * w * 0.5, 0.25); put(x + dz * w * 0.5, z - dx * w * 0.5, 0.25); } }
+  // soften by a pixel (shadows of leaves are never razor sharp at this distance)
+  { const T = new Float32Array(SS); for (let z = 1; z < GNZ - 1; z++) for (let x = 1; x < GNX - 1; x++) { const q = z * GNX + x; SS[q] = T[q] * 0.5 + (T[q - 1] + T[q + 1] + T[q - GNX] + T[q + GNX]) * 0.125; } }
+  const tint = (geo) => { const P = geo.attributes.position.array, C = geo.attributes.color.array;
+    for (let i = 0; i < P.length / 3; i++) { const o = sunShadowAt(P[i * 3], P[i * 3 + 2]); if (o < 0.004) continue; for (let c = 0; c < 3; c++) C[i * 3 + c] *= shadowMul(o, c); }
+    geo.attributes.color.needsUpdate = true; };
+  for (const g of BAKED.ground) tint(g); if (BAKED.road) tint(BAKED.road);
+}
 
 /* ground palettes of the two warm stages, shared by the stage ground and the land beyond it */
 function groundCol(x, z, h, slope, n, n2) {
@@ -684,7 +711,7 @@ function lampAt(x, z) { if (!LAN.length) return 0; let a = 0; const ci = Math.fl
         UV2[dst * 2] = uv.array[src * 2]; UV2[dst * 2 + 1] = uv.array[src * 2 + 1]; }
       for (let iy = 0; iy < th - 1; iy++) for (let ix = 0; ix < tw - 1; ix++) { const a = ix + tw * iy, b = ix + tw * (iy + 1), c = ix + 1 + tw * (iy + 1), d = ix + 1 + tw * iy; I.push(a, b, d, b, c, d); }
       const tg = new THREE.BufferGeometry(); tg.setAttribute("position", new THREE.BufferAttribute(P, 3)); tg.setAttribute("normal", new THREE.BufferAttribute(N, 3));
-      tg.setAttribute("color", new THREE.BufferAttribute(Cc, 3)); tg.setAttribute("uv", new THREE.BufferAttribute(UV2, 2)); tg.setIndex(I); tg.computeBoundingSphere();
+      tg.setAttribute("color", new THREE.BufferAttribute(Cc, 3)); tg.setAttribute("uv", new THREE.BufferAttribute(UV2, 2)); tg.setIndex(I); tg.computeBoundingSphere(); BAKED.ground.push(tg);
       const tm = new THREE.Mesh(tg, gm); tm.userData.dyn = true; tm.userData.grid = [tw, th]; scene.add(tm); CULL.push({ o: tm, c: tg.boundingSphere.center.clone(), r: tg.boundingSphere.radius, d: FOGCUT }); tiles++; }
     geo.dispose(); window.__groundTiles = tiles; }
   const AC = [-1.08, -0.78, -0.42, 0, 0.42, 0.78, 1.08], NA = AC.length;
@@ -697,7 +724,7 @@ function lampAt(x, z) { if (!LAN.length) return 0; let a = 0; const ci = Math.fl
       const ts = RIV ? tunShade(i, 0) : null; if (ts) for (let c3 = 0; c3 < 3; c3++) CO[q * 3 + c3] *= ts[c3]; } }
   for (let i = 0; i < NP; i++) { const n = (i + 1) % NP; for (let a = 0; a < NA - 1; a++) { const A0 = i * NA + a, B0 = n * NA + a; IDX.push(A0, B0, A0 + 1, A0 + 1, B0, B0 + 1); } }
   const rg = new THREE.BufferGeometry(); rg.setAttribute("position", new THREE.BufferAttribute(P, 3)); rg.setAttribute("uv", new THREE.BufferAttribute(UVA, 2));
-  rg.setAttribute("color", new THREE.BufferAttribute(CO, 3)); rg.setIndex(IDX); rg.computeVertexNormals();
+  rg.setAttribute("color", new THREE.BufferAttribute(CO, 3)); rg.setIndex(IDX); rg.computeVertexNormals(); BAKED.road = rg;
   const road = new THREE.Mesh(rg, new THREE.MeshLambertMaterial({ map: gravelTex, vertexColors: true, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 }));
   road.frustumCulled = false; scene.add(road);
 }
@@ -870,12 +897,13 @@ const card = new THREE.PlaneGeometry(1, 1);
       for (let b = 0; b < 4; b++) { const a = b * 1.57 + rnd(); tmpO.position.set(cx, cy - 0.8, cz); tmpO.rotation.set(0, a, 0); tmpO.rotateZ(rr(0.9, 1.25));
         tmpO.scale.set(r * 0.45, rr(2.4, 3.4), r * 0.45); pushT(trunkM, trunkC, tmpO, bark); }
       const R = rr(4.6, 6.4), ry = rr(1.0, 1.5), base = new THREE.Color().setHSL(rr(0.25, 0.3), rr(0.32, 0.42), rr(0.17, 0.22));
+      t.cv = { x: cx, y: cy + 0.6, z: cz, R: R * 0.95, d: 0.85, tr: r };
       for (let i = 0; i < 30; i++) { const u = rnd() * Math.PI * 2, rad = Math.sqrt(rnd()), dx = Math.cos(u) * rad, dz = Math.sin(u) * rad, dy = (1 - rad * rad) * 0.7 + rr(-0.35, 0.35);
         tmpO.position.set(cx + dx * R, cy + 0.6 + dy * ry, cz + dz * R); tmpO.rotation.set(-Math.PI / 2 + rr(-0.6, 0.6), rnd() * 6, rr(-0.6, 0.6));
         const sc = rr(2.8, 3.8); tmpO.scale.set(sc, sc, sc); const lit = Math.max(0, dx * SUN.x + dz * SUN.z) * rad;
         pushT(leafM, leafC, tmpO, tmpC.copy(base).multiplyScalar((0.62 + 0.34 * (dy * 0.5 + 0.5) + 0.5 * lit + rr(-0.06, 0.06)) * 1.55)); }
     } else if (cyp) {
-      const H = rr(9, 15), base = new THREE.Color().setHSL(rr(0.3, 0.36), rr(0.28, 0.36), rr(0.12, 0.15));
+      const H = rr(9, 15), base = new THREE.Color().setHSL(rr(0.3, 0.36), rr(0.28, 0.36), rr(0.12, 0.15)); t.cv = { x: t.x, y: t.y + H * 0.52, z: t.z, R: 1.25, L: H * 0.42, d: 0.9, tr: 0.16 };
       obstacles.push({ x: t.x, z: t.z, r: 0.3, m: 2 });
       tmpO.position.set(t.x, t.y - 0.3, t.z); tmpO.rotation.set(0, 0, 0); tmpO.scale.set(0.16, H * 0.5, 0.16); pushT(trunkM, trunkC, tmpO, bark);
       for (let l = 0; l < 9; l++) { const f = l / 9, y = t.y + H * (0.12 + f * 0.84), rad = Math.sin((f * 0.9 + 0.08) * Math.PI) * rr(0.9, 1.2) * (1 - f * 0.45) + 0.25;
@@ -884,7 +912,7 @@ const card = new THREE.PlaneGeometry(1, 1);
     } else {
       const H = rr(4, 6.5), r = rr(0.2, 0.3); obstacles.push({ x: t.x, z: t.z, r: r + 0.06, m: 2 });
       tmpO.position.set(t.x, t.y - 0.3, t.z); tmpO.rotation.set(rr(-0.15, 0.15), rnd() * 6, rr(-0.15, 0.15)); tmpO.scale.set(r, H * 0.6, r); pushT(trunkM, trunkC, tmpO, bark.setRGB(0.7, 0.66, 0.6));
-      const cy = t.y + H * 0.7, rx = rr(2.4, 3.4), base = new THREE.Color().setHSL(rr(0.17, 0.22), rr(0.14, 0.22), rr(0.38, 0.46));
+      const cy = t.y + H * 0.7, rx = rr(2.4, 3.4), base = new THREE.Color().setHSL(rr(0.17, 0.22), rr(0.14, 0.22), rr(0.38, 0.46)); t.cv = { x: t.x, y: cy, z: t.z, R: rx * 0.9, d: 0.7, tr: r };
       for (let i = 0; i < 16; i++) { const u = rnd() * Math.PI * 2, v = Math.acos(rr(-0.6, 1)), sr = Math.pow(rnd(), 0.4), dx = Math.sin(v) * Math.cos(u) * sr, dy = Math.cos(v) * sr, dz = Math.sin(v) * Math.sin(u) * sr;
         tmpO.position.set(t.x + dx * rx, cy + dy * rx * 0.6, t.z + dz * rx); tmpO.rotation.set(rnd() * 3, rnd() * 3, rnd() * 3); const sc = rr(2.0, 2.8); tmpO.scale.set(sc, sc, sc);
         pushT(leafM, leafC, tmpO, tmpC.copy(base).multiplyScalar((0.6 + 0.3 * (dy * 0.5 + 0.5) + 0.3 * Math.max(0, dx * SUN.x + dz * SUN.z) + rr(-0.05, 0.05)) * 1.5)); }
@@ -903,6 +931,7 @@ const card = new THREE.PlaneGeometry(1, 1);
       for (let b = 0; b < nb; b++) { tmpO.position.set(t.x, t.y + H * rr(0.42, 0.66), t.z); tmpO.rotation.set(0, rnd() * 6.28, 0); tmpO.rotateZ(rr(0.6, 1.1));
         tmpO.scale.set(r * 0.42, rr(2.5, 4.5), r * 0.42); pushT(trunkM, trunkC, tmpO, bark); }
       const cs = CAN ? 0.42 : birch ? 0.62 : 1, cy = t.y + H * 0.78, rx = rr(4.5, 7) * cs, ry = rr(3, 4.6) * cs, rz = rr(4.5, 7) * cs;
+      t.cv = { x: t.x, y: cy, z: t.z, R: (rx + rz) * 0.42, L: ry * 0.6, d: birch ? 0.6 : 0.8, tr: r };
       const base = autumn ? (TOU ? [new THREE.Color(0.8, 0.16, 0.07), new THREE.Color(0.9, 0.38, 0.1), new THREE.Color(0.86, 0.62, 0.16), new THREE.Color(0.72, 0.1, 0.1)][rnd() * 4 | 0] : LAK ? new THREE.Color(0.95, 0.72, 0.2) : new THREE.Color(0.86, 0.48, 0.18)) : CAN ? new THREE.Color().setHSL(rr(0.17, 0.22), rr(0.18, 0.28), rr(0.28, 0.34))
         : birch ? new THREE.Color().setHSL(rr(0.2, 0.25), rr(0.45, 0.55), rr(0.36, 0.42)) : new THREE.Color().setHSL(rr(0.24, 0.30), rr(0.35, 0.5), rr(0.28, 0.36));
       const n = CAN ? 14 + (rnd() * 6 | 0) : birch ? 22 + (rnd() * 8 | 0) : 32 + (rnd() * 12 | 0);
@@ -915,6 +944,7 @@ const card = new THREE.PlaneGeometry(1, 1);
       }
     } else {
       const base = SNOW ? new THREE.Color().setHSL(rr(0.38, 0.43), rr(0.2, 0.3), rr(0.12, 0.17)) : TOU ? new THREE.Color().setHSL(rr(0.33, 0.4), rr(0.28, 0.36), rr(0.13, 0.17)) : new THREE.Color().setHSL(rr(0.33, 0.38), rr(0.25, 0.35), rr(0.2, 0.26));
+      t.cv = { x: t.x, y: t.y + H * 0.58, z: t.z, R: 2.1, L: H * 0.36, d: 0.85, tr: r };
       for (let l = 0; l < 9; l++) { const f = l / 9, y = t.y + H * (0.32 + f * 0.68), rad = (1 - f) * rr(2.6, 3.4) + 0.4, cards = 4 + (rnd() * 2 | 0);
         for (let c = 0; c < cards; c++) { const a = rnd() * Math.PI * 2;
           tmpO.position.set(t.x + Math.cos(a) * rad * 0.5, y, t.z + Math.sin(a) * rad * 0.5); tmpO.rotation.set(rr(-0.4, 0.4), a, rr(-0.3, 0.3));
@@ -925,6 +955,7 @@ const card = new THREE.PlaneGeometry(1, 1);
   }
   instanced(unitCyl, new THREE.MeshLambertMaterial({ map: barkTex }), trunkM, trunkC);
   instanced(card, sway(new THREE.MeshBasicMaterial({ map: leafTex, alphaTest: 0.5, side: THREE.DoubleSide }), 0.16, false), leafM, leafC);
+  bakeSunShadows();
   instanced(card, sway(new THREE.MeshBasicMaterial({ map: needleTex, alphaTest: 0.5, side: THREE.DoubleSide }), 0.08, false), needleM, needleC);
   if (snowM.length) instanced(card, sway(new THREE.MeshBasicMaterial({ map: leafTex, alphaTest: 0.5, side: THREE.DoubleSide }), 0.06, false), snowM, snowC);
 }
@@ -1172,6 +1203,7 @@ if (!SNOW) {
       const s = (0.45 + hs * 0.65 * (pd < ROAD + 1.5 ? 0.6 : 1)) * (ICE ? 0.6 : TOU ? 0.7 : RIV ? 0.75 : 1);
       tmpO.position.set(x, height(x, z) - 0.04, z); tmpO.rotation.set(0, hx * 6.28, 0); tmpO.scale.set(s * 1.4, s, s * 1.4); tmpO.updateMatrix(); M.push(tmpO.matrix.clone());
       const g = (0.55 + hz * 0.3) * (1 - shadeAt(x, z) * 0.45), c = (CAN ? tmpC.setRGB(0.95 * g + 0.2, 0.75 * g + 0.12, 0.42 * g + 0.06) : ICE ? tmpC.setRGB(0.34 * g + 0.06, 0.42 * g + 0.04, 0.2 * g) : TOU ? (hs > 0.5 ? tmpC.setRGB(0.3 * g + 0.04, 0.42 * g + 0.04, 0.18 * g) : tmpC.setRGB(0.5 * g + 0.1, 0.38 * g, 0.18 * g)) : RIV ? (hs > 0.45 ? tmpC.setRGB(0.62 * g + 0.12, 0.54 * g + 0.06, 0.26 * g) : tmpC.setRGB(0.4 * g + 0.05, 0.46 * g + 0.05, 0.2 * g)) : tmpC.setRGB(0.36 * g + hs * 0.08, 0.62 * g, 0.24 * g)).clone();
+      { const o = sunShadowAt(x, z); if (o > 0.004) { c.r *= shadowMul(o, 0); c.g *= shadowMul(o, 1); c.b *= shadowMul(o, 2); } }
       if (TOU) { const lk = lampAt(x, z) * 0.9; c.r += LAMP[0] * lk; c.g += LAMP[1] * lk; c.b += LAMP[2] * lk; }
       C.push(c); } }
   instanced(clump2, sway(new THREE.MeshBasicMaterial({ map: grassTex, alphaTest: 0.5, side: THREE.DoubleSide }), 0.14, true, [GNEAR, GFAR]), M, C, GFAR + 12, 48);
@@ -2727,6 +2759,8 @@ function rtPacket() {
     boats: BOATS.ims ? { list: BOATS.list, hull: ids(BOATS.ims.hull)[0], sail: ids(BOATS.ims.sail)[0], cab: ids(BOATS.ims.cab)[0], wake: ids(BOATS.ims.wake)[0] } : null,
     snow: (SNOW || TOU) ? { obj: ids(snowfall)[0], n: SFN, pos: Array.from(sfPos), seed: Array.from(sfSeed) } : null,
     dust: { obj: ids(dust)[0], n: DN },
+    shade: Array.from({ length: NP * 13 }, (_, q) => { const i = (q / 13) | 0, l = q % 13 - 6, p = PATH[i], tn = TAN[i]; return Math.round(sunShadowAt(p[0] - tn[1] * l, p[1] + tn[0] * l) * 99); }),
+    shadeTint: SHADOW_TINT,
     tiles: scene.children.filter(o => o.userData.grid).map(o => [ids(o)[0], ...o.userData.grid, ...o.geometry.boundingSphere.center.toArray()]),   // stage ground grids: the app draws far ones coarser
     saves: {} };
   try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.startsWith("fogwood-")) pk.saves[k] = localStorage.getItem(k); } } catch (_) {}

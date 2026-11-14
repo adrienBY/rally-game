@@ -100,7 +100,7 @@ pub struct Game {
     shadow_op: f32, pub flash: f64, pub speed_k: f64, clock: std::time::Instant, pub last_pidx: usize,
     /// test hook: the demo driver drives your car too
     pub auto: bool,
-    tile_lod: Vec<usize>, fps30: Option<bool>,
+    tile_lod: Vec<usize>, fps30: Option<bool>, pub shade_dim: f64,
 }
 
 pub fn path_idx(w: &World, x: f64, z: f64) -> usize {
@@ -137,7 +137,7 @@ impl Game {
             sf_pos, sf_init: false, boats,
             sun_vis: 0.0, expo: 1.0, dim: 1.0, expo_tun: false, sun_uv: [0.5, 0.8],
             hap_t: 0.0, hap_cool: 0.0, aud_wet: 0.0, car_audio_on: false, race_was: false, pop_cool: 0.0, fps_acc: 0.0, fps_n: 0, hud_tick: false, hud: hud::Canvas::new(320, 180),
-            shadow_op: -1.0, flash: 0.0, speed_k: 0.0, clock: std::time::Instant::now(), last_pidx: 0, auto: false, tile_lod: Vec::new(), fps30: None, rt,
+            shadow_op: -1.0, flash: 0.0, speed_k: 0.0, clock: std::time::Instant::now(), last_pidx: 0, auto: false, tile_lod: Vec::new(), fps30: None, shade_dim: 1.0, rt,
         };
         if let Some(e) = bridge::lock().as_ref() { g.place_at(&e.world, 6); }
         g
@@ -549,6 +549,13 @@ impl Game {
         let tgt = clamp((fwd[0] * sun[0] + fwd[1] * sun[1] + fwd[2] * sun[2]) * 1.6 + 0.15, 0.0, 1.0) * edge * if self.riv { 0.38 } else { 1.0 };
         self.sun_vis += (tgt - self.sun_vis) * (dt * 5.0).min(1.0);
         self.flash = self.shake * 0.5;
+        // your car in the baked tree shadows: it loses the sun's share of its light
+        if self.rt.shade.len() == self.np * 13 {
+            let s = self.car; let i = path_idx(w, s.x, s.z); let p = self.rt.path[i]; let tn = self.rt.tan[i];
+            let lat = (s.x - p[0]) * -tn[1] + (s.z - p[1]) * tn[0]; let l = (js_round(lat) + 6.0).clamp(0.0, 12.0) as usize;
+            let occ = self.rt.shade[i * 13 + l] as f64 / 99.0; let t = &self.rt.shade_tint; let loss = 1.0 - (t[0] + t[1] + t[2]) / 3.0;
+            let tgt = 1.0 - occ * loss * 0.85; self.shade_dim += (tgt - self.shade_dim) * (dt * 6.0).min(1.0);
+        }
         if self.riv {
             let ci = path_idx(w, cp[0], cp[2]); let ct = self.tun_at(ci);
             let inside = ct.map(|t| self.road_dist(w, cp[0], cp[2]) < 4.6 && cp[1] < self.rt.roadh[ci] + 6.2 && t[1] - self.cdi(ci as i64, t[0]) > 1).unwrap_or(false);
@@ -566,7 +573,7 @@ impl Game {
         fr.time = self.time as f32; fr.wind = self.wind as f32; fr.sun = [self.sun_uv[0] as f32, self.sun_uv[1] as f32]; fr.sun_vis = self.sun_vis as f32;
         fr.flash = self.flash as f32; fr.speed = (if self.cam.mode == 2 { self.speed_k * 1.1 } else { self.speed_k }) as f32;
         fr.dust_scale = (self.lh as f64 / (2.0 * (self.fov_now * std::f64::consts::PI / 360.0).tan())) as f32;
-        fr.expo = self.expo as f32; fr.dim = self.dim as f32;
+        fr.expo = self.expo as f32; fr.dim = (self.dim * self.shade_dim) as f32;
         fr.split_s = [self.rt.split[0], self.rt.split[1], self.rt.split[2]]; fr.split_h = [self.rt.split[3], self.rt.split[4], self.rt.split[5]];
         fr.texel = [1.0 / self.lw as f32, 1.0 / self.lh as f32]; fr.valid = true;
     }

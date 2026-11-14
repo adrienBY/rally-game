@@ -36,6 +36,8 @@ struct Object {
 struct GpuScene {
     texs: Vec<Texture>, geos: Vec<Geometry>, mats: Vec<Material>, objs: Vec<Object>,
     fog_c: [f32; 3], fog_d: f32, clear: [f32; 4], hemi: ([f32; 3], [f32; 3], [f32; 3]), dir: ([f32; 3], [f32; 3]),
+    /// the sky's sun direction, glow and halo: the fog borrows them so the haze matches the sky
+    sky: ([f32; 3], [f32; 3], f32),
 }
 #[derive(Clone, Copy, Default)]
 pub struct FrameState { pub lw: i32, pub lh: i32, pub view: M4, pub proj: M4, pub cam: [f32; 3], pub time: f32, pub wind: f32, pub sun: [f32; 2],
@@ -63,9 +65,9 @@ pub struct Renderer {
     hud: Option<(glow::Texture, i32, i32)>,
 }
 
-const UNIFORMS: [&str; 42] = ["uModel", "uView", "uProj", "uNormalM", "uMapM", "uTime", "uWind", "uColor", "uOpacity", "uMap", "uAlphaTest", "uHemiSky",
+const UNIFORMS: [&str; 45] = ["uModel", "uView", "uProj", "uNormalM", "uMapM", "uTime", "uWind", "uColor", "uOpacity", "uMap", "uAlphaTest", "uHemiSky",
     "uHemiGround", "uHemiDir", "uDirColor", "uDirDir", "uFogColor", "uFogDensity", "uCamPos", "uSpec", "uShin", "uEmissive", "uSun", "uFog", "uTop", "uGlow",
-    "uHalo", "uSize", "uScale", "uDens", "uCol", "tScene", "uSunVis", "uFlash", "uSpeed", "uExpo", "uDim", "uSplitS", "uSplitH", "uTexel", "tHud", "uHudOn"];
+    "uHalo", "uSize", "uScale", "uDens", "uCol", "tScene", "uSunVis", "uFlash", "uSpeed", "uExpo", "uDim", "uSplitS", "uSplitH", "uTexel", "tHud", "uHudOn", "uSkySun", "uSkyGlow", "uSkyHalo"];
 
 unsafe fn compile(gl: &Gl, vs: &str, fs: &str) -> Result<Program, String> {
     let p = gl.create_program()?;
@@ -255,7 +257,8 @@ impl Renderer {
         if let Some(h) = head["lights"]["hemi"].as_array().and_then(|a| a.first()) { hemi = (v3(&h["sky"]), v3(&h["ground"]), v3(&h["d"])); }
         if let Some(d) = head["lights"]["dir"].as_array().and_then(|a| a.first()) { dir = (v3(&d["c"]), v3(&d["d"])); }
         let clear = head["clear"].as_array().map(|a| [f(&a[0]), f(&a[1]), f(&a[2]), f(&a[3])]).unwrap_or([0.5, 0.5, 0.5, 0.0]);
-        self.scene = Some(GpuScene { texs, geos, mats, objs, fog_c: v3(&head["fog"]["c"]), fog_d: f(&head["fog"]["d"]), clear, hemi, dir });
+        let sky = mats.iter().find_map(|m| m.sky.map(|(sun, _, _, glow, halo)| (sun, glow, halo))).unwrap_or(([0.0, 1.0, 0.0], [0.0; 3], 0.0));
+        self.scene = Some(GpuScene { texs, geos, mats, objs, fog_c: v3(&head["fog"]["c"]), fog_d: f(&head["fog"]["d"]), clear, hemi, dir, sky });
         // compile every program the scene needs now, so the first frames don't hitch
         let keys: Vec<Option<MeshKey>> = { let s = self.scene.as_ref().unwrap(); s.objs.iter().map(|o| Self::mesh_key(s, o)).collect() };
         for (i, k) in keys.iter().enumerate() { if let Some(k) = k { let pi = self.mesh_prog(k)?; self.scene.as_mut().unwrap().objs[i].prog = pi; } }
@@ -386,6 +389,7 @@ impl Renderer {
                     gl.uniform_3_f32_slice(u(U!("uHemiSky")), &s.hemi.0); gl.uniform_3_f32_slice(u(U!("uHemiGround")), &s.hemi.1); gl.uniform_3_f32_slice(u(U!("uHemiDir")), &s.hemi.2);
                     gl.uniform_3_f32_slice(u(U!("uDirColor")), &s.dir.0); gl.uniform_3_f32_slice(u(U!("uDirDir")), &s.dir.1);
                     gl.uniform_3_f32_slice(u(U!("uFogColor")), &s.fog_c); gl.uniform_3_f32_slice(u(U!("uCamPos")), &fr.cam); gl.uniform_1_i32(u(U!("uMap")), 0);
+                    gl.uniform_3_f32_slice(u(U!("uSkySun")), &s.sky.0); gl.uniform_3_f32_slice(u(U!("uSkyGlow")), &s.sky.1); gl.uniform_1_f32(u(U!("uSkyHalo")), s.sky.2);
                 } else if m.kind == MatKind::Points { gl.uniform_3_f32_slice(u(U!("uFogColor")), &s.fog_c); }
                 else if m.kind == MatKind::Dust { gl.uniform_1_f32(u(U!("uScale")), fr.dust_scale); }
             }
