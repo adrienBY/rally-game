@@ -624,7 +624,7 @@ impl Game {
         self.hud_tick = !self.hud_tick;
         if !(self.hud_tick || self.state != State::Drive || !self.touches.is_empty() || self.loading.is_some()) { return; }
         draw::hud(self);
-        if self.hud.finish() { r.set_hud(&self.hud.bytes, self.hud.w, self.hud.h); self.hud_uploaded = true; }
+        if let Some(rects) = self.hud.finish() { r.set_hud_rects(&self.hud.bytes, self.hud.w, self.hud.h, &rects); self.hud_uploaded = true; }
     }
 }
 

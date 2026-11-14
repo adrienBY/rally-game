@@ -63,10 +63,12 @@ class MainActivity : Activity() {
         @Volatile var gap = 12_500_000L
         override fun doFrame(t: Long) {
             if (!looping) return
-            if (t - last >= gap) { last = t; glView?.requestRender() }
+            if (t - last >= gap) { last = t; vsyncNs = t; glView?.requestRender() }
             Choreographer.getInstance().postFrameCallback(this)
         }
     }
+    /** the vsync that asked for the frame being drawn: the game's clock, so every frame advances by a whole number of screen refreshes */
+    @Volatile private var vsyncNs = 0L
     private fun startLoop() { if (rtMode && !looping) { looping = true; vsync.last = 0L; Choreographer.getInstance().postFrameCallback(vsync) } }
     private fun stopLoop() { looping = false; Choreographer.getInstance().removeFrameCallback(vsync) }
 
@@ -108,7 +110,7 @@ class MainActivity : Activity() {
         override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) = NativeCore.glResize(width, height)
         override fun onDrawFrame(gl: GL10?) {
             if (rtMode) {
-                val now = System.nanoTime(); val dt = if (lastNs == 0L) 16_666_667L else now - lastNs; lastNs = now
+                val v = vsyncNs; val dt = if (lastNs == 0L || v <= lastNs) 16_666_667L else v - lastNs; if (v > lastNs) lastNs = v
                 val ev = NativeCore.rtFrame(dt)
                 if (ev.isNotEmpty()) handleEvents(ev)
             } else NativeCore.glDraw()

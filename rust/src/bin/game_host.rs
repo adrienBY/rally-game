@@ -88,7 +88,7 @@ fn main() {
                     _ => println!("unknown {}", act),
                 }
             }
-            let t0 = std::time::Instant::now(); g.tick(&mut r, dt); tick_ms += t0.elapsed().as_secs_f64() * 1000.0; ticks += 1;
+            let t0 = std::time::Instant::now(); g.tick(&mut r, dt); if std::env::var("HUDCHECK").is_ok() && !g.hud.verify() { println!("HUD MISMATCH at t={:.2}", t); } tick_ms += t0.elapsed().as_secs_f64() * 1000.0; ticks += 1;
             fogwood_audio::native::render(&mut audio); { let (mut s2, mut pk) = (0f64, 0f32); for v in &audio { s2 += (*v as f64) * (*v as f64); pk = pk.max(v.abs()); if !v.is_finite() { println!("audio NaN"); break; } } arms += s2 / audio.len() as f64; apk = apk.max(pk); anb += 1.0; if pk >= 0.999 { aclip += 1.0; } }
             if log && t >= next_log { next_log = t + 1.0; let c = &g.car; println!("log t={:.1} x={:.2} z={:.2} kmh={:.0} gear={} race_t={:.1} pos={} cars={:?}", t, c.x, c.z, c.u * 3.6, c.gear, g.race.t, g.race.pos,
                 g.race.cars.iter().map(|q| (q.r.map(|i| fogwood_core::game::race::RIVALS[i].tag).unwrap_or("YOU"), (q.prog as i64), q.resets)).collect::<Vec<_>>()); }

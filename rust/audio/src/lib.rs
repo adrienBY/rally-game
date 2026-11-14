@@ -171,7 +171,17 @@ pub mod native {
     use super::Engine;
     use std::sync::Mutex;
     static ENG: Mutex<Option<Engine>> = Mutex::new(None);
+    /// per-frame messages wait here (a lock held for a push or a swap only); the audio thread applies them before each block,
+    /// so the game never waits for a block to finish rendering
+    static Q: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
     pub fn init(sr: f32) { let mut g = ENG.lock().unwrap_or_else(|e| e.into_inner()); if g.as_ref().map(|e| (e.sr - sr).abs() > 1.0).unwrap_or(true) { *g = Some(Engine::new(sr)); } }
-    pub fn message(b: &[u8]) { if let Some(e) = ENG.lock().unwrap_or_else(|e| e.into_inner()).as_mut() { e.message(b); } }
-    pub fn render(out: &mut [f32]) { if let Some(e) = ENG.lock().unwrap_or_else(|e| e.into_inner()).as_mut() { e.render(out); } else { for v in out.iter_mut() { *v = 0.0; } } }
+    pub fn message(b: &[u8]) {
+        // recordings (type 4) are big and rare: decoded straight into the engine
+        if b.len() >= 4 && f32::from_le_bytes([b[0], b[1], b[2], b[3]]) as i32 == 4 { if let Some(e) = ENG.lock().unwrap_or_else(|e| e.into_inner()).as_mut() { e.message(b); } return; }
+        let mut q = Q.lock().unwrap_or_else(|e| e.into_inner()); if q.len() < 4096 { q.push(b.to_vec()); }
+    }
+    pub fn render(out: &mut [f32]) {
+        let pending = std::mem::take(&mut *Q.lock().unwrap_or_else(|e| e.into_inner()));
+        if let Some(e) = ENG.lock().unwrap_or_else(|e| e.into_inner()).as_mut() { for m in &pending { e.message(m); } e.render(out); } else { for v in out.iter_mut() { *v = 0.0; } }
+    }
 }

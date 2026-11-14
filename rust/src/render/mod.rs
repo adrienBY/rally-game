@@ -124,7 +124,8 @@ impl Renderer {
     pub fn set_instances(&mut self, id: usize, count: i32, mats: &[f32]) {
         let gl = &self.gl; let Some(o) = self.scene.as_mut().and_then(|s| s.objs.get_mut(id)) else { return };
         o.count = count;
-        if let Some(b) = o.ibuf { if !mats.is_empty() { unsafe { gl.bind_buffer(glow::ARRAY_BUFFER, Some(b)); gl.buffer_sub_data_u8_slice(glow::ARRAY_BUFFER, 0, f32_bytes(mats)); } } }
+        // fresh storage each time (orphaning), so the driver never waits for the GPU to finish with last frame's matrices
+        if let Some(b) = o.ibuf { if !mats.is_empty() { unsafe { gl.bind_buffer(glow::ARRAY_BUFFER, Some(b)); gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, f32_bytes(mats), glow::STREAM_DRAW); } } }
     }
     /// replace a vertex attribute of the geometry an object draws (dust, falling snow)
     pub fn set_attr(&mut self, id: usize, name: &str, data: &[f32]) {
@@ -149,6 +150,18 @@ impl Renderer {
     }
     pub fn set_lod(&mut self, id: usize, lod: usize) { if let Some(o) = self.scene.as_mut().and_then(|s| s.objs.get_mut(id)) { o.lod = lod; } }
 
+    /// changed parts of the HUD canvas: rectangles (x, y, w, h) out of the full buffer; a new or resized texture gets everything
+    pub fn set_hud_rects(&mut self, rgba: &[u8], w: i32, h: i32, rects: &[[i32; 4]]) {
+        let fresh = !matches!(self.hud, Some((_, hw, hh)) if hw == w && hh == h);
+        if fresh { self.set_hud(rgba, w, h); return; }
+        let gl = &self.gl; let Some((tex, _, _)) = self.hud else { return };
+        unsafe {
+            gl.bind_texture(glow::TEXTURE_2D, Some(tex)); gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1); gl.pixel_store_i32(glow::UNPACK_ROW_LENGTH, w);
+            for r in rects { gl.pixel_store_i32(glow::UNPACK_SKIP_PIXELS, r[0]); gl.pixel_store_i32(glow::UNPACK_SKIP_ROWS, r[1]);
+                gl.tex_sub_image_2d(glow::TEXTURE_2D, 0, r[0], r[1], r[2], r[3], glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelUnpackData::Slice(rgba)); }
+            gl.pixel_store_i32(glow::UNPACK_ROW_LENGTH, 0); gl.pixel_store_i32(glow::UNPACK_SKIP_PIXELS, 0); gl.pixel_store_i32(glow::UNPACK_SKIP_ROWS, 0);
+        }
+    }
     /// the HUD canvas (straight RGBA, top row first)
     pub fn set_hud(&mut self, rgba: &[u8], w: i32, h: i32) {
         let gl = &self.gl;

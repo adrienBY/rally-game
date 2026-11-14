@@ -33,23 +33,47 @@ impl Canvas {
         let col = (c.r as u32) | (c.g as u32) << 8 | (c.b as u32) << 16; let a = (c.a.min(1.0) * 65535.0) as u32;
         self.ops.push([xa as u32, ya as u32, xb as u32, yb as u32, col, a]);
     }
-    fn raster(&mut self) {
-        for p in self.bytes.iter_mut() { *p = 0; }
-        let w = self.w as usize;
-        for op in &self.ops {
-            let (xa, ya, xb, yb) = (op[0] as usize, op[1] as usize, op[2] as usize, op[3] as usize);
-            let (sr, sg, sb) = ((op[4] & 255) as f32, ((op[4] >> 8) & 255) as f32, ((op[4] >> 16) & 255) as f32); let sa = op[5] as f32 / 65535.0;
-            for yy in ya..yb { let row = yy * w;
-                for xx in xa..xb { let q = (row + xx) * 4; let p = &mut self.bytes[q..q + 4];
-                    if sa >= 0.9999 { p[0] = sr as u8; p[1] = sg as u8; p[2] = sb as u8; p[3] = 255; continue; }
-                    let da = p[3] as f32 / 255.0; let oa = sa + da * (1.0 - sa); if oa <= 0.0 { continue; } let k = da * (1.0 - sa);
-                    p[0] = ((sr * sa + p[0] as f32 * k) / oa + 0.5) as u8; p[1] = ((sg * sa + p[1] as f32 * k) / oa + 0.5) as u8; p[2] = ((sb * sa + p[2] as f32 * k) / oa + 0.5) as u8;
-                    p[3] = (oa * 255.0 + 0.5) as u8; } } }
+    /// draw one op, clipped to a tile
+    fn fill_clip(bytes: &mut [u8], w: usize, op: &[u32; 6], cx0: usize, cy0: usize, cx1: usize, cy1: usize) {
+        let (xa, ya, xb, yb) = ((op[0] as usize).max(cx0), (op[1] as usize).max(cy0), (op[2] as usize).min(cx1), (op[3] as usize).min(cy1));
+        if xa >= xb || ya >= yb { return; }
+        let (sr, sg, sb) = ((op[4] & 255) as f32, ((op[4] >> 8) & 255) as f32, ((op[4] >> 16) & 255) as f32); let sa = op[5] as f32 / 65535.0;
+        for yy in ya..yb { let row = yy * w;
+            for xx in xa..xb { let q = (row + xx) * 4; let p = &mut bytes[q..q + 4];
+                if sa >= 0.9999 { p[0] = sr as u8; p[1] = sg as u8; p[2] = sb as u8; p[3] = 255; continue; }
+                let da = p[3] as f32 / 255.0; let oa = sa + da * (1.0 - sa); if oa <= 0.0 { continue; } let k = da * (1.0 - sa);
+                p[0] = ((sr * sa + p[0] as f32 * k) / oa + 0.5) as u8; p[1] = ((sg * sa + p[1] as f32 * k) / oa + 0.5) as u8; p[2] = ((sb * sa + p[2] as f32 * k) / oa + 0.5) as u8;
+                p[3] = (oa * 255.0 + 0.5) as u8; } }
     }
-    /// rasterize if this frame differs from the last; true when the texture needs the new bytes
-    pub fn finish(&mut self) -> bool {
-        if !self.dirty && self.ops == self.last_ops { return false; }
-        self.raster(); std::mem::swap(&mut self.ops, &mut self.last_ops); self.dirty = false; true
+    /// test hook: does the incrementally updated buffer equal a full redraw of the last frame?
+    pub fn verify(&self) -> bool { let w = self.w as usize; let mut b = vec![0u8; self.bytes.len()]; for op in &self.last_ops { Self::fill_clip(&mut b, w, op, 0, 0, w, self.h as usize); } b == self.bytes }
+    /// Compare this frame's draw calls with the last frame's; re-rasterize only the 32x32 tiles where something appeared, moved or vanished.
+    /// Returns the rectangles to upload (None: nothing changed).
+    pub fn finish(&mut self) -> Option<Vec<[i32; 4]>> {
+        if !self.dirty && self.ops == self.last_ops { return None; }
+        const T: usize = 32; let (w, h) = (self.w as usize, self.h as usize); let (tw, th) = ((w + T - 1) / T, (h + T - 1) / T);
+        let mut dirty = vec![self.dirty; tw * th];
+        let mark = |op: &[u32; 6], dirty: &mut Vec<bool>| { for ty in (op[1] as usize / T)..=(((op[3] as usize).max(1) - 1) / T).min(th - 1) { for tx in (op[0] as usize / T)..=(((op[2] as usize).max(1) - 1) / T).min(tw - 1) { dirty[ty * tw + tx] = true; } } };
+        if !self.dirty {
+            let mut old: std::collections::HashMap<[u32; 6], u32> = std::collections::HashMap::with_capacity(self.last_ops.len());
+            for op in &self.last_ops { *old.entry(*op).or_insert(0) += 1; }
+            for op in &self.ops { match old.get_mut(op) { Some(c) if *c > 0 => *c -= 1, _ => mark(op, &mut dirty) } }
+            for (op, c) in old.iter() { if *c > 0 { mark(op, &mut dirty); } }
+            // an op that stayed but now sits under or over a changed one is redrawn too, because whole tiles are redrawn in order
+        }
+        for ty in 0..th { for tx in 0..tw { if !dirty[ty * tw + tx] { continue; }
+            let (x0, y0, x1, y1) = (tx * T, ty * T, ((tx + 1) * T).min(w), ((ty + 1) * T).min(h));
+            for yy in y0..y1 { let r = (yy * w + x0) * 4; for v in &mut self.bytes[r..r + (x1 - x0) * 4] { *v = 0; } } } }
+        for op in &self.ops {
+            for ty in (op[1] as usize / T)..=(((op[3] as usize).max(1) - 1) / T).min(th - 1) { for tx in (op[0] as usize / T)..=(((op[2] as usize).max(1) - 1) / T).min(tw - 1) {
+                if dirty[ty * tw + tx] { Self::fill_clip(&mut self.bytes, w, op, tx * T, ty * T, ((tx + 1) * T).min(w), ((ty + 1) * T).min(h)); } } }
+        }
+        // runs of dirty tiles along each tile row become one upload each
+        let mut rects = Vec::new();
+        for ty in 0..th { let mut tx = 0; while tx < tw { if !dirty[ty * tw + tx] { tx += 1; continue; } let s = tx; while tx < tw && dirty[ty * tw + tx] { tx += 1; }
+            let (x0, y0) = (s * T, ty * T); rects.push([x0 as i32, y0 as i32, ((tx * T).min(w) - x0) as i32, (((ty + 1) * T).min(h) - y0) as i32]); } }
+        std::mem::swap(&mut self.ops, &mut self.last_ops); self.dirty = false;
+        if rects.is_empty() { None } else { Some(rects) }
     }
 }
 

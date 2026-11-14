@@ -79,7 +79,7 @@ pub fn rt_bench() { inbox().bench = true; }
 
 // ---------------- benchmark (temporary): one row per frame, written as CSV when it stops ----------------
 const BENCH_SECS: f64 = 60.0;
-struct Row { id: u64, t: f32, interval: f32, total: f32, tick: f32, prof: [f32; 8], draw: f32, gpu: (f32, f32), calls: u32, tris: u32, state: u8, kmh: f32,
+struct Row { id: u64, t: f32, dt: f32, interval: f32, total: f32, tick: f32, prof: [f32; 8], draw: f32, gpu: (f32, f32), calls: u32, tris: u32, state: u8, kmh: f32,
     race: u8, rivals: u8, dust: u16, hud_up: u8, lw: i32, lh: i32, thermal: i32, batt: f32 }
 struct Bench { start: std::time::Instant, last: Option<std::time::Instant>, rows: Vec<Row>, header: Vec<String> }
 fn pct(v: &mut Vec<f32>, p: f32) -> f32 { if v.is_empty() { return 0.0; } v.sort_by(|a, b| a.partial_cmp(b).unwrap()); v[((v.len() - 1) as f32 * p) as usize] }
@@ -88,10 +88,11 @@ impl Bench {
         use std::fmt::Write;
         let mut out = String::new(); for h in &self.header { let _ = writeln!(out, "# {}", h); }
         let n = self.rows.len().max(1) as f32; let dur = self.rows.last().map(|r| r.t).unwrap_or(0.0) / 1000.0;
-        let mut iv: Vec<f32> = self.rows.iter().skip(1).map(|r| r.interval).collect(); let ivc = iv.clone();
-        let _ = writeln!(out, "# frames {} over {:.1} s = {:.1} fps; frame interval p50 {:.1} p95 {:.1} p99 {:.1} max {:.1} ms", self.rows.len(), dur, self.rows.len() as f32 / dur.max(0.001),
+        let mut iv: Vec<f32> = self.rows.iter().skip(1).map(|r| r.dt).collect(); let ivc = iv.clone();
+        let _ = writeln!(out, "# frames {} over {:.1} s = {:.1} fps; frame time (vsync to vsync, what the game advances by) p50 {:.1} p95 {:.1} p99 {:.1} max {:.1} ms", self.rows.len(), dur, self.rows.len() as f32 / dur.max(0.001),
             pct(&mut iv, 0.5), pct(&mut iv, 0.95), pct(&mut iv, 0.99), ivc.iter().cloned().fold(0.0, f32::max));
-        let _ = writeln!(out, "# frames over 20 ms: {} ({:.1}%), over 34 ms: {} ({:.1}%)", ivc.iter().filter(|v| **v > 20.0).count(), ivc.iter().filter(|v| **v > 20.0).count() as f32 / n * 100.0,
+        { let mut wk: Vec<f32> = self.rows.iter().skip(1).map(|r| r.interval).collect(); let _ = writeln!(out, "# render thread wake-up interval p50 {:.1} p95 {:.1} p99 {:.1} ms", pct(&mut wk, 0.5), pct(&mut wk, 0.95), pct(&mut wk, 0.99)); }
+        let _ = writeln!(out, "# frame times over 20 ms: {} ({:.1}%), over 34 ms: {} ({:.1}%)", ivc.iter().filter(|v| **v > 20.0).count(), ivc.iter().filter(|v| **v > 20.0).count() as f32 / n * 100.0,
             ivc.iter().filter(|v| **v > 34.0).count(), ivc.iter().filter(|v| **v > 34.0).count() as f32 / n * 100.0);
         let avg = |f: &dyn Fn(&Row) -> f32| self.rows.iter().map(f).sum::<f32>() / n;
         let gpu: Vec<&Row> = self.rows.iter().filter(|r| r.gpu.0 >= 0.0).collect();
@@ -99,13 +100,13 @@ impl Bench {
             avg(&|r| r.tick), avg(&|r| r.prof[0]), avg(&|r| r.prof[1]), avg(&|r| r.prof[2]), avg(&|r| r.prof[3]), avg(&|r| r.prof[4]), avg(&|r| r.prof[5]), avg(&|r| r.prof[6]), avg(&|r| r.prof[7]), avg(&|r| r.draw),
             if gpu.is_empty() { "n/a".into() } else { format!("{:.2}", gpu.iter().map(|r| r.gpu.0).sum::<f32>() / gpu.len() as f32) },
             if gpu.is_empty() { "n/a".into() } else { format!("{:.2}", gpu.iter().map(|r| r.gpu.1).sum::<f32>() / gpu.len() as f32) });
-        let mut worst: Vec<&Row> = self.rows.iter().skip(1).collect(); worst.sort_by(|a, b| b.interval.partial_cmp(&a.interval).unwrap());
-        let _ = writeln!(out, "# worst frames (frame: interval ms): {}", worst.iter().take(12).map(|r| format!("{}: {:.1}", r.id, r.interval)).collect::<Vec<_>>().join(", "));
-        let _ = writeln!(out, "frame,t_ms,interval_ms,native_ms,tick_ms,physics_ms,race_ms,sound_ms,fx_ms,camera_ms,rivals_ms,world_ms,hud_ms,draw_cpu_ms,gpu_scene_ms,gpu_post_ms,calls,tris,state,kmh,race,rivals,dust,hud_upload,lw,lh,thermal,battery_c");
+        let mut worst: Vec<&Row> = self.rows.iter().skip(1).collect(); worst.sort_by(|a, b| b.dt.partial_cmp(&a.dt).unwrap());
+        let _ = writeln!(out, "# worst frames (frame: frame time ms): {}", worst.iter().take(12).map(|r| format!("{}: {:.1}", r.id, r.dt)).collect::<Vec<_>>().join(", "));
+        let _ = writeln!(out, "frame,t_ms,dt_ms,interval_ms,native_ms,tick_ms,physics_ms,race_ms,sound_ms,fx_ms,camera_ms,rivals_ms,world_ms,hud_ms,draw_cpu_ms,gpu_scene_ms,gpu_post_ms,calls,tris,state,kmh,race,rivals,dust,hud_upload,lw,lh,thermal,battery_c");
         for r in &self.rows {
             let g = |v: f32| if v >= 0.0 { format!("{:.3}", v) } else { String::new() };
-            let _ = writeln!(out, "{},{:.1},{:.2},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{},{},{},{},{},{:.0},{},{},{},{},{},{},{},{:.1}",
-                r.id, r.t, r.interval, r.total, r.tick, r.prof[0], r.prof[1], r.prof[2], r.prof[3], r.prof[4], r.prof[5], r.prof[6], r.prof[7], r.draw, g(r.gpu.0), g(r.gpu.1),
+            let _ = writeln!(out, "{},{:.1},{:.2},{:.2},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{},{},{},{},{},{:.0},{},{},{},{},{},{},{},{:.1}",
+                r.id, r.t, r.dt, r.interval, r.total, r.tick, r.prof[0], r.prof[1], r.prof[2], r.prof[3], r.prof[4], r.prof[5], r.prof[6], r.prof[7], r.draw, g(r.gpu.0), g(r.gpu.1),
                 r.calls, r.tris, if r.state == 1 { "drive" } else { "menu" }, r.kmh, r.race, r.rivals, r.dust, r.hud_up, r.lw, r.lh, r.thermal, r.batt);
         }
         let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
@@ -161,7 +162,7 @@ pub fn rt_frame(dt: f64) -> String {
                 B.with(|bc| { if let Some(b) = bc.borrow_mut().as_mut() {
                     let now = std::time::Instant::now(); let interval = b.last.map(|l| (t_frame - l).as_secs_f32() * 1000.0).unwrap_or(0.0); b.last = Some(t_frame);
                     let s = &g.car;
-                    b.rows.push(Row { id: r.frame_id, t: (t_frame - b.start).as_secs_f32() * 1000.0, interval, total: (now - t_frame).as_secs_f32() * 1000.0, tick: tick_ms, prof: g.prof, draw: r.draw_cpu_ms,
+                    b.rows.push(Row { id: r.frame_id, t: (t_frame - b.start).as_secs_f32() * 1000.0, dt: (dt * 1000.0) as f32, interval, total: (now - t_frame).as_secs_f32() * 1000.0, tick: tick_ms, prof: g.prof, draw: r.draw_cpu_ms,
                         gpu: (-1.0, -1.0), calls: r.stats.0, tris: r.stats.1, state: (g.state == crate::game::State::Drive) as u8, kmh: (s.u * 3.6) as f32, race: g.race.on as u8,
                         rivals: g.race.cars.len().saturating_sub(1) as u8, dust: g.d_live as u16, hud_up: g.hud_uploaded as u8, lw: g.lw, lh: g.lh, thermal: thermal.0, batt: thermal.1 });
                     for (id, a, c) in r.gpu_results.drain(..) { if let Some(row) = b.rows.iter_mut().rev().take(16).find(|x| x.id == id) { row.gpu = (a, c); } }
