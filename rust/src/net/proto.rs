@@ -4,6 +4,8 @@
 pub const MAGIC: &[u8; 3] = b"FW1";
 pub const K_HELLO: u8 = 1; pub const K_PROBE: u8 = 2; pub const K_PROBE_ACK: u8 = 3; pub const K_PING: u8 = 4; pub const K_PONG: u8 = 5;
 pub const K_START: u8 = 6; pub const K_CAR: u8 = 7; pub const K_BYE: u8 = 8;
+/// a bump: the push the sender's phone gave the receiver's car ([dvx, dvz, yaw rate, dx, dz], impact speed)
+pub const K_HIT: u8 = 9;
 /// compact car state: 4-byte header (kind, sender's short id, sequence) and 23 bytes of quantised state
 pub const K_CAR2: u8 = 0xC2; pub const CAR2_LEN: usize = 27;
 
@@ -107,6 +109,8 @@ pub fn read_car2(b: &[u8]) -> Option<(u16, u8, u16, CarSnap)> {
         d: [dd(d01 & 15), dd(d01 >> 4), dd(d23 & 15), dd(d23 >> 4)], ang: [0.0; 4], flags: gf >> 3 }))
 }
 pub fn time_pair(e: Env, a: f64, b: f64) -> Vec<u8> { let mut w = W::env(e); w.f64(a); w.f64(b); w.0 }
+pub fn hit(e: Env, d: [f32; 5], imp: f32) -> Vec<u8> { let mut w = W::env(e); for v in d { w.f32(v); } w.f32(imp); w.0 }
+pub fn read_hit(r: &mut R) -> Option<([f32; 5], f32)> { let mut d = [0f32; 5]; for v in d.iter_mut() { *v = r.f32()?; } Some((d, r.f32()?)) }
 pub fn bare(e: Env) -> Vec<u8> { W::env(e).0 }
 
 #[cfg(test)]

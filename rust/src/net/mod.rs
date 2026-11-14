@@ -48,6 +48,8 @@ pub struct Session {
     last_hello: f64, last_start_tx: f64, sent: Option<CarSnap>, car_seq: u8, pong_n: u32,
     start_out: Option<(Start, f64)>, pub start_in: Option<Start>, last_start_go: f64,
     pub map: String, pub racing: bool, no_direct: bool,
+    /// bumps other phones gave our car, waiting for the game to apply them
+    pub hits_in: Vec<(u32, [f32; 5], f32)>,
     /// estimated bytes on the wire, including UDP/IP and TCP/IP headers: [udp up, udp down, broker up, broker down]
     /// send thresholds: position m, heading rad, speed m/s, longest gap s
     thr: [f32; 4], loss: f64, lag: [f64; 2], held: VecDeque<(f64, Vec<u8>, Option<SocketAddr>)>, held_last: f64,
@@ -82,7 +84,7 @@ fn open(code: u32, name: &str, map: &str, is_host: bool) {
     let stun_done = stun.is_none();
     let s = Session { code, me, name: name.to_string(), is_host, t0: Instant::now(), seq: 0, brokers, inbox, topic, sock, stun, public: None, local, stun_done,
         peers: HashMap::new(), host_id: if is_host { Some(me) } else { None }, offset: 0.0, offset_target: 0.0, best_rtt: 9.0, last_ping: -9.0, pings: HashMap::new(),
-        last_hello: -9.0, last_start_tx: -9.0, sent: None, car_seq: 0, pong_n: 0, start_out: None, start_in: None, last_start_go: -1.0, map: map.to_string(), racing: false, no_direct: std::env::var("FW_NODIRECT").is_ok(), traffic: Default::default(), packets: Default::default(),
+        last_hello: -9.0, last_start_tx: -9.0, sent: None, car_seq: 0, pong_n: 0, start_out: None, start_in: None, last_start_go: -1.0, map: map.to_string(), racing: false, hits_in: Vec::new(), no_direct: std::env::var("FW_NODIRECT").is_ok(), traffic: Default::default(), packets: Default::default(),
         lag: std::env::var("FW_LAG").ok().and_then(|v| { let q: Vec<f64> = v.split(',').filter_map(|x| x.parse().ok()).collect(); if q.len() == 2 { Some([q[0], q[1]]) } else { None } }).unwrap_or([0.0, 0.0]), held: VecDeque::new(), held_last: 0.0,
         loss: std::env::var("FW_LOSS").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0),
         thr: std::env::var("FW_THR").ok().and_then(|v| { let q: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect(); if q.len() == 4 { Some([q[0], q[1], q[2], q[3]]) } else { None } }).unwrap_or([0.15, 0.026, 0.8, 0.4]) };
@@ -175,6 +177,7 @@ impl Session {
                     // keep the estimate from the quickest round trip; slowly forget it so a better path can take over
                     self.best_rtt += 0.002; if rtt <= self.best_rtt { self.best_rtt = rtt; self.offset_target = ht - (t + rtt / 2.0); if self.pong_n <= 2 { self.offset = self.offset_target; } } } } } }
             K_START => { if !self.is_host { if let Some(s) = read_start(&mut r) { if (s.go_at - self.last_start_go).abs() > 0.01 { self.last_start_go = s.go_at; self.start_in = Some(s); } } } }
+            K_HIT => { if let Some((d, imp)) = read_hit(&mut r) { if self.hits_in.len() < 64 { self.hits_in.push((e.from, d, imp)); } } }
             _ => {}
         }
     }
@@ -205,6 +208,17 @@ impl Session {
         for a in out { self.udp(&b, a); }
         if relay { self.relay_one(&b); }
     }
+
+    /// Tell a player's phone about a bump we resolved (their phone owns their car), and show the push here right away.
+    pub fn send_hit(&mut self, id: u32, d: [f32; 5], imp: f32) {
+        let e = self.env(K_HIT, id); let b = hit(e, d, imp); self.send_to(id, &b);
+        let th = self.host_now();
+        if let Some(c) = self.peers.get_mut(&id).and_then(|p| p.latest.as_mut()) { let age = (th - c.t).clamp(0.0, MAX_PREDICT) as f32;
+            // the new velocity applies from now, not from when the last state was sent
+            c.vx += d[0]; c.vz += d[1]; c.r += d[2]; c.x += d[3] - d[0] * age; c.z += d[4] - d[1] * age; c.h -= d[2] * age; }
+    }
+    /// seconds since this peer's car last reported (None once they have left the room)
+    pub fn car_silence(&self, id: u32) -> Option<f64> { let p = self.peers.get(&id)?; Some(match p.latest { Some(c) => self.host_now() - c.t, None => self.now() - p.first_seen }) }
 
     fn handle_car(&mut self, b: &[u8], from: Option<SocketAddr>, now: f64) {
         let Some((sid, seq, ms, mut c)) = read_car2(b) else { return };

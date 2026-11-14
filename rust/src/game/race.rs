@@ -28,6 +28,8 @@ pub struct RCar {
     pub err: f64, pub trust: f64, pub off_at: Option<usize>, pub resets: i32,
     /// online: the peer driving this car (its colour still comes from `r`) and their name
     pub remote: Option<u32>, pub name: String,
+    /// online: the player dropped out (hidden, listed as OUT); when this phone last resolved a bump with them (race clock)
+    pub left: bool, pub contact_t: f64,
 }
 impl RCar {
     pub fn is_player(&self) -> bool { self.r.is_none() }
@@ -44,20 +46,22 @@ pub struct Race {
     pub order: Vec<usize>, pub finish_pos: usize, pub rlearn: Vec<f64>, pub shown: bool,
     /// online race: lights out at `go_at` on the host's clock
     pub online: bool, pub go_at: f64,
+    /// online: pushes this phone gave other players' cars this frame (peer, [dvx, dvz, yaw rate, dx, dz], impact), sent to their owners
+    pub hits: Vec<(u32, [f64; 5], f64)>, pub me_id: u32,
 }
 
 impl Race {
     pub fn new(rt: &Rt, ps: &Persist) -> Race {
         let np = rt.np; let n = (np + 9) / 10; let mut rlearn = vec![1.0; n];
         if let Some(v) = ps.saves.get(&format!("fogwood-learn-{}", rt.map)) { if v.len() == n * 2 { for i in 0..n { rlearn[i] = 0.7 + v[i * 2..i * 2 + 2].parse::<f64>().unwrap_or(99.0) / 330.0; } } }
-        Race { on: false, laps: if np > 2300 { 2 } else { 3 }, cars: Vec::new(), player: 0, phase: Phase::Off, t: 0.0, done_t: 0.0, note: String::new(), pos: 0, order: Vec::new(), finish_pos: 0, rlearn, shown: false, online: false, go_at: 0.0 }
+        Race { on: false, laps: if np > 2300 { 2 } else { 3 }, cars: Vec::new(), player: 0, phase: Phase::Off, t: 0.0, done_t: 0.0, note: String::new(), pos: 0, order: Vec::new(), finish_pos: 0, rlearn, shown: false, online: false, go_at: 0.0, hits: Vec::new(), me_id: 0 }
     }
 }
 
 pub(crate) fn mk_car(g: &mut Game, r: Option<usize>, k: usize, lat: f64) -> RCar {
     let form = 0.98 + g.rng.f() * 0.04; let mist_cd = 5.0 + g.rng.f() * 5.0; let react = 0.12 + g.rng.f() * 0.4;
     RCar { r, car: Car::new(), prog: k as f64 - g.np as f64, last_idx: k, i: k, lat, v: 0.0, lane: lat, lane_t: lat, pass_t: 3.0, cap: 99.0, pv: 1.0, boost: 0.0, form, mist: 0.0, mist_cd,
-        stuck_t: 0.0, lap_t0: 0.0, laps_done: 0, last: None, best: None, finished: false, finish_t: 0.0, react, tag_x: -99.0, tag_y: -99.0, tag_on: false, err: 0.0, trust: 1.0, off_at: None, resets: 0, remote: None, name: String::new() }
+        stuck_t: 0.0, lap_t0: 0.0, laps_done: 0, last: None, best: None, finished: false, finish_t: 0.0, react, tag_x: -99.0, tag_y: -99.0, tag_on: false, err: 0.0, trust: 1.0, off_at: None, resets: 0, remote: None, name: String::new(), left: false, contact_t: -9.0 }
 }
 /// rcPlace: on the road at index i, lat metres right of the centre line, optionally already rolling
 pub(crate) fn rc_place(c: &mut Car, rt: &Rt, w: &World, i: usize, lat: f64, speed: f64) {
@@ -166,7 +170,13 @@ fn contacts(g: &mut Game) {
     let n = g.race.cars.len(); let (m, iz) = (1180.0, g.tune.iz);
     let mut st: Vec<Car> = (0..n).map(|k| *state(g, k)).collect();
     let pl = g.race.player;
+    let online = g.race.online;
     for a in 0..n { for b in (a + 1)..n {
+        // online: each phone settles only the bumps its own car is part of (other players settle theirs)
+        if online && ((a != pl && b != pl) || g.race.cars[a].left || g.race.cars[b].left) { continue; }
+        // between two players, the phone with the lower id settles the bump for both and sends the other its push
+        if online { let o = if a == pl { b } else { a }; if g.race.cars[o].remote.map(|id| id < g.race.me_id).unwrap_or(false) { continue; } }
+        let (sa0, sb0) = (st[a], st[b]);
         let (dx0, dz0) = (st[a].x - st[b].x, st[a].z - st[b].z); if dx0 * dx0 + dz0 * dz0 > 30.0 || (st[a].y - st[b].y).abs() > 1.6 { continue; }
         let (sa, ca, sb, cb) = (st[a].h.sin(), st[a].h.cos(), st[b].h.sin(), st[b].h.cos()); let mut hit: f64 = 0.0;
         for oa in [1.3, 0.0, -1.3] { for ob in [1.3, 0.0, -1.3] {
@@ -185,6 +195,9 @@ fn contacts(g: &mut Game) {
             hit = hit.max(-vn); } }
         if hit > 0.3 { for x in [a, b] { st[x].impact = st[x].impact.max(hit); st[x].hb_t = st[x].hb_t.max(clamp((hit - 2.0) / 6.0, 0.0, 0.6)); }
             if a == pl || b == pl { g.car_hit = g.car_hit.max(hit); } }
+        if online { let (o, o0) = if a == pl { (b, sb0) } else { (a, sa0) }; let s1 = st[o];
+            let d = [s1.vx - o0.vx, s1.vz - o0.vz, s1.r - o0.r, s1.x - o0.x, s1.z - o0.z];
+            if d.iter().any(|v| v.abs() > 1e-6) { if let Some(id) = g.race.cars[o].remote { g.race.hits.push((id, d, hit)); g.race.cars[o].contact_t = g.race.t; } } }
     } }
     for k in 0..n { if k == pl { g.car = st[k]; } else { g.race.cars[k].car = st[k]; } }
 }
@@ -193,6 +206,7 @@ fn progress(g: &mut Game, w: &World) {
     let n = g.race.cars.len(); let np = g.np as i64;
     for k in 0..n { let st = *state(g, k); let i = path_idx(w, st.x, st.z) as i64;
         let (phase, rt_t, laps) = (g.race.phase, g.race.t, g.race.laps);
+        if g.race.cars[k].left { continue; }
         let c = &mut g.race.cars[k]; let mut d = i - c.last_idx as i64; if d < -np / 2 { d += np; } if d > np / 2 { d -= np; } c.prog += d as f64; c.last_idx = i as usize;
         if phase == Phase::Grid || c.finished { continue; }
         let lap = (c.prog / np as f64).floor() as i64; let mut msg = None;
@@ -204,6 +218,8 @@ fn progress(g: &mut Game, w: &World) {
     }
     let mut order: Vec<usize> = (0..n).collect();
     { let cs = &g.race.cars; order.sort_by(|&a, &b| { let (x, y) = (&cs[a], &cs[b]);
+        let (xo, yo) = (x.left && !x.finished, y.left && !y.finished);
+        if xo != yo { return if xo { std::cmp::Ordering::Greater } else { std::cmp::Ordering::Less }; }
         if x.finished && y.finished { x.finish_t.partial_cmp(&y.finish_t).unwrap() } else if x.finished { std::cmp::Ordering::Less } else if y.finished { std::cmp::Ordering::Greater } else { y.prog.partial_cmp(&x.prog).unwrap() } }); }
     let pos = order.iter().position(|&k| k == g.race.player).unwrap_or(0) + 1;
     if g.race.phase == Phase::Race && g.race.pos > 0 && pos < g.race.pos { g.flash_msg(&format!("P{}", pos), 1.0); }
@@ -226,7 +242,7 @@ fn finish(g: &mut Game) {
 /// (car index, time, done) best first
 pub fn results(g: &Game) -> Vec<(usize, f64, bool)> {
     let np = g.np as f64; let laps = g.race.laps as f64;
-    let mut v: Vec<(usize, f64, bool)> = g.race.cars.iter().enumerate().map(|(k, c)| (k, if c.finished { c.finish_t } else { g.race.t + (laps * np - c.prog) / c.v.max(18.0) }, c.finished)).collect();
+    let mut v: Vec<(usize, f64, bool)> = g.race.cars.iter().enumerate().map(|(k, c)| (k, if c.left && !c.finished { 1e9 } else if c.finished { c.finish_t } else { g.race.t + (laps * np - c.prog) / c.v.max(18.0) }, c.finished)).collect();
     v.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap()); v
 }
 
@@ -258,6 +274,7 @@ pub fn gfx(g: &mut Game, r: &mut Renderer, w: &World) {
     let mut mats: Vec<Vec<f32>> = g.rt.rg_parts.iter().map(|p| Vec::with_capacity(nr * p.src.len() * 16)).collect(); let mut sh: Vec<f32> = Vec::with_capacity(nr * 16);
     for k in 0..g.race.cars.len() {
         if g.race.cars[k].is_player() { continue; }
+        if g.race.cars[k].left { g.race.cars[k].tag_on = false; continue; }
         let s = g.race.cars[k].car; let pose = g.car_pose(&s);
         for (pi, p) in g.rt.rg_parts.iter().enumerate() { for (node, local) in &p.src { let nw = pose.get(node).copied().unwrap_or(ID); mats[pi].extend_from_slice(&to_f32(&mul(&nw, local))); } }
         let gh = w.height(s.x, s.z); let m = compose([s.x, gh + 0.05, s.z], &euler(0.0, s.h, 0.0, false), [1.0 + clamp(s.y - gh - 0.08, 0.0, 4.0) * 0.12; 3]); sh.extend_from_slice(&to_f32(&m));
@@ -277,11 +294,11 @@ pub fn hide(g: &mut Game, r: &mut Renderer) {
 pub fn audio(g: &mut Game) {
     let fwd = [-g.cam_rot[8], -g.cam_rot[9], -g.cam_rot[10]]; let (rx, rz) = (-fwd[2], fwd[0]); let rl = { let l = rx.hypot(rz); if l == 0.0 { 1.0 } else { l } };
     let cp = g.cam_pos; let mut v: Vec<f32> = vec![8.0, 0.0]; let mut n = 0;
-    for c in &g.race.cars { let Some(ri) = c.r else { continue }; let s = &c.car;
+    for c in &g.race.cars { let Some(ri) = c.r else { continue }; let s = &c.car; let gone = c.left;
         let (dx, dz) = (s.x - cp[0], s.z - cp[2]); let d = (dx * dx + dz * dz + (s.y - cp[1]).powi(2)).sqrt().max(1.0);
         let nn = clamp((s.rpm - 900.0) / 6400.0, 0.0, 1.05); let vr = ((s.vx - g.car.vx) * dx + (s.vz - g.car.vz) * dz) / d;
         let rate = (0.95 + nn * 2.6) * ENG_PITCH[ri] * clamp(343.0 / (343.0 + vr), 0.8, 1.25);
-        let gain = if g.ps.sound_on { 0.85 / (1.0 + (d / 17.0) * (d / 17.0)) * (0.6 + 0.4 * nn) } else { 0.0 };
+        let gain = if g.ps.sound_on && !gone { 0.85 / (1.0 + (d / 17.0) * (d / 17.0)) * (0.6 + 0.4 * nn) } else { 0.0 };
         let lp = (1200.0 + nn * 3000.0 - d * 12.0).max(500.0); let pan = clamp((dx * rx + dz * rz) / rl / d, -1.0, 1.0) * 0.85;
         v.extend_from_slice(&[ri as f32, rate as f32, (0.15 + nn * 0.5) as f32, gain as f32, lp as f32, pan as f32]); n += 1; }
     v[1] = n as f32; g.audio_msg(&v);

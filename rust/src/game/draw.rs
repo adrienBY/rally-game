@@ -90,8 +90,9 @@ pub fn hud(gm: &mut Game) {
         for (n, &k) in order.iter().enumerate() { let c = &gm.race.cars[k]; let me = c.is_player();
             g.panel(pl, y, rw, 9.0 * u, u, if me { rgba(243, 207, 98, 0.3) } else { rgba(8, 12, 8, 0.5) }, if me { Some(AMBER) } else { None });
             g.rect_c(pl + 3.0 * u, y + 2.0 * u, 3.0 * u, 5.0 * u, css(c.r));
-            g.tx(&format!("{} {}", n + 1, if me { "YOU".to_string() } else { c.tag() }), pl + 8.0 * u, y + u, u, if me { AMBER } else { INK });
-            if !me && gm.race.phase != Phase::Grid { let gs = (c.prog - pp) / ((c.v + pv) / 2.0).max(12.0);
+            g.tx(&format!("{} {}", n + 1, if me { "YOU".to_string() } else { c.tag() }), pl + 8.0 * u, y + u, u, if me { AMBER } else if c.left && !c.finished { rgba(233, 236, 226, 0.45) } else { INK });
+            if c.left && !c.finished { let lab = "OUT"; g.text(lab, pl + rw - 3.0 * u - text_w(lab, u), y + u, u, rgba(233, 236, 226, 0.6), None); }
+            else if !me && gm.race.phase != Phase::Grid { let gs = (c.prog - pp) / ((c.v + pv) / 2.0).max(12.0);
                 if gs.abs() < 99.0 { let lab = format!("{}{:.1}", if gs > 0.0 { "-" } else { "+" }, gs.abs()); g.text(&lab, pl + rw - 3.0 * u - text_w(&lab, u), y + u, u, rgba(233, 236, 226, 0.7), None); } }
             y += 10.0 * u; }
         for c in &gm.race.cars { if c.is_player() || !c.tag_on { continue; } let tag = c.tag(); let tag = tag.as_str(); let w = text_w(tag, u) + 4.0 * u; let x = js_round(c.tag_x - w / 2.0); let ty = js_round(c.tag_y - 9.0 * u);
@@ -144,7 +145,7 @@ pub fn hud(gm: &mut Game) {
             g.rect_c(rx + 6.0 * u, y, 3.0 * u, 6.0 * u, css(c.r));
             let name = if me { "YOU".to_string() } else { c.full_name() };
             g.tx(&format!("{}  {}", n + 1, name), rx + 12.0 * u, y, u, if me { AMBER } else { INK });
-            let tm = if n == 0 { fmt(Some(*t)) } else { format!("+{:.2}{}", t - w0, if *done { "" } else { "*" }) }; g.text(&tm, rx + rw - 62.0 * u - text_w(&tm, u), y, u, INK, None);
+            let tm = if c.left && !*done { "OUT".to_string() } else if n == 0 { fmt(Some(*t)) } else { format!("+{:.2}{}", t - w0, if *done { "" } else { "*" }) }; g.text(&tm, rx + rw - 62.0 * u - text_w(&tm, u), y, u, INK, None);
             let bl = fmt(c.best); g.text(&bl, rx + rw - 6.0 * u - text_w(&bl, u), y, u, rgba(233, 236, 226, 0.75), None); }
         if !gm.race.note.is_empty() { let nt = gm.race.note.clone(); g.text(&nt, rx + (rw - text_w(&nt, u)) / 2.0, ry + rh - 20.0 * u, u, rgba(233, 236, 226, 0.7), None); }
         let tc = "TAP TO CONTINUE"; if ((now / 500.0) as i64) % 2 == 0 { g.text(tc, rx + (rw - text_w(tc, u)) / 2.0, ry + rh - 10.0 * u, u, INK, None); }

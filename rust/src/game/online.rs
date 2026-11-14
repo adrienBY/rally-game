@@ -48,6 +48,24 @@ impl Game {
             let ids: Vec<(usize, u32)> = self.race.cars.iter().enumerate().filter_map(|(k, c)| c.remote.map(|id| (k, id))).collect();
             let snaps = net::with(|s| { s.send_car(mine); ids.iter().map(|(k, id)| (*k, s.remote(*id))).collect::<Vec<_>>() }).unwrap_or_default();
             for (k, sn) in snaps { if let Some(sn) = sn { let mut c = self.race.cars[k].car; apply(&mut c, &sn, w, dt); self.race.cars[k].car = c; } }
+            // dropped out: their car silent for 3 s (cars report at least every 0.4 s; this also covers going back to the menu) or gone from the room
+            let silence: Vec<(usize, Option<f64>)> = net::with(|s| ids.iter().map(|(k, id)| (*k, s.car_silence(*id))).collect()).unwrap_or_default();
+            let names: Vec<(u32, String)> = net::with(|s| s.peers.values().map(|p| (p.id, p.name.clone())).collect()).unwrap_or_default();
+            for c in self.race.cars.iter_mut() { if let Some(n) = c.remote.and_then(|id| names.iter().find(|n| n.0 == id)) { if n.1 != "?" && n.1 != c.name { c.name = n.1.clone(); } } }
+            for (k, q) in silence { let gone = q.map(|t| t > 3.0).unwrap_or(true); let c = &mut self.race.cars[k];
+                if gone && !c.left { c.left = true; if !c.finished { let m = format!("{} DROPPED OUT", c.name.to_uppercase()); self.flash_msg(&m, 2.0); } } else if !gone && c.left { c.left = false; } }
+            // bumps: send the pushes we gave other cars (summed per car), apply the pushes others gave ours
+            let hits = std::mem::take(&mut self.race.hits);
+            let mut sum: Vec<(u32, [f64; 5], f64)> = Vec::new();
+            for (id, d, imp) in hits { match sum.iter_mut().find(|x| x.0 == id) { Some(x) => { for q in 0..5 { x.1[q] += d[q]; } x.2 = x.2.max(imp); } None => sum.push((id, d, imp)) } }
+            if std::env::var("FW_DEBUG").is_ok() { for (id, d, imp) in &sum { eprintln!("hit-out t={:.2} to {:08x} dv=({:.2},{:.2}) dr={:.2} imp={:.2}", self.race.t, id, d[0], d[1], d[2], imp); } }
+            let incoming = net::with(|s| { for (id, d, imp) in &sum { s.send_hit(*id, d.map(|v| v as f32), *imp as f32); } std::mem::take(&mut s.hits_in) }).unwrap_or_default();
+            for (from, d, imp) in incoming {
+                if !self.race.cars.iter().any(|c| c.remote == Some(from)) { continue; }
+                if std::env::var("FW_DEBUG").is_ok() { eprintln!("hit-in t={:.2} from {:08x} dv=({:.2},{:.2}) imp={:.2}", self.race.t, from, d[0], d[1], imp); }
+                let car = &mut self.car; car.vx += d[0] as f64; car.vz += d[1] as f64; car.r += d[2] as f64; car.x += d[3] as f64; car.z += d[4] as f64;
+                if imp > 0.3 { car.impact = car.impact.max(imp as f64); self.car_hit = self.car_hit.max(imp as f64); }
+            }
         }
     }
 
@@ -57,10 +75,10 @@ impl Game {
         if self.state == State::Drive { self.to_title(); }
         self.state = State::Drive; self.lap = 1; self.started = false; self.g_t = 0.0; self.flags = [false; 3]; self.car_audio_on = true;
         let np = self.np; let rc = &mut self.race; rc.on = true; rc.online = true; rc.phase = race::Phase::Grid; rc.t = 0.0; rc.done_t = 0.0; rc.note.clear(); rc.cars.clear(); rc.pos = 0; rc.order.clear();
-        rc.laps = st.laps.max(1) as i64; rc.go_at = st.go_at;
+        rc.laps = st.laps.max(1) as i64; rc.go_at = st.go_at; rc.me_id = me; rc.hits.clear();
         let mut colour = 0usize;
         for (id, k) in &st.slots {
-            let (i, lat) = race::slot(np, *k as usize);
+            let (i, lat) = if std::env::var("FW_OVERLAP").is_ok() { let (i, _) = race::slot(np, 0); (i, -0.6 + *k as f64 * 1.2) } else { race::slot(np, *k as usize) };   // FW_OVERLAP: test hook, cars start touching
             if *id == me {
                 self.place_at(w, i); let tn = self.rt.tan[i]; self.car.x += -tn[1] * lat; self.car.z += tn[0] * lat; self.car.y = w.height(self.car.x, self.car.z) + 0.075;
                 let c = race::mk_car(self, None, i, lat); self.race.player = self.race.cars.len(); self.race.cars.push(c);
