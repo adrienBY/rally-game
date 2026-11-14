@@ -155,7 +155,7 @@ void main() { vUv = vtx * 0.5 + 0.5; gl_Position = vec4(vtx, 0.0, 1.0); }
 "#;
 pub const POST_FS: &str = r#"#version 300 es
 precision highp float;
-uniform sampler2D tScene; uniform vec2 uSun; uniform float uSunVis; uniform float uTime; uniform float uFlash; uniform float uSpeed; uniform float uExpo;
+uniform sampler2D tScene; uniform vec2 uSun; uniform float uSunVis; uniform float uTime; uniform float uFlash; uniform float uSpeed; uniform float uExpo; uniform vec3 uSplitS; uniform vec3 uSplitH; uniform vec2 uTexel;
 in vec2 vUv; out vec4 fragColor;
 const float BAYER[16] = float[16](0., 8., 2., 10., 12., 4., 14., 6., 3., 11., 1., 9., 15., 7., 13., 5.);
 float bayer(vec2 p) { vec2 q = mod(floor(p), 4.0); int i = int(q.x + q.y * 4.0); return BAYER[i] / 16.0 - 0.47; }
@@ -166,11 +166,13 @@ void main() {
   float acc = 0.0;
   if (uSunVis > 0.01) { vec2 d = uSun - vUv; float L = length(d); if (L > 1.3) d *= 1.3 / L;
     vec2 st = d / 20.0; vec2 p = vUv; float w = 1.0;
-    for (int i = 0; i < 20; i++) { p += st; vec4 s = texture(tScene, clamp(p, 0.001, 0.999));
-      float l = dot(s.rgb, vec3(0.3, 0.59, 0.11)); acc += smoothstep(0.66, 0.92, l) * (1.0 - s.a) * w; w *= 0.952; }
+    for (int i = 0; i < 20; i++) { p += st; vec4 s = texture(tScene, clamp(p + uTexel * 0.5, 0.001, 0.999));
+      float l = dot(s.rgb, vec3(0.3, 0.59, 0.11)), near = 1.0 - smoothstep(0.04, 0.42, length((p - uSun) * vec2(1.6, 1.0)));
+      acc += smoothstep(0.66, 0.92, l) * (1.0 - s.a) * w * (0.25 + 0.75 * near); w *= 0.952; }
     acc /= 13.0; }
   c += vec3(1.0, 0.93, 0.74) * acc * 0.85 * uSunVis * (0.9 + 0.1 * sin(uTime * 0.7 + vUv.x * 3.0));
   c *= uExpo; c += vec3(1.0, 0.96, 0.9) * smoothstep(0.75, 1.7, dot(c, vec3(0.3, 0.59, 0.11))) * 0.6 * clamp(uExpo - 1.0, 0.0, 1.0);
+  { float l = dot(c, vec3(0.3, 0.59, 0.11)); c += uSplitS * (1.0 - l) * (1.0 - l) + uSplitH * l * l; }
   float g = dot(c, vec3(0.3, 0.59, 0.11)); c = mix(vec3(g), c, 0.86);
   c = (c - 0.5) * 1.08 + 0.5; c *= vec3(1.0, 1.0, 0.97);
   vec2 vv = vUv - 0.5; c *= 1.0 - dot(vv, vv) * (0.5 + uSpeed * 0.7);
