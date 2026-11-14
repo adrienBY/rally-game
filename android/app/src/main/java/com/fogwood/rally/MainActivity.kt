@@ -9,6 +9,8 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.view.Surface
+import android.view.SurfaceHolder
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.JavascriptInterface
@@ -49,18 +51,16 @@ class MainActivity : Activity() {
         @JavascriptInterface fun step(csv: String): String = NativeCore.step(csv)
         @JavascriptInterface fun glStatus(): String = NativeCore.glStatus()
         @JavascriptInterface fun version(): String = "fogwood-core-rust"
-        /** The page asks for a display rate: 0 = the fastest the screen offers, otherwise the nearest mode to hz. Returns the hz chosen. */
-        @JavascriptInterface fun refresh(hz: Float): Float { val m = pickMode(hz) ?: return 0f; main.post { applyMode(m.modeId) }; return m.refreshRate }
     }
 
-    /** Display modes at the current resolution; the game starts on the fastest (90/120 Hz screens) and steps down to 60 if it can't keep up. */
+    /** The display mode at the current resolution closest to hz: the game runs locked at 60, so the screen is asked for 60 Hz (less work, less battery). */
     @Suppress("DEPRECATION")
     private fun pickMode(hz: Float): android.view.Display.Mode? {
         val d = (if (Build.VERSION.SDK_INT >= 30) display else windowManager.defaultDisplay) ?: return null
         val cur = d.mode
         val same = d.supportedModes.filter { it.physicalWidth == cur.physicalWidth && it.physicalHeight == cur.physicalHeight && it.refreshRate <= 145f }
         if (same.isEmpty()) return null
-        return if (hz <= 0f) same.maxByOrNull { it.refreshRate } else same.minByOrNull { kotlin.math.abs(it.refreshRate - hz) }
+        return same.minByOrNull { kotlin.math.abs(it.refreshRate - hz) }
     }
     private fun applyMode(id: Int) {
         val lp = window.attributes
@@ -133,6 +133,14 @@ class MainActivity : Activity() {
                 preserveEGLContextOnPause = true
                 setRenderer(SceneRenderer())
                 renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY
+                // tell the compositor this surface is fixed 60 fps content, so it can keep the panel at 60 Hz
+                holder.addCallback(object : SurfaceHolder.Callback {
+                    override fun surfaceCreated(h: SurfaceHolder) {
+                        if (Build.VERSION.SDK_INT >= 30) try { h.surface.setFrameRate(60f, Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE) } catch (_: Throwable) {}
+                    }
+                    override fun surfaceChanged(h: SurfaceHolder, format: Int, w: Int, hh: Int) {}
+                    override fun surfaceDestroyed(h: SurfaceHolder) {}
+                })
             }
             root.addView(glView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         }
@@ -176,7 +184,7 @@ class MainActivity : Activity() {
         root.addView(web, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         setContentView(root)
         hideBars()
-        pickMode(0f)?.let { applyMode(it.modeId); Log.i(TAG, "display ${it.refreshRate} Hz") }
+        pickMode(60f)?.let { applyMode(it.modeId); Log.i(TAG, "display ${it.refreshRate} Hz") }
         if (savedInstanceState == null) web.loadUrl("https://appassets.androidplatform.net/assets/index.html")
         else web.restoreState(savedInstanceState)
     }

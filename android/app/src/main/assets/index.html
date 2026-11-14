@@ -2691,23 +2691,16 @@ window.__nglResend = () => { nglSent = false; };   // the app lost its GL contex
 
 /* ================= frame loop ================= */
 const fwd = new THREE.Vector3(), v3 = new THREE.Vector3(), lookT = new THREE.Vector3();
-/* app on a 90/120 Hz screen: it starts at the screen's top rate; if frames keep missing it, drop to a steady 60 rather than judder between the two */
-const RATE = { on: !!(NATIVE && typeof NATIVE.refresh === "function"), iv: new Float32Array(240), n: 0, bad: 0, low: false };
-function rateCheck() { RATE.n = 0; if (RATE.low) { RATE.on = false; return; }
-  const v = Array.from(RATE.iv).sort((a, b) => a - b), med = v[v.length >> 1];
-  if (med > 0.0135) return;   // already ~60 Hz: nothing to decide
-  let miss = 0; for (const x of RATE.iv) if (x > med * 1.6) miss++;
-  RATE.bad = miss > RATE.iv.length * 0.07 ? RATE.bad + 1 : 0;
-  if (RATE.bad >= 2) { try { NATIVE.refresh(60); } catch (_) {} RATE.low = true; } }
-window.__rate = RATE;
+/* locked to 60 fps: on a faster screen (or if the phone ignores the 60 Hz request) the extra vsyncs are skipped, so 120 Hz runs every other one */
+const FRAME_MIN = 1000 / 60 - 4; let lastRun = -1e9;
 let dustWas = true; let last = performance.now(), fpsAcc = 0, fpsN = 0, downgraded = false, hudTick = false;
 const PROF = { on: false, t: 0, acc: {}, n: 0 }; window.__prof = PROF;
 const PF = (k) => { if (!PROF.on) return; const t = performance.now(); PROF.acc[k] = (PROF.acc[k] || 0) + t - PROF.t; PROF.t = t; };
 function frame(now) {
   if (!alive) return;
+  if (now - lastRun < FRAME_MIN) { requestAnimationFrame(frame); return; } lastRun = now;
   if (PROF.on) { PROF.t = performance.now(); PROF.n++; }
   const dt = Math.min(0.05, (now - last) / 1000); last = now; uTime.value += dt;
-  if (RATE.on && game.state === "drive" && dt > 0) { RATE.iv[RATE.n++] = dt; if (RATE.n === RATE.iv.length) rateCheck(); }
   fpsAcc += dt; fpsN++; if (fpsN === 90) { if (!downgraded && fpsAcc / fpsN > 1 / 36 && pixIdx > 0) { pixIdx--; resize(); downgraded = true; } fpsAcc = 0; fpsN = 0; }
   const gust = clamp(0.5 + (fbm(uTime.value * 0.06, 3.3, 3) - 0.5) * 1.8, 0, 1); uWind.value = gust;
   const inp = game.state === "drive" ? (game.go > 0.9 ? { steer: 0, throttle: 0, brake: 0, hb: true } : RACE.on && RACE.phase === "done" ? aiInput() : readInput()) : aiInput();
