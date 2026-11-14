@@ -206,7 +206,7 @@ const tunLamp = (t, i) => { let g = 0; for (let L = -t.half + 4; L <= t.half - 3
 const tunShade = (i, pd) => { const t = tunAt(i); if (!t || pd > ROAD + 6) return null; const k = smooth(-1.5, 3, t.half - cdi(i, t.m)), b = 0.15 + 0.5 * tunLamp(t, i);
   return [1 - k * (1 - b * 1.12), 1 - k * (1 - b * 0.95), 1 - k * (1 - b * 0.72)]; };
 /* curvature -> safe cornering speed -> braking-aware speed profile (demo driver and corner furniture) */
-const VCURVE = new Float32Array(NP), VPROF = new Float32Array(NP);
+const VCURVE = new Float32Array(NP), VPROF = new Float32Array(NP), JCAP = new Float32Array(NP).fill(99);
 for (let i = 0; i < NP; i++) {
   const a = TAN[(i + NP - 6) % NP], b = TAN[(i + 6) % NP];
   const d = Math.abs(Math.atan2(a[0] * b[1] - a[1] * b[0], a[0] * b[0] + a[1] * b[1])) / 12;
@@ -291,7 +291,7 @@ if (ICE) {   // where the road meets a river it drops into a gravel ford, 30 cm 
   for (let i = 0; i < NP; i++) { let m = 0; for (let d = -22; d <= 22; d++) m = Math.max(m, f[(i + d + NP) % NP] * smooth(22, 8, Math.abs(d))); g[i] = m; }
   for (let i = 0; i < NP; i++) ROADH[i] += (-0.3 - ROADH[i]) * g[i];
   for (let i = 0; i < NP; i++) if (f[i] > 0.5 && !(f[(i + NP - 1) % NP] > 0.5)) FORDS.push(i);
-  for (const c of FORDS) for (let d = -40; d <= 25; d++) { const k = (c + d + NP) % NP; VPROF[k] = Math.min(VPROF[k], 22); }
+  for (const c of FORDS) for (let d = -40; d <= 25; d++) { const k = (c + d + NP) % NP; VPROF[k] = Math.min(VPROF[k], 22); JCAP[k] = Math.min(JCAP[k], 24); }
 }
 if (SNOW || TOU || RIV) {   // mountain pass: cap the gradient so the road climbs and descends like a real col
   const gmax = TOU ? 0.09 : RIV ? 0.085 : 0.11;
@@ -313,11 +313,11 @@ const JUMPS = [], RAMP = { i: -1, L: 8, H: 1.4 };
   for (let i = 90; i < NP - 90; i += 3) { if (!straight(i)) continue; if (JUMPS.some(j => Math.abs(j.i - i) < JP.gap)) continue; JUMPS.push({ i, big: JUMPS.length % 2 === 0 }); if (JUMPS.length >= JP.n) break; }
   for (const j of JUMPS) { const A = j.big ? JP.bigA : JP.smallA, su = j.big ? JP.suB : JP.suS, sd = j.big ? JP.sdB : JP.sdS;
     for (let s = -36; s <= 24; s++) { const k = (j.i + s + NP) % NP, sg = s < 0 ? su : sd; ROADH[k] += A * Math.exp(-(s * s) / (2 * sg * sg)); }
-    for (let s = -40; s <= 30; s++) { const k = (j.i + s + NP) % NP; VPROF[k] = Math.min(VPROF[k], j.big ? JP.vB : JP.vS); } }
+    for (let s = -40; s <= 30; s++) { const k = (j.i + s + NP) % NP; VPROF[k] = Math.min(VPROF[k], j.big ? JP.vB : JP.vS); JCAP[k] = Math.min(JCAP[k], (j.big ? JP.vB : JP.vS) * 1.05); } }
   if (CAN) {   // whoops: runs of five dune bumps on some of the straights
     let runs = 0;
     for (let i = 120; i < NP - 120 && runs < 4; i += 5) { if (VCURVE[i] < 26 || JUMPS.some(j => Math.abs(j.i - i) < 90) || hash2(i, 31) > 0.2) continue;
-      for (let s = 0; s <= 66; s++) { const k = (i + s) % NP; ROADH[k] += 0.5 * Math.pow(Math.sin(s * Math.PI / 13.2), 2) * Math.sin(Math.PI * s / 66); VPROF[k] = Math.min(VPROF[k], 25); }
+      for (let s = 0; s <= 66; s++) { const k = (i + s) % NP; ROADH[k] += 0.5 * Math.pow(Math.sin(s * Math.PI / 13.2), 2) * Math.sin(Math.PI * s / 66); VPROF[k] = Math.min(VPROF[k], 25); JCAP[k] = Math.min(JCAP[k], 28); }
       runs++; i += 200; } }
   for (let pass = 0; pass < 3; pass++) for (let i = NP - 1; i >= 0; i--) VPROF[i] = Math.min(VPROF[i], Math.sqrt(VPROF[(i + 1) % NP] ** 2 + 2 * 5.0));
   for (let i = 60; i < NP - 40; i += 3) { if (VCURVE[i] < 20 || JUMPS.some(j => Math.abs(j.i - i) < 60) || hash2(i, 7) > JP.kick) continue;   // small kickers
@@ -329,7 +329,7 @@ const JUMPS = [], RAMP = { i: -1, L: 8, H: 1.4 };
     RAMP.i = i; break; }
   if (RAMP.i < 0 && !TOU && !RIV) RAMP.i = Math.round(NP * 0.6);
   if (RAMP.i >= 0) for (let s = 0; s <= RAMP.L; s++) ROADH[(RAMP.i - RAMP.L + s + NP) % NP] += RAMP.H * s / RAMP.L;
-  if (RAMP.i >= 0) for (let s = -50; s <= 45; s++) { const k = (RAMP.i + s + NP) % NP; VPROF[k] = Math.min(VPROF[k], 25); }
+  if (RAMP.i >= 0) for (let s = -50; s <= 45; s++) { const k = (RAMP.i + s + NP) % NP; VPROF[k] = Math.min(VPROF[k], 25); JCAP[k] = Math.min(JCAP[k], 27); }
   for (let pass = 0; pass < 3; pass++) for (let i = NP - 1; i >= 0; i--) VPROF[i] = Math.min(VPROF[i], Math.sqrt(VPROF[(i + 1) % NP] ** 2 + 2 * 5.0));
 }
 if (NATIVE) {
@@ -2071,6 +2071,21 @@ const PSNAP = { s: {}, w: [{}, {}, {}, {}] };
 function rcSave(c) { const s = c.s; for (const k in S) s[k] = S[k]; for (let i = 0; i < 4; i++) { const a = WH[i], b = c.w[i]; for (const k in a) b[k] = a[k]; } }
 function rcLoad(c) { const s = c.s; for (const k in s) S[k] = s[k]; for (let i = 0; i < 4; i++) { const a = c.w[i], b = WH[i]; for (const k in a) b[k] = a[k]; } }
 const rcState = (c) => c.isPlayer ? (SIMAI ? PSNAP.s : S) : c.s;
+/* racing speed plan: the demo driver's profile is deliberately gentle; rivals plan from the car's real cornering grip,
+   braking and top speed (tuned per surface by driving the physics), keeping the hard caps for crests, fords and ramps */
+const RPROF = new Float32Array(NP), RTUNE = { kl: 1.15, kb: 1.1, mu: 1.08, grip: 1.5, yaw: 1.15, jc: 1.5 };
+function buildRProf() {
+  const mu = TUNE.muRoad, aL = 9.81 * mu * (SNOW ? 0.96 : CAN || LAK || ICE ? 1.25 : MAPN === "forest" ? 1.3 : 1.38) * RTUNE.kl, aB = 9.81 * mu * 0.85 * RTUNE.kb;
+  for (let i = 0; i < NP; i++) { const a = TAN[(i + NP - 6) % NP], b = TAN[(i + 6) % NP], d = Math.abs(Math.atan2(a[0] * b[1] - a[1] * b[0], a[0] * b[0] + a[1] * b[1])) / 12;
+    RPROF[i] = Math.min(56, Math.sqrt(aL / Math.max(d, 1e-4)), JCAP[i] * RTUNE.jc); }
+  for (let pass = 0; pass < 3; pass++) for (let i = NP - 1; i >= 0; i--) RPROF[i] = Math.min(RPROF[i], Math.sqrt(RPROF[(i + 1) % NP] ** 2 + 2 * aB));
+}
+buildRProf();
+/* the rivals learn the stage: where one of them flies off, everyone brakes a little earlier from then on (kept per stage) */
+const RLEARN = new Float32Array(Math.ceil(NP / 10)).fill(1);
+try { const v = localStorage.getItem("fogwood-learn-" + MAPN); if (v && v.length === RLEARN.length * 2) for (let i = 0; i < RLEARN.length; i++) RLEARN[i] = 0.7 + (+v.substr(i * 2, 2)) / 330; } catch (_) {}
+function rivalLearn(i) { for (let d = -70; d <= 10; d += 10) { const b = Math.floor(((i + d + NP) % NP) / 10); RLEARN[b] = Math.max(0.72, RLEARN[b] * (d > -40 ? 0.93 : 0.96)); }
+  try { localStorage.setItem("fogwood-learn-" + MAPN, Array.from(RLEARN, v => String(Math.round((v - 0.7) * 330)).padStart(2, "0").slice(-2)).join("")); } catch (_) {} }
 /* racing line: towards the inside of each bend, eased in and out */
 const RLINE = new Float32Array(NP);
 { const raw = new Float32Array(NP); for (let i = 0; i < NP; i++) { const a = TAN[(i + NP - 10) % NP], b = TAN[(i + 10) % NP]; raw[i] = clamp((a[0] * b[1] - a[1] * b[0]) * 3, -1.8, 1.8); }
@@ -2099,15 +2114,15 @@ function racePlan(dt) {
   const cars = RACE.cars, P = RACE.player;
   for (const c of cars) { const st = rcState(c), i = pathIdx(st.x, st.z), p = PATH[i], tn = TAN[i]; c.i = i; c.lat = (st.x - p[0]) * -tn[1] + (st.z - p[1]) * tn[0]; c.v = Math.max(0, st.vx * tn[0] + st.vz * tn[1]); }
   for (const c of cars) { if (c.isPlayer || c.finished && RACE.phase === "off") continue;
-    const band = clamp((P.prog - c.prog) / 1600, -0.06, 0.045);   // close racing: rivals ease off a touch when far ahead of you, push when behind
-    c.pv = c.r.pace * raceSkill * (1 + band) * c.form; c.cap = 99;
+    const gap = window.__noBand ? 0 : P.prog - c.prog, band = clamp(gap / 1100, -0.07, 0.07);   // close racing: rivals ease off when far ahead of you, push when behind
+    c.pv = c.r.pace * raceSkill * (1 + band) * c.form; c.boost = window.__boost ?? clamp((gap - 60) / 900, 0, 0.22); c.cap = 99;
     let block = null, bd = 99, side = 0;
     for (const o of cars) { if (o === c) continue; const dp = o.prog - c.prog, dl = o.lat - c.lat;
       if (dp > 0 && dp < 60 && Math.abs(dl) < 2.1 + (o.v < c.v - 6 ? 1.0 : 0) && dp < bd) { bd = dp; block = o; }
       if (Math.abs(dp) < 5.5 && Math.abs(dl) < 2.5) side += dl > 0 ? -1 : 1; }
     if (block) {
       const room = (sg) => { const t = clamp(block.lat + sg * 2.45, -2.35, 2.35); return Math.abs(t - block.lat) > 1.95 ? t : null; };
-      const keen = c.r.aggr > 0.6 || c.v - block.v > 1.2 || block.v < VPROF[c.i] * c.pv * 0.8;
+      const keen = c.r.aggr > 0.6 || c.v - block.v > 1.2 || block.v < RPROF[c.i] * c.pv * 0.8;
       let t = null; if (keen && bd < 24 && VCURVE[(c.i + 25) % NP] > 13) { const pref = c.lane >= block.lat ? 1 : -1; t = room(pref); if (t === null) t = room(-pref); }
       const BR = 6.5 * TUNE.muRoad;   // how hard this surface lets you brake
       if (t !== null) { c.laneT = t; c.passT = 2.2; c.cap = Math.abs(block.lat - c.lat) > 1.5 ? 99 : Math.sqrt(block.v * block.v + 2 * BR * Math.max(0, bd - 6)) + 2; }
@@ -2122,22 +2137,27 @@ function racePlan(dt) {
 function rivalInput(c) {
   if (RACE.phase === "grid" || RACE.t < c.react) return { steer: 0, throttle: 0, brake: 0, hb: true };
   const i = pathIdx(S.x, S.z), u = Math.max(0, S.u), Ld = 7 + u * 0.42, k = (i + Math.round(Ld)) % NP;
-  const lat = clamp(c.lane + RLINE[k] * (1 - Math.min(1, Math.abs(c.lane) / 2.2)), -2.4, 2.4), p = PATH[k], tn = TAN[k];
+  const lat = clamp(c.lane + RLINE[k] * (1 - Math.min(1, Math.abs(c.lane) / 2.2)), -1.9, 1.9), p = PATH[k], tn = TAN[k];
+  { const p0 = PATH[i], t0 = TAN[i], now = (S.x - p0[0]) * -t0[1] + (S.z - p0[1]) * t0[0]; c.err = Math.abs(now - lat); }
   const dx = p[0] - tn[1] * lat - S.x, dz = p[1] + tn[0] * lat - S.z, sp = Math.hypot(S.vx, S.vz), vh = sp > 2 ? Math.atan2(S.vx, S.vz) : S.h;
   const al = wrapA(Math.atan2(dx, dz) - vh), rWant = 2 * Math.max(sp, 1) * Math.sin(al) / Ld;
   const delta = wrapA(vh - S.h) + Math.atan(2 * VEH.L * Math.sin(al) / Ld) - (S.r - rWant) * 0.12 + (c.mist > 0 ? Math.sin(uTime.value * 6 + c.lastIdx) * 0.04 : 0);
-  let vt = VPROF[(i + 4) % NP] * c.pv; if (c.mist > 0) vt *= 1.14; vt = Math.min(vt, c.cap);
+  let vt = RPROF[(i + 4) % NP] * RLEARN[Math.floor(((i + 4) % NP) / 10)] * c.pv * (1 + (c.boost || 0) * 0.5); if (c.mist > 0) vt *= 1.1;
+  c.trust = clamp((c.trust ?? 1) + ((c.err > 1.3 || Math.abs(S.vl) > 2.6 ? 0.82 : 1.0) - (c.trust ?? 1)) * 0.05, 0.8, 1);   // running wide or sliding: back off, then build up again
+  vt = Math.min(vt * c.trust * clamp(1.12 - c.err * 0.09, 0.72, 1), c.cap);
   const slideCut = clamp(1 - (Math.abs(S.vl) - 1.5) / 3, 0.15, 1);
-  return { steer: clamp(delta / steerLock(u), -1, 1), throttle: clamp((vt - u) * 0.5, 0, 1) * slideCut, brake: clamp((u - vt - 1.0) * 0.35, 0, 1), hb: false };
+  return { steer: clamp(delta / steerLock(u), -1, 1), throttle: clamp((vt - u) * 0.5, 0, 1) * slideCut, brake: clamp((u - vt - 0.8) * 0.45, 0, 1), hb: false };
 }
 function rivalRecover(c, dt) {   // runs with the rival in the slot: put it back on the road if it is beached, stuck, wrong way or on its roof
   if (RACE.phase === "grid") return;
   const i = pathIdx(S.x, S.z), pd = pathDist(S.x, S.z), sp = Math.hypot(S.vx, S.vz), tn = TAN[i], fwd = Math.sin(S.h) * tn[0] + Math.cos(S.h) * tn[1];
+  if (pd < ROAD + 1) c.offAt = i;   // the last index where it was still on the road
   const off = pd > ROAD + 5, bad = off || (sp < 1.5 && RACE.t > c.react + 2) || Math.abs(S.roll) > 0.9 || Math.abs(S.pitch) > 0.9 || (fwd < -0.2 && sp < 8);
   c.stuckT = bad ? c.stuckT + dt : Math.max(0, c.stuckT - dt * 2);
-  if (c.stuckT > (off ? 1.6 : 2.6)) { c.stuckT = 0; const k = (i - 6 + NP) % NP; let lat = 0;
+  if (window.__whyLog && c.stuckT > (off ? 1.6 : 2.6)) window.__whyLog.push([c.r.tag, i, off ? 'off' : sp < 1.5 ? 'slow' : Math.abs(S.roll) > 0.9 || Math.abs(S.pitch) > 0.9 ? 'flip' : 'wrongway', +pd.toFixed(1), +sp.toFixed(1)]);
+  if (c.stuckT > (off ? 1.6 : 2.6)) { c.stuckT = 0; if (off) rivalLearn(c.offAt ?? i); const k = (i - 6 + NP) % NP; let lat = 0;
     for (const o of RACE.cars) { if (o === c) continue; const st = rcState(o); if (Math.hypot(st.x - PATH[k][0], st.z - PATH[k][1]) < 6) lat = lat ? -lat : 2.0; }
-    rcPlace(k, lat, Math.min(14, VPROF[k] * 0.6)); c.lane = c.laneT = lat; c.resets = (c.resets || 0) + 1; }
+    rcPlace(k, lat, Math.min(16, RPROF[k] * 0.6)); c.lane = c.laneT = lat; c.resets = (c.resets || 0) + 1; }
 }
 function carContacts() {
   const cars = RACE.cars, m = VEH.m, Iz = VEH.Iz;
@@ -2175,8 +2195,8 @@ function raceProgress(dt) {
 function finishRace() {
   RACE.phase = "done"; RACE.doneT = 0; const pos = RACE.order ? RACE.cars.filter(c => c.finished).length : 1;
   const next = RACE.cars.filter(c => !c.isPlayer && c.finished).length === 0 ? (() => { let best = 1e9; for (const c of RACE.cars) if (!c.isPlayer) best = Math.min(best, (RACE.laps * NP - c.prog) / Math.max(c.v, 15)); return best; })() : 0;
-  const d = pos === 1 ? (next > 5 ? 0.025 : 0.012) : pos <= 3 ? 0 : pos <= 5 ? -0.012 : -0.025;
-  raceSkill = clamp(raceSkill + d, 0.86, 1.06); try { localStorage.setItem("fogwood-skill", raceSkill.toFixed(3)); } catch (_) {}
+  const d = pos === 1 ? (next > 10 ? 0.05 : next > 4 ? 0.03 : 0.015) : pos <= 3 ? 0 : pos <= 5 ? -0.015 : -0.03;
+  raceSkill = clamp(raceSkill + d, 0.84, 1.1); try { localStorage.setItem("fogwood-skill", raceSkill.toFixed(3)); } catch (_) {}
   RACE.note = d > 0 ? "RIVALS WILL PUSH HARDER" : d < 0 ? "RIVALS WILL EASE OFF" : ""; RACE.finishPos = pos;
   flashMsg(pos === 1 ? "YOU WIN!" : "FINISHED P" + pos, 3);
 }
@@ -2189,8 +2209,12 @@ function raceStep(dt) {
   if (RACE.phase !== "grid") RACE.t += dt;
   racePlan(dt);
   rcSave(PSNAP); SIMAI = true;
-  for (const c of RACE.cars) { if (c.isPlayer) continue; rcLoad(c); vehicleUpdate(dt, rivalInput(c)); rivalRecover(c, dt); rcSave(c); }
-  rcLoad(PSNAP); SIMAI = false;
+  const pw0 = TUNE.power;
+  const mu0 = TUNE.muRoad, mg0 = TUNE.muGrass, ag0 = TUNE.aGrip, yc0 = TUNE.aYawCap;
+  for (const c of RACE.cars) { if (c.isPlayer) continue; rcLoad(c); const bo = c.boost || 0; TUNE.power = pw0 * (1 + bo); TUNE.muRoad = mu0 * (RTUNE.mu + bo * 0.4); TUNE.muGrass = mg0 * (1 + bo * 0.4);
+    TUNE.aGrip = ag0 * RTUNE.grip; TUNE.aYawCap = yc0 * RTUNE.yaw;   // rivals get steadier handling than you: more side grip and yaw authority, so they can carry speed without spinning
+    vehicleUpdate(dt, rivalInput(c)); rivalRecover(c, dt); rcSave(c); }
+  TUNE.power = pw0; TUNE.muRoad = mu0; TUNE.muGrass = mg0; TUNE.aGrip = ag0; TUNE.aYawCap = yc0; rcLoad(PSNAP); SIMAI = false;
   carContacts(); raceProgress(dt);
   if (RACE.phase === "done") RACE.doneT += dt;
   const i = pathIdx(S.x, S.z), tn = TAN[i], fwdDot = Math.sin(S.h) * tn[0] + Math.cos(S.h) * tn[1];
@@ -2233,13 +2257,16 @@ function rivalAudio() {
   if (!A.master || !RACE.on) return; const t = ac.currentTime; camera.getWorldDirection(fwd); const rx = -fwd.z, rz = fwd.x, rl = Math.hypot(rx, rz) || 1;
   for (const c of RACE.cars) { if (c.isPlayer) continue;
     if (!c.eng) { const g = ac.createGain(); g.gain.value = 0; const lp = ac.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 1500;
-      const src = loopSrc(decoded.engine, 1, lp, Math.random() * 1.5); const pan = ac.createStereoPanner ? ac.createStereoPanner() : null;
-      lp.connect(g); if (pan) { g.connect(pan); pan.connect(A.master); } else g.connect(A.master); c.eng = { src, g, lp, pan }; }
+      const sh = ac.createWaveShaper(); sh.curve = makeCurve(2.2); const hi = ac.createGain(); hi.gain.value = 0;   // a raspier top end, so a rival never sounds like your own car
+      const src = loopSrc(decoded.engine, 1, sh, Math.random() * 1.5), src2 = loopSrc(decoded.engine, 1.5, hi, Math.random() * 1.5); hi.connect(sh); sh.connect(lp);
+      const pan = ac.createStereoPanner ? ac.createStereoPanner() : null;
+      lp.connect(g); if (pan) { g.connect(pan); pan.connect(A.master); } else g.connect(A.master); c.eng = { src, src2, hi, g, lp, pan, pitch: [1.0, 1.1, 0.9, 1.05, 0.95][RIVALS.indexOf(c.r)] || 1 }; }
     const s = c.s, dx = s.x - camera.position.x, dz = s.z - camera.position.z, d = Math.max(1, Math.hypot(dx, dz, s.y - camera.position.y));
     const n = clamp((s.rpm - 900) / 6400, 0, 1.05), vr = ((s.vx - S.vx) * dx + (s.vz - S.vz) * dz) / d;
-    c.eng.src.playbackRate.setTargetAtTime((0.95 + n * 2.6) * clamp(343 / (343 + vr), 0.8, 1.25), t, 0.04);
-    c.eng.g.gain.setTargetAtTime(soundOn ? 0.42 / (1 + (d / 11) * (d / 11)) * (0.55 + 0.45 * n) : 0, t, 0.06);
-    c.eng.lp.frequency.setTargetAtTime(Math.max(380, 900 + n * 2600 - d * 9), t, 0.08);
+    const rate = (0.95 + n * 2.6) * c.eng.pitch * clamp(343 / (343 + vr), 0.8, 1.25);
+    c.eng.src.playbackRate.setTargetAtTime(rate, t, 0.04); c.eng.src2.playbackRate.setTargetAtTime(rate * 1.5, t, 0.04); c.eng.hi.gain.setTargetAtTime(0.15 + n * 0.5, t, 0.06);
+    c.eng.g.gain.setTargetAtTime(soundOn ? 0.85 / (1 + (d / 17) * (d / 17)) * (0.6 + 0.4 * n) : 0, t, 0.06);
+    c.eng.lp.frequency.setTargetAtTime(Math.max(500, 1200 + n * 3000 - d * 12), t, 0.08);
     if (c.eng.pan) c.eng.pan.pan.setTargetAtTime(clamp((dx * rx + dz * rz) / rl / d, -1, 1) * 0.85, t, 0.05); }
 }
 
@@ -2735,7 +2762,11 @@ window.__sim = (secs, inp, start) => { if (start != null) placeAt(start); const 
 window.__info = () => ({ calls: renderer.info.render.calls, tris: renderer.info.render.triangles }); window.__cam = (m) => { camState.mode = m; camState.init = false; };
 window.__ramp = RAMP; window.__riv = { sec: RIVSEC, tun: TUN, vil: VIL, expo: EXPO, glit: GLIT, post, clouds: CLOUDS, sunb: SUNB, sky }; window.__scene = scene; window.__peaks = peaks; window.__camState = camState; window.__camera = camera; window.__height = height; window.__farH = farH; window.__fords = FORDS; window.__falls = FALLS; window.__RH = ROADH; window.__native = () => ({ grids: gridsNative, phys: physNative, ms: nativeMs }); window.__packSim = packSim; window.__unpackSim = unpackSim; window.__vehicleUpdateJS = vehicleUpdateJS;
 window.__gridsJS = () => ({ pd: pdG, h: hG, pi: piG, GXH, GZH, PATH, ROADH, obstacles }); window.__setPhysNative = (b) => { physNative = b && gridsNative; };
-window.__ai = () => aiInput(); window.__race = RACE; window.__raceSkill = (v) => { if (v) raceSkill = v; return raceSkill; };
+window.__ai = () => aiInput(); window.__race = RACE; window.__raceSkill = (v) => { if (v) raceSkill = v; return raceSkill; }; window.__rtune = (kl, kb, mu, grip, yaw) => { RTUNE.kl = kl; RTUNE.kb = kb; if (mu) { RTUNE.mu = mu; RTUNE.grip = grip; RTUNE.yaw = yaw; } if (window.__jc) RTUNE.jc = window.__jc; buildRProf(); };
+window.__telem = (secs) => { if (!RACE.on) { game.state = "drive"; startRace(); } const dt = 1 / 60, out = []; let n = 0;
+  for (let t = 0; t < secs; t += dt) { const pi = game.go > 0.9 ? { steer: 0, throttle: 0, brake: 0, hb: true } : aiInput(); vehicleUpdate(dt, pi); raceStep(dt);
+    const c = RACE.order ? RACE.order.find(q => !q.isPlayer) : null; if (c && RACE.phase === "race" && (n++ % 30 === 0)) { const s2 = c.s; out.push([c.r.tag, c.i, +c.v.toFixed(1), +(RPROF[(c.i + 4) % NP] * c.pv).toFixed(1), +c.lat.toFixed(1), +pathDist(s2.x, s2.z).toFixed(1), +(s2.slide || 0).toFixed(1), c.resets || 0, +VCURVE[c.i].toFixed(0)]); } }
+  return out; };
 window.__raceSim = (secs, pk) => { if (!RACE.on) { game.state = "drive"; startRace(); } const dt = 1 / 60, P = RACE.player; let hits = 0, maxHit = 0;
   for (let t = 0; t < secs; t += dt) { const pi = game.go > 0.9 ? { steer: 0, throttle: 0, brake: 0, hb: true } : aiInput(); if (pk && game.go <= 0.9) { pi.throttle *= pk; }
     vehicleUpdate(dt, pi); raceStep(dt); if (S.carHit) { hits++; maxHit = Math.max(maxHit, S.carHit); S.carHit = 0; } if (RACE.phase === "done" && RACE.doneT > 25) break; }
