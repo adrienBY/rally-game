@@ -68,7 +68,7 @@ fn main() {
                 match parts[0] {
                     "start" => g.start_game(), "auto" => g.auto = true, "race" => { g.ps.race_mode = true; }
                     "tap" => { let (x, y) = (parts[1].parse::<f64>().unwrap(), parts[2].parse::<f64>().unwrap()); g.touch(0, 7, x, y); g.touch(2, 7, x, y); }
-                    "menu" => { g.to_title(); } "log" => log = true,
+                    "menu" => { g.to_title(); } "log" => log = true, "tel" => g.tel_toggle(),
                     "aisim" => {   // same as the page's AI lap test: placeAt(0), demo driver + physics at 60 Hz until a full lap
                         let lock = fogwood_core::bridge::lock(); let e = lock.as_ref().unwrap(); let np = g.np;
                         g.place_at(&e.world, 0); let (mut tt, mut prog, mut last) = (0.0, 0i64, fogwood_core::game::path_idx(&e.world, g.car.x, g.car.z) as i64);

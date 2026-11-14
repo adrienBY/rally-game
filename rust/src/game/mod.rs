@@ -4,6 +4,7 @@ pub mod hud;
 pub mod math;
 pub mod race;
 pub mod rt;
+pub mod telemetry;
 mod draw;
 
 use crate::bridge;
@@ -39,6 +40,7 @@ impl Saves {
         if let Ok(s) = std::fs::read_to_string(path) { for l in s.lines() { if let Some((k, v)) = l.split_once('=') { kv.insert(k.to_string(), v.to_string()); } } }
         Saves { path: path.to_string(), kv, dirty: false }
     }
+    pub fn dir(&self) -> String { std::path::Path::new(&self.path).parent().map(|p| p.to_string_lossy().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| ".".into()) }
     pub fn get(&self, k: &str) -> Option<&str> { self.kv.get(k).map(|s| s.as_str()) }
     pub fn set(&mut self, k: &str, v: String) { if self.kv.get(k) != Some(&v) { self.kv.insert(k.to_string(), v); self.dirty = true; } }
     /// records the page still had in its own storage come over once
@@ -103,6 +105,8 @@ pub struct Game {
     tile_lod: Vec<usize>, fps30: Option<bool>, pub shade_dim: f64,
     /// benchmark: ms spent in each part of the last tick (physics, race, sound, fx, camera, rivals, world, hud) and whether the HUD was uploaded
     pub prof: [f32; 8], pub hud_uploaded: bool, pub bench_req: bool, pub bench_secs: Option<u32>, pub d_live: usize,
+    /// driving telemetry (TEL button) and a note for its next row
+    pub tel: Option<telemetry::Tel>, pub tel_note: String,
 }
 
 pub fn path_idx(w: &World, x: f64, z: f64) -> usize {
@@ -139,7 +143,7 @@ impl Game {
             sf_pos, sf_init: false, boats,
             sun_vis: 0.0, expo: 1.0, dim: 1.0, expo_tun: false, sun_uv: [0.5, 0.8],
             hap_t: 0.0, hap_cool: 0.0, aud_wet: 0.0, car_audio_on: false, race_was: false, pop_cool: 0.0, fps_acc: 0.0, fps_n: 0, hud_tick: false, hud: hud::Canvas::new(320, 180),
-            shadow_op: -1.0, flash: 0.0, speed_k: 0.0, clock: std::time::Instant::now(), last_pidx: 0, auto: false, tile_lod: Vec::new(), fps30: None, shade_dim: 1.0, prof: [0.0; 8], hud_uploaded: false, bench_req: false, bench_secs: None, d_live: 0, rt,
+            shadow_op: -1.0, flash: 0.0, speed_k: 0.0, clock: std::time::Instant::now(), last_pidx: 0, auto: false, tile_lod: Vec::new(), fps30: None, shade_dim: 1.0, prof: [0.0; 8], hud_uploaded: false, bench_req: false, bench_secs: None, d_live: 0, tel: None, tel_note: String::new(), rt,
         };
         if let Some(e) = bridge::lock().as_ref() { g.place_at(&e.world, 6); }
         g
@@ -234,6 +238,7 @@ impl Game {
                         self.flash_msg(["CHUNKY PIXELS", "MEDIUM PIXELS", "FINE PIXELS"][self.ps.pix_idx], 1.0); }
                     Some("mode") => self.toggle_mode(),
                     Some("rec") => { self.bench_req = true; }   // temporary: benchmark recording on / off
+                    Some("tel") => self.tel_toggle(),
                     Some(k) if k.starts_with("map") => { let want = match k { "mapF" => "forest", "mapS" => "snow", "mapC" => "canyon", "mapL" => "lakes", "mapT" => "touge", _ => "riviera" }; if want != self.rt.map { self.switch_map(want); } }
                     _ if self.state == State::Title => self.start_game(),
                     None if self.race.on && self.race.phase == race::Phase::Done && self.race.done_t > 1.2 => { self.to_title(); }
@@ -255,7 +260,7 @@ impl Game {
     fn toggle_mode(&mut self) { self.ps.race_mode = !self.ps.race_mode; self.ps.saves.set("fogwood-mode", if self.ps.race_mode { "race".into() } else { "tt".into() }); }
     pub fn toggle_sound(&mut self) { self.ps.sound_on = !self.ps.sound_on; let m = if self.ps.sound_on { "SOUND ON" } else { "SOUND OFF" }; self.flash_msg(m, 1.0); }
     fn cycle_cam(&mut self) { self.cam.mode = (self.cam.mode + 1) % 3; self.cam.init = false; self.flash_msg(["CHASE CAM", "CLOSE CAM", "BONNET CAM"][self.cam.mode as usize], 1.2); }
-    fn reset_car(&mut self) { if self.state != State::Drive { return; } let g = bridge::lock(); if let Some(e) = g.as_ref() { let i = path_idx(&e.world, self.car.x, self.car.z); self.place_at(&e.world, i); } drop(g); self.flash_msg("RESET", 1.0); }
+    fn reset_car(&mut self) { if self.state != State::Drive { return; } let g = bridge::lock(); if let Some(e) = g.as_ref() { let i = path_idx(&e.world, self.car.x, self.car.z); self.place_at(&e.world, i); } drop(g); self.flash_msg("RESET", 1.0); if self.tel.is_some() { self.tel_note.push_str("reset;"); } }
     pub fn start_game(&mut self) {
         if self.state != State::Title { return; }
         let g = bridge::lock(); let Some(e) = g.as_ref() else { return };
@@ -265,13 +270,14 @@ impl Game {
     }
     pub fn to_title(&mut self) -> bool {
         if self.state != State::Drive { return false; }
+        if let Some(t) = self.tel.take() { self.tel_save(t); }
         race::stop(self); self.state = State::Title; self.go = 0.0; self.started = false; self.g_t = 0.0; self.msg_t = 0.0; self.wrong_t = 0.0; self.touches.clear();
         let g = bridge::lock(); if let Some(e) = g.as_ref() { self.place_at(&e.world, 6); } true
     }
 
     fn update_lap(&mut self, w: &World, dt: f64) {
         if self.go > 0.0 { self.go -= dt; }
-        if !self.started && self.car.u > 0.5 && self.go <= 0.9 { self.started = true; self.lap_start = self.g_t; }
+        if !self.started && self.car.u > 0.5 && self.go <= 0.9 { self.started = true; self.lap_start = self.g_t; if self.tel.is_some() { self.tel_note.push_str("start;"); } }
         if self.started { self.g_t += dt; }
         let np = self.np; let i = path_idx(w, self.car.x, self.car.z); let li = self.last_idx;
         let cs = [(np as f64 / 4.0 + 0.5).floor() as usize, (np as f64 / 2.0 + 0.5).floor() as usize, (np as f64 * 3.0 / 4.0 + 0.5).floor() as usize];
@@ -281,6 +287,7 @@ impl Game {
                 let lt = self.g_t - self.lap_start;
                 if self.best.map(|b| lt < b).unwrap_or(true) { self.best = Some(lt); self.flash_msg(&format!("NEW BEST {}", fmt(Some(lt))), 3.0); let k = format!("fogwood-best-{}", self.rt.map); self.ps.saves.set(&k, format!("{}", lt)); }
                 else { self.flash_msg(&format!("STAGE {}", fmt(Some(lt))), 3.0); }
+                if self.tel.is_some() { self.tel_note.push_str(&format!("lap {:.3};", lt)); }
                 self.lap += 1; self.lap_start = self.g_t;
             }
             self.flags = [false; 3];
@@ -314,6 +321,7 @@ impl Game {
         let shifted = self.car.update(w, obs, &self.tune, dt, &inp); lap!(0);
         if shifted { if self.state == State::Drive { self.buzz("shift", 0.45); } self.audio_msg(&[7.0, 2.0]); }
         if self.state == State::Drive { if self.race.on { race::step(self, w, obs, dt); } else { self.update_lap(w, dt); } } lap!(1);
+        if self.tel.is_some() { let ti = path_idx(w, self.car.x, self.car.z); self.tel_frame(&inp, dt, ti); }
         self.update_audio(w, dt, &inp, gust); lap!(2);
         if self.car.landed { let v = -self.car.land_v; self.car.landed = false;
             if v > 1.8 && self.state == State::Drive { self.buzz("land", clamp((v - 1.5) / 7.0, 0.15, 1.0)); }
@@ -628,7 +636,7 @@ impl Game {
     }
 }
 
-pub const TOPB: [&str; 7] = ["snd", "vib", "cam", "pix", "rst", "menu", "rec"];
+pub const TOPB: [&str; 8] = ["snd", "vib", "cam", "pix", "rst", "menu", "rec", "tel"];
 #[inline] pub fn js_round(v: f64) -> f64 { (v + 0.5).floor() }
 pub fn fmt(t: Option<f64>) -> String {
     match t { None => "-:--.--".into(), Some(t) => { let m = (t / 60.0).floor(); let s = t - m * 60.0; format!("{}:{}{:.2}", m as i64, if s < 10.0 { "0" } else { "" }, s) } }

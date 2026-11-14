@@ -152,7 +152,7 @@ class MainActivity : Activity() {
                 contentResolver.openOutputStream(uri)?.use { it.write(f.readBytes()) }; "Downloads/Fogwood/${f.name}"
             } else { val d = getExternalFilesDir(null); val o = java.io.File(d, f.name); f.copyTo(o, true); o.absolutePath }
         } catch (e: Throwable) { Log.e(TAG, "bench export", e); f.absolutePath }
-        Toast.makeText(this, "Benchmark saved: $where", Toast.LENGTH_LONG).show()
+        Toast.makeText(this, "Saved: $where", Toast.LENGTH_LONG).show()
     }
     /** thermal status and battery temperature every 2 s, for the benchmark log */
     private val thermalTick = object : Runnable { override fun run() {
