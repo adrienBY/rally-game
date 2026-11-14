@@ -327,7 +327,7 @@ impl Game {
         } else { self.ai_input(w) };
         let mut tp = std::time::Instant::now(); let mut prof = [0f32; 8];
         macro_rules! lap { ($k:expr) => {{ let n = std::time::Instant::now(); prof[$k] += (n - tp).as_secs_f32() * 1000.0; tp = n; }} }
-        self.online_tick(w);
+        self.online_tick(w, dt);
         let shifted = self.car.update(w, obs, &self.tune, dt, &inp); lap!(0);
         if shifted { if self.state == State::Drive { self.buzz("shift", 0.45); } self.audio_msg(&[7.0, 2.0]); }
         if self.state == State::Drive { if self.race.on { race::step(self, w, obs, dt); } else { self.update_lap(w, dt); } } lap!(1);

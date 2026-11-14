@@ -18,10 +18,11 @@ fn snap_of(c: &Car) -> CarSnap {
         steer: c.steer as f32, u: c.u as f32, gear: c.gear as i8, rpm: c.rpm.clamp(0.0, 65000.0) as u16, d: [c.wh[0].d as f32, c.wh[1].d as f32, c.wh[2].d as f32, c.wh[3].d as f32],
         ang: [c.wh[0].ang as f32, c.wh[1].ang as f32, c.wh[2].ang as f32, c.wh[3].ang as f32], flags: 0 }
 }
-fn apply(c: &mut Car, s: &CarSnap, w: &World) {
+fn apply(c: &mut Car, s: &CarSnap, w: &World, dt: f64) {
     c.x = s.x as f64; c.y = s.y as f64; c.z = s.z as f64; c.h = s.h as f64; c.vx = s.vx as f64; c.vy = s.vy as f64; c.vz = s.vz as f64; c.r = s.r as f64;
     c.pitch = s.pitch as f64; c.roll = s.roll as f64; c.steer = s.steer as f64; c.u = s.u as f64; c.gear = s.gear as f64; c.rpm = s.rpm as f64;
-    for k in 0..4 { c.wh[k].d = s.d[k] as f64; c.wh[k].ang = s.ang[k] as f64; }
+    // suspension eases toward the received value (it travels in coarse steps); wheels spin from the speed
+    for k in 0..4 { c.wh[k].d += (s.d[k] as f64 - c.wh[k].d) * (dt * 12.0).min(1.0); c.wh[k].ang += s.u as f64 * dt / 0.31; }
     c.contacts = 4.0; c.on_road = true; c.impact = 0.0; let _ = w;
 }
 
@@ -29,7 +30,7 @@ impl Game {
     pub fn online_open(&self) -> bool { self.ps.online_ui != OnlineUi::Closed }
 
     /// network work for this frame, the start when it arrives, and the other players' cars (before the race step)
-    pub(crate) fn online_tick(&mut self, w: &World) {
+    pub(crate) fn online_tick(&mut self, w: &World, dt: f64) {
         if !net::active() { return; }
         let map = self.rt.map.clone(); let racing = self.race.online && self.state == State::Drive;
         let pending = net::with(|s| { s.map = map.clone(); s.racing = racing; s.poll(); s.start_in.clone() }).flatten();
@@ -46,7 +47,7 @@ impl Game {
             let mine = snap_of(&self.car);
             let ids: Vec<(usize, u32)> = self.race.cars.iter().enumerate().filter_map(|(k, c)| c.remote.map(|id| (k, id))).collect();
             let snaps = net::with(|s| { s.send_car(mine); ids.iter().map(|(k, id)| (*k, s.remote(*id))).collect::<Vec<_>>() }).unwrap_or_default();
-            for (k, sn) in snaps { if let Some(sn) = sn { let mut c = self.race.cars[k].car; apply(&mut c, &sn, w); self.race.cars[k].car = c; } }
+            for (k, sn) in snaps { if let Some(sn) = sn { let mut c = self.race.cars[k].car; apply(&mut c, &sn, w, dt); self.race.cars[k].car = c; } }
         }
     }
 

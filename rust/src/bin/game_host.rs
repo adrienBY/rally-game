@@ -58,7 +58,7 @@ fn main() {
         gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(tex), 0);
         let mut steps: Vec<(f64, String)> = a[4].split(',').filter_map(|s| { let (t, act) = s.split_once(':')?; Some((t.parse().ok()?, act.to_string())) }).collect();
         steps.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap());
-        let end = steps.last().map(|s| s.0).unwrap_or(1.0) + 0.05; let dt = 1.0 / 60.0; let mut t = 0.0; let mut k = 0; let mut log = false; let mut next_log = 0.0; let mut burst: i32 = 0;
+        let end = steps.last().map(|s| s.0).unwrap_or(1.0) + 0.05; let dt = 1.0 / 60.0; let mut t = 0.0; let wall0 = std::time::Instant::now(); let mut k = 0; let mut log = false; let mut next_log = 0.0; let mut burst: i32 = 0;
         let mut tick_ms = 0.0f64; let mut ticks = 0;
         let mut audio = vec![0f32; 800 * 2]; let (mut arms, mut apk, mut anb, mut aclip) = (0f64, 0f32, 0f64, 0f64);
         while t < end {
@@ -72,6 +72,7 @@ fn main() {
                     "online" => { let k = parts[1]; let key: &'static str = fogwood_core::game::online::KEYS.iter().find(|x| **x == k).copied().unwrap_or("online"); g.online_tap(key);
                         if key == "on_host" { if let Some(c) = fogwood_core::net::with(|s| s.code) { std::fs::write("/tmp/fw_code", c.to_string()).unwrap(); println!("hosting {}", c); } } }
                     "joincode" => { let c = std::fs::read_to_string("/tmp/fw_code").unwrap(); g.online_tap("online"); g.online_tap("on_join"); for ch in c.trim().chars() { let k: &'static str = ["k0","k1","k2","k3","k4","k5","k6","k7","k8","k9"][ch.to_digit(10).unwrap() as usize]; g.online_tap(k); } g.online_tap("kok"); println!("joined {}", c.trim()); }
+                    "netstat" => { fogwood_core::net::with(|s| println!("traffic t={:.1} bytes {:?} packets {:?}", t, s.traffic.get(), s.packets.get())); }
                     "net" => { fogwood_core::net::with(|s| println!("net t={:.1} host={} up={} peers={:?} host_now={:.2}", t, s.is_host, s.brokers_up(), s.peers.values().map(|p| (p.name.clone(), p.link(), (p.rtt * 1000.0) as i32)).collect::<Vec<_>>(), s.host_now())); }
                     "rstate" => { println!("race t={:.1} on={} online={} phase={:?} go={:.2} race_t={:.2} pos={} cars={:?}", t, g.race.on, g.race.online, g.race.phase, g.go, g.race.t, g.race.pos,
                         g.race.cars.iter().map(|c| (c.tag(), (c.car.x * 10.0).round() / 10.0, (c.car.z * 10.0).round() / 10.0, c.prog as i64)).collect::<Vec<_>>()); }
@@ -104,7 +105,12 @@ fn main() {
             if log && t >= next_log { next_log = t + 1.0; r.draw(Some(fb), w, h).expect("draw"); let c = &g.car; println!("log calls={} tris={} t={:.1} x={:.2} z={:.2} kmh={:.0} gear={} sunvis={:.2} race_t={:.1} pos={} cars={:?}", r.stats.0, r.stats.1, t, c.x, c.z, c.u * 3.6, c.gear, g.sun_vis, g.race.t, g.race.pos,
                 g.race.cars.iter().map(|q| (q.r.map(|i| fogwood_core::game::race::RIVALS[i].tag).unwrap_or("YOU"), (q.prog as i64), q.resets)).collect::<Vec<_>>()); }
             for e in g.events.drain(..) { if !e.starts_with("h ") { println!("event {}", e); } }
-            t += dt; if std::env::var("FW_REALTIME").is_ok() { std::thread::sleep(std::time::Duration::from_secs_f64(dt)); }
+            t += dt;
+            if let Ok(tp) = std::env::var("FW_TRACE") { if g.race.online && g.race.on {
+                let line = fogwood_core::net::with(|s| { let mut l = format!("{:.4} {:.3} {:.3}", s.host_now(), g.car.x, g.car.z);
+                    for c in &g.race.cars { if let Some(id) = c.remote { l += &format!(" {} {:.3} {:.3}", id, c.car.x, c.car.z); } } l += &format!(" me {}", s.me); l });
+                if let Some(l) = line { use std::io::Write; let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&tp).unwrap(); writeln!(f, "{}", l).unwrap(); } } }
+            if std::env::var("FW_REALTIME").is_ok() { let target = wall0.elapsed().as_secs_f64(); if t > target { std::thread::sleep(std::time::Duration::from_secs_f64(t - target)); } }
         }
         println!("tick avg {:.3} ms over {} frames (incl. hud)", tick_ms / ticks as f64, ticks);
     }
