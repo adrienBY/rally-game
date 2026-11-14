@@ -2108,7 +2108,10 @@ function startRace() {
     const [k, lat] = slot(s), c = mkCar(RIVALS[order[ri++]], k, lat); rcPlace(k, lat, 0); rcSave(c); RACE.cars.push(c); }
   rcLoad(PSNAP); SIMAI = false; RG.show(true);
 }
-function stopRace() { RACE.on = false; RACE.phase = "off"; RG.show(false); for (const c of RACE.cars) if (c.eng && ac) c.eng.g.gain.setTargetAtTime(0, ac.currentTime, 0.05); }
+function stopRace() { RACE.on = false; RACE.phase = "off"; RG.show(false);
+  for (const c of RACE.cars) if (c.eng && ac) { const e = c.eng, t = ac.currentTime; e.g.gain.setTargetAtTime(0, t, 0.03);   // fade, then really stop the rival engines
+    for (const src of [e.src, e.src2]) { try { src.stop(t + 0.15); } catch (_) {} A.srcs = A.srcs.filter(x => x !== src); }
+    setTimeout(() => { try { e.g.disconnect(); } catch (_) {} }, 250); c.eng = null; } }
 /* the drivers' heads: who is ahead, can I pass, who is alongside, when do I make a mistake */
 function racePlan(dt) {
   const cars = RACE.cars, P = RACE.player;
@@ -2319,10 +2322,11 @@ let ac = CAR.ac, A = { srcs: [] }; const decoded = CAR.dec; CAR.A = A;
 function loopSrc(buf, rate, dest, offset = 0) { const s = ac.createBufferSource(); A.srcs.push(s); s.buffer = buf; s.loop = true; s.playbackRate.value = rate; s.connect(dest); s.start(0, offset); return s; }
 function makeCurve(k) { const n = 1024, c = new Float32Array(n); for (let i = 0; i < n; i++) { const x = i / (n - 1) * 2 - 1; c[i] = Math.tanh(x * k) / Math.tanh(k); } return c; }
 function initAudio() {
+  if (!alive) return;   // a retry scheduled by a stage that has since been closed
   window.__audioOn = true; SHARED.start();
   ac = CAR.ac; if (!ac) return; ac.resume();
   if (A.master) return; if (!CAR.ready) { setTimeout(initAudio, 300); return; }
-  const comp = ac.createDynamicsCompressor(); comp.threshold.value = -14; comp.ratio.value = 4; comp.connect(ac.destination);
+  const comp = ac.createDynamicsCompressor(); comp.threshold.value = -14; comp.ratio.value = 4; comp.connect(ac.destination); A.comp = comp;
   A.master = ac.createGain(); A.master.gain.value = 0; A.master.connect(comp);
   A.engLP = ac.createBiquadFilter(); A.engLP.type = "lowpass"; A.engLP.frequency.value = 1400; A.engLP.Q.value = 0.7;
   A.shaper = ac.createWaveShaper(); A.shaper.curve = makeCurve(1.6); A.shaper.oversample = "2x";
@@ -2774,6 +2778,11 @@ window.__raceSim = (secs, pk) => { if (!RACE.on) { game.state = "drive"; startRa
 
 return () => {
   alive = false; ABORT.abort();
+  // silence this stage's car sounds for good: the audio context is shared, so anything left playing would carry into the next stage
+  if (ac && A.master) { const t = ac.currentTime; try { A.master.gain.cancelScheduledValues(t); A.master.gain.setValueAtTime(0, t); } catch (_) {}
+    for (const src of A.srcs) { try { src.stop(); } catch (_) {} try { src.disconnect(); } catch (_) {} }
+    try { A.master.disconnect(); } catch (_) {} try { A.comp && A.comp.disconnect(); } catch (_) {} }
+  A.srcs = []; A.master = null;
   try { renderer.forceContextLoss(); renderer.dispose(); } catch (_) {}
   for (const id of ["tuneBtn", "tunePanel", "tuneStyle"]) document.getElementById(id)?.remove();
 };
