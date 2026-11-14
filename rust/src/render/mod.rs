@@ -63,6 +63,9 @@ pub struct Renderer {
     tgt: Option<(i32, i32, glow::Framebuffer, glow::Texture, glow::Renderbuffer, glow::Framebuffer, glow::Texture)>,
     pub frame: FrameState, pub stats: (u32, u32), pub only: Option<Vec<usize>>,
     hud: Option<(glow::Texture, i32, i32)>,
+    // benchmark: GPU timer queries (GL_EXT_disjoint_timer_query) for the scene and post passes, read back a few frames later
+    pub timing: bool, pub frame_id: u64, pub draw_cpu_ms: f32, pub gpu_results: Vec<(u64, f32, f32)>, pub has_timer: bool,
+    tq_free: Vec<(glow::Query, glow::Query)>, tq_pending: std::collections::VecDeque<(glow::Query, glow::Query, u64)>, tq_cur: Option<(glow::Query, glow::Query)>, tq_made: usize, tq_post: bool,
 }
 
 const UNIFORMS: [&str; 45] = ["uModel", "uView", "uProj", "uNormalM", "uMapM", "uTime", "uWind", "uColor", "uOpacity", "uMap", "uAlphaTest", "uHemiSky",
@@ -107,7 +110,8 @@ impl Renderer {
         gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, f32_bytes(&tri), glow::STATIC_DRAW);
         gl.enable_vertex_attrib_array(11); gl.vertex_attrib_pointer_f32(11, 2, glow::FLOAT, false, 8, 0);
         gl.bind_vertex_array(None);
-        Ok(Renderer { gl, scene: None, mesh_progs: HashMap::new(), mesh_list: Vec::new(), sky, points, dust, post, quad_vao, _quad_buf: qb, tgt: None, frame: FrameState::default(), stats: (0, 0), only: None, hud: None })
+        Ok(Renderer { gl, scene: None, mesh_progs: HashMap::new(), mesh_list: Vec::new(), sky, points, dust, post, quad_vao, _quad_buf: qb, tgt: None, frame: FrameState::default(), stats: (0, 0), only: None, hud: None,
+            timing: false, frame_id: 0, draw_cpu_ms: 0.0, gpu_results: Vec::new(), has_timer: false, tq_free: Vec::new(), tq_pending: Default::default(), tq_cur: None, tq_made: 0, tq_post: false })
     }
 
     pub fn has_scene(&self) -> bool { self.scene.is_some() }
@@ -329,8 +333,33 @@ impl Renderer {
     }
 
     /// Draw the current state into `screen` (None = default framebuffer) of size w x h.
+    pub fn gl_renderer(&self) -> String { unsafe { format!("{} / {}", self.gl.get_parameter_string(glow::RENDERER), self.gl.get_parameter_string(glow::VERSION)) } }
+    /// Draw the current state, timing it when benchmarking (CPU always, GPU when the driver has timer queries).
     pub unsafe fn draw(&mut self, screen: Option<glow::Framebuffer>, w: i32, h: i32) -> Result<(), String> {
-        let fr = self.frame;
+        const TIME_ELAPSED: u32 = 0x88BF; const GPU_DISJOINT: u32 = 0x8FBB;
+        let t0 = std::time::Instant::now(); self.frame_id += 1;
+        self.has_timer = self.gl.supported_extensions().contains("GL_EXT_disjoint_timer_query");
+        self.tq_cur = None;
+        if self.timing && self.has_timer && self.scene.is_some() {
+            if self.tq_free.is_empty() && self.tq_made < 8 { if let (Ok(a), Ok(b)) = (self.gl.create_query(), self.gl.create_query()) { self.tq_free.push((a, b)); self.tq_made += 1; } }
+            if let Some(pair) = self.tq_free.pop() { self.gl.begin_query(TIME_ELAPSED, pair.0); self.tq_cur = Some(pair); }
+        }
+        self.tq_post = false;
+        let r = self.draw_inner(screen, w, h);
+        if let Some((a, b)) = self.tq_cur.take() { self.gl.end_query(TIME_ELAPSED); if self.tq_post { self.tq_pending.push_back((a, b, self.frame_id)); } else { self.tq_free.push((a, b)); } }
+        while let Some(&(a, b, id)) = self.tq_pending.front() {
+            if self.gl.get_query_parameter_u32(b, glow::QUERY_RESULT_AVAILABLE) == 0 { break; }
+            self.tq_pending.pop_front();
+            let (sa, sb) = (self.gl.get_query_parameter_u32(a, glow::QUERY_RESULT), self.gl.get_query_parameter_u32(b, glow::QUERY_RESULT));
+            if self.gl.get_parameter_i32(GPU_DISJOINT) == 0 { self.gpu_results.push((id, sa as f32 / 1e6, sb as f32 / 1e6)); }
+            self.tq_free.push((a, b));
+        }
+        if !self.timing { self.gpu_results.clear(); }
+        self.draw_cpu_ms = t0.elapsed().as_secs_f32() * 1000.0;
+        r
+    }
+    unsafe fn draw_inner(&mut self, screen: Option<glow::Framebuffer>, w: i32, h: i32) -> Result<(), String> {
+        let fr = self.frame; let tq = self.tq_cur;
         if self.scene.is_none() || !fr.valid || fr.lw < 8 || fr.lh < 8 {
             let gl = &self.gl; gl.bind_framebuffer(glow::FRAMEBUFFER, screen); gl.viewport(0, 0, w, h);
             gl.clear_color(0.043, 0.063, 0.043, 1.0); gl.clear(glow::COLOR_BUFFER_BIT); return Ok(());
@@ -435,6 +464,7 @@ impl Renderer {
             calls += 1;
         } }
         gl.bind_vertex_array(None); gl.disable(glow::BLEND); gl.disable(glow::POLYGON_OFFSET_FILL); gl.disable(glow::CULL_FACE); gl.depth_mask(true);
+        let post_q = if let Some((_, b)) = tq { gl.end_query(0x88BF); gl.begin_query(0x88BF, b); true } else { false };   // benchmark: scene pass done, post + upscale next
         // post at render resolution
         gl.bind_framebuffer(glow::FRAMEBUFFER, Some(f2)); gl.viewport(0, 0, lw, lh); gl.disable(glow::DEPTH_TEST);
         let p = &self.post; gl.use_program(Some(p.prog));
@@ -449,7 +479,7 @@ impl Renderer {
         gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(f2)); gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, screen);
         gl.blit_framebuffer(0, 0, lw, lh, 0, 0, w, h, glow::COLOR_BUFFER_BIT, glow::NEAREST);
         gl.bind_framebuffer(glow::FRAMEBUFFER, screen);
-        self.stats = (calls, tris);
+        self.stats = (calls, tris); self.tq_post = post_q;
         Ok(())
     }
 

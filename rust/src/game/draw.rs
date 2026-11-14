@@ -26,6 +26,7 @@ pub fn hud(gm: &mut Game) {
     let drive = gm.state == State::Drive;
     if drive { btn(g, &mut ui, "cam", "CAM", false); btn(g, &mut ui, "rst", "RST", false); btn(g, &mut ui, "menu", "MENU", false); }
     for k in ["cam", "rst", "menu"] { gm.ui.remove(k); }
+    { let rec = gm.bench_secs; let l = match rec { Some(s) => format!("REC {}", s), None => "REC".to_string() }; btn(g, &mut ui, "rec", &l, rec.is_some()); }   // temporary benchmark button
     if gm.state == State::Title {
         g.rect_c(0.0, 0.0, lw, lh, rgba(6, 9, 6, 0.42));
         let sc = (4.0 * u).min((lh / 42.0).floor()).min((lw / 46.0).floor()).max(2.0); let ty = js_round(lh * 0.15);

@@ -8,6 +8,14 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.content.ContentValues
+import android.content.Intent
+import android.content.IntentFilter
+import android.os.BatteryManager
+import android.os.Environment
+import android.os.PowerManager
+import android.provider.MediaStore
+import android.widget.Toast
 import android.util.Log
 import android.view.Choreographer
 import android.view.MotionEvent
@@ -126,10 +134,30 @@ class MainActivity : Activity() {
         for (line in ev.lineSequence()) {
             if (line == "fps 30") vsync.gap = 29_000_000L else if (line == "fps 60") vsync.gap = 12_500_000L
             else if (line.startsWith("h ")) { val p = line.split(' '); if (p.size == 3) haptics.play(p[1], p[2].toFloatOrNull() ?: 0.5f) }
+            else if (line.startsWith("bench ")) { val path = line.substring(6); main.post { exportBench(path) } }
             else if (line.startsWith("map ")) { val name = line.substring(4).filter { it.isLetter() }
                 main.post { main.removeCallbacks(sleepPage); web.resumeTimers(); web.evaluateJavascript("window.__rtBoot && window.__rtBoot('$name')", null) } }
         }
     }
+
+    /** temporary benchmark: copy the log the game wrote into Downloads/Fogwood so it can be shared */
+    private fun exportBench(path: String) {
+        val f = java.io.File(path); if (!f.exists()) return
+        val where = try {
+            if (Build.VERSION.SDK_INT >= 29) {
+                val v = ContentValues().apply { put(MediaStore.Downloads.DISPLAY_NAME, f.name); put(MediaStore.Downloads.MIME_TYPE, "text/csv"); put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Fogwood") }
+                val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v) ?: throw Exception("no uri")
+                contentResolver.openOutputStream(uri)?.use { it.write(f.readBytes()) }; "Downloads/Fogwood/${f.name}"
+            } else { val d = getExternalFilesDir(null); val o = java.io.File(d, f.name); f.copyTo(o, true); o.absolutePath }
+        } catch (e: Throwable) { Log.e(TAG, "bench export", e); f.absolutePath }
+        Toast.makeText(this, "Benchmark saved: $where", Toast.LENGTH_LONG).show()
+    }
+    /** thermal status and battery temperature every 2 s, for the benchmark log */
+    private val thermalTick = object : Runnable { override fun run() {
+        if (!rtMode) return
+        val st = if (Build.VERSION.SDK_INT >= 29) (getSystemService(POWER_SERVICE) as PowerManager).currentThermalStatus else -1
+        val batt = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) ?: 0
+        NativeCore.rtThermal(st, batt / 10f); main.postDelayed(this, 2000) } }
 
     @SuppressLint("RequiresFeature")
     private fun fallBackToWebGl() {
@@ -168,6 +196,7 @@ class MainActivity : Activity() {
             WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_ARRAY_BUFFER)
         rtMode = nativeGl
         val startMap = if (rtMode) NativeCore.rtInit(filesDir.absolutePath + "/fogwood.sav") else "forest"
+        if (rtMode) NativeCore.rtDevice("${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
         if (nativeGl) {
             glView = GLSurfaceView(this).apply {
                 setEGLContextClientVersion(3)
@@ -278,14 +307,14 @@ class MainActivity : Activity() {
     }
 
     override fun onPause() {
-        stopLoop()
+        stopLoop(); main.removeCallbacks(thermalTick)
         if (!rtMode) web.evaluateJavascript("window.__appPause && window.__appPause(true)", null)
         web.onPause(); glView?.onPause(); audio.stop(); super.onPause()
     }
     override fun onResume() {
         super.onResume(); web.onResume(); glView?.onResume(); hideBars(); if (NativeCore.loaded) audio.start()
         if (!rtMode) web.evaluateJavascript("window.__appPause && window.__appPause(false)", null)
-        startLoop()
+        startLoop(); main.removeCallbacks(thermalTick); main.post(thermalTick)
     }
     override fun onDestroy() { audio.stop(); web.destroy(); super.onDestroy() }
 

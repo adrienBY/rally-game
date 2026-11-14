@@ -81,3 +81,7 @@ pub extern "system" fn Java_com_fogwood_rally_NativeCore_rtInsets<'l>(_env: JNIE
 pub extern "system" fn Java_com_fogwood_rally_NativeCore_rtFrame<'l>(mut env: JNIEnv<'l>, _c: JClass<'l>, dt_ns: jlong) -> jstring {
     let e = crate::gfx::rt_frame(dt_ns as f64 * 1e-9); out(&mut env, e)
 }
+#[no_mangle]
+pub extern "system" fn Java_com_fogwood_rally_NativeCore_rtThermal<'l>(_env: JNIEnv<'l>, _c: JClass<'l>, status: jint, batt: jfloat) { crate::gfx::rt_thermal(status, batt); }
+#[no_mangle]
+pub extern "system" fn Java_com_fogwood_rally_NativeCore_rtDevice<'l>(mut env: JNIEnv<'l>, _c: JClass<'l>, info: JString<'l>) { let i = s(&mut env, &info); crate::gfx::rt_device(&i); }

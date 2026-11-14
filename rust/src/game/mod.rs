@@ -101,6 +101,8 @@ pub struct Game {
     /// test hook: the demo driver drives your car too
     pub auto: bool,
     tile_lod: Vec<usize>, fps30: Option<bool>, pub shade_dim: f64,
+    /// benchmark: ms spent in each part of the last tick (physics, race, sound, fx, camera, rivals, world, hud) and whether the HUD was uploaded
+    pub prof: [f32; 8], pub hud_uploaded: bool, pub bench_req: bool, pub bench_secs: Option<u32>, pub d_live: usize,
 }
 
 pub fn path_idx(w: &World, x: f64, z: f64) -> usize {
@@ -137,7 +139,7 @@ impl Game {
             sf_pos, sf_init: false, boats,
             sun_vis: 0.0, expo: 1.0, dim: 1.0, expo_tun: false, sun_uv: [0.5, 0.8],
             hap_t: 0.0, hap_cool: 0.0, aud_wet: 0.0, car_audio_on: false, race_was: false, pop_cool: 0.0, fps_acc: 0.0, fps_n: 0, hud_tick: false, hud: hud::Canvas::new(320, 180),
-            shadow_op: -1.0, flash: 0.0, speed_k: 0.0, clock: std::time::Instant::now(), last_pidx: 0, auto: false, tile_lod: Vec::new(), fps30: None, shade_dim: 1.0, rt,
+            shadow_op: -1.0, flash: 0.0, speed_k: 0.0, clock: std::time::Instant::now(), last_pidx: 0, auto: false, tile_lod: Vec::new(), fps30: None, shade_dim: 1.0, prof: [0.0; 8], hud_uploaded: false, bench_req: false, bench_secs: None, d_live: 0, rt,
         };
         if let Some(e) = bridge::lock().as_ref() { g.place_at(&e.world, 6); }
         g
@@ -231,6 +233,7 @@ impl Game {
                     Some("pix") => { self.ps.pix_idx = (self.ps.pix_idx + 1) % PIX.len(); self.ps.saves.set("fogwood-pix", self.ps.pix_idx.to_string()); let (w, h, i) = (self.w, self.h, self.inset_px); self.resize(w, h, i);
                         self.flash_msg(["CHUNKY PIXELS", "MEDIUM PIXELS", "FINE PIXELS"][self.ps.pix_idx], 1.0); }
                     Some("mode") => self.toggle_mode(),
+                    Some("rec") => { self.bench_req = true; }   // temporary: benchmark recording on / off
                     Some(k) if k.starts_with("map") => { let want = match k { "mapF" => "forest", "mapS" => "snow", "mapC" => "canyon", "mapL" => "lakes", "mapT" => "touge", _ => "riviera" }; if want != self.rt.map { self.switch_map(want); } }
                     _ if self.state == State::Title => self.start_game(),
                     None if self.race.on && self.race.phase == race::Phase::Done && self.race.done_t > 1.2 => { self.to_title(); }
@@ -306,10 +309,12 @@ impl Game {
         let inp = if self.state == State::Drive {
             if self.go > 0.9 { Input { steer: 0.0, throttle: 0.0, brake: 0.0, hb: true } } else if self.auto || (self.race.on && self.race.phase == race::Phase::Done) { self.ai_input(w) } else { self.read_input() }
         } else { self.ai_input(w) };
-        let shifted = self.car.update(w, obs, &self.tune, dt, &inp);
+        let mut tp = std::time::Instant::now(); let mut prof = [0f32; 8];
+        macro_rules! lap { ($k:expr) => {{ let n = std::time::Instant::now(); prof[$k] += (n - tp).as_secs_f32() * 1000.0; tp = n; }} }
+        let shifted = self.car.update(w, obs, &self.tune, dt, &inp); lap!(0);
         if shifted { if self.state == State::Drive { self.buzz("shift", 0.45); } self.audio_msg(&[7.0, 2.0]); }
-        if self.state == State::Drive { if self.race.on { race::step(self, w, obs, dt); } else { self.update_lap(w, dt); } }
-        self.update_audio(w, dt, &inp, gust);
+        if self.state == State::Drive { if self.race.on { race::step(self, w, obs, dt); } else { self.update_lap(w, dt); } } lap!(1);
+        self.update_audio(w, dt, &inp, gust); lap!(2);
         if self.car.landed { let v = -self.car.land_v; self.car.landed = false;
             if v > 1.8 && self.state == State::Drive { self.buzz("land", clamp((v - 1.5) / 7.0, 0.15, 1.0)); }
             if v > 1.2 { self.audio_msg(&[2.0, 2.0, v as f32, 0.0]); }
@@ -341,15 +346,16 @@ impl Game {
             self.d_a[i] = ((if self.tou || self.riv { 0.26 } else { 0.4 }) * (1.0 - k).powf(1.6)) as f32; }
         if let Some((obj, _)) = self.rt.dust { if d_live > 0 || self.dust_was { r.set_attr(obj, "position", &self.d_pos); r.set_attr(obj, "aA", &self.d_a); r.set_attr(obj, "aS", &self.d_s); } }
         self.dust_was = d_live > 0;
+        self.d_live = d_live; lap!(3);
         self.last_pidx = path_idx(w, self.car.x, self.car.z);
-        self.camera(w, dt);
+        self.camera(w, dt); lap!(4);
         if self.race.on { race::gfx(self, r, w); race::audio(self); } else if self.race_was { race::hide(self, r); self.audio_msg(&[8.0, 0.0]); }
-        self.race_was = self.race.on;
+        self.race_was = self.race.on; lap!(5);
         self.world_fx(r, w, dt);
         self.light(w, dt);
-        self.push_nodes(r);
+        self.push_nodes(r); lap!(6);
         drop(guard);
-        self.hud_frame(r);
+        self.hud_uploaded = false; self.hud_frame(r); lap!(7); self.prof = prof;
         self.write_frame(r);
         let slow = self.state == State::Title;   // the menu's film crew runs at 30 fps, the driving at 60
         if self.fps30 != Some(slow) { self.fps30 = Some(slow); self.events.push(if slow { "fps 30".into() } else { "fps 60".into() }); }
@@ -618,11 +624,11 @@ impl Game {
         self.hud_tick = !self.hud_tick;
         if !(self.hud_tick || self.state != State::Drive || !self.touches.is_empty() || self.loading.is_some()) { return; }
         draw::hud(self);
-        if self.hud.finish() { r.set_hud(&self.hud.bytes, self.hud.w, self.hud.h); }
+        if self.hud.finish() { r.set_hud(&self.hud.bytes, self.hud.w, self.hud.h); self.hud_uploaded = true; }
     }
 }
 
-pub const TOPB: [&str; 6] = ["snd", "vib", "cam", "pix", "rst", "menu"];
+pub const TOPB: [&str; 7] = ["snd", "vib", "cam", "pix", "rst", "menu", "rec"];
 #[inline] pub fn js_round(v: f64) -> f64 { (v + 0.5).floor() }
 pub fn fmt(t: Option<f64>) -> String {
     match t { None => "-:--.--".into(), Some(t) => { let m = (t / 60.0).floor(); let s = t - m * 60.0; format!("{}:{}{:.2}", m as i64, if s < 10.0 { "0" } else { "" }, s) } }

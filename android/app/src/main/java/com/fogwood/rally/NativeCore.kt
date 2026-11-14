@@ -31,6 +31,9 @@ object NativeCore {
     @JvmStatic external fun rtInsets(top: Float, right: Float, bottom: Float, left: Float)
     /** GL thread: run and draw one frame (dt in ns); returns app events, one per line. */
     @JvmStatic external fun rtFrame(dtNanos: Long): String
+    /** Benchmark log context: PowerManager thermal status (-1 unknown) and battery temperature. */
+    @JvmStatic external fun rtThermal(status: Int, batteryC: Float)
+    @JvmStatic external fun rtDevice(info: String)
 
     // sound engine
     @JvmStatic external fun audioInit(sampleRate: Int)
