@@ -51,9 +51,11 @@ class MainActivity : Activity() {
     /** vsync ticks: one game frame every ~16.7 ms, so 90/120 Hz screens still run a steady 60 */
     private val vsync = object : Choreographer.FrameCallback {
         var last = 0L
+        /** 12.5 ms: every vsync at 60 Hz (every other at 120); 29 ms: 30 fps for the menu */
+        @Volatile var gap = 12_500_000L
         override fun doFrame(t: Long) {
             if (!looping) return
-            if (t - last >= 12_500_000L) { last = t; glView?.requestRender() }
+            if (t - last >= gap) { last = t; glView?.requestRender() }
             Choreographer.getInstance().postFrameCallback(this)
         }
     }
@@ -122,7 +124,8 @@ class MainActivity : Activity() {
     /** events from the native game: "h <kind> <strength>" haptics, "map <name>" build that stage */
     private fun handleEvents(ev: String) {
         for (line in ev.lineSequence()) {
-            if (line.startsWith("h ")) { val p = line.split(' '); if (p.size == 3) haptics.play(p[1], p[2].toFloatOrNull() ?: 0.5f) }
+            if (line == "fps 30") vsync.gap = 29_000_000L else if (line == "fps 60") vsync.gap = 12_500_000L
+            else if (line.startsWith("h ")) { val p = line.split(' '); if (p.size == 3) haptics.play(p[1], p[2].toFloatOrNull() ?: 0.5f) }
             else if (line.startsWith("map ")) { val name = line.substring(4).filter { it.isLetter() }
                 main.post { main.removeCallbacks(sleepPage); web.resumeTimers(); web.evaluateJavascript("window.__rtBoot && window.__rtBoot('$name')", null) } }
         }

@@ -84,11 +84,11 @@ pub fn rt_frame(dt: f64) -> String {
             if let Some(p) = rtp {
                 match crate::game::rt::parse(&p) {
                     Ok(rt) => { let ps = match game.take() { Some(g) => g.into_persist(), None => persist.take().unwrap_or_else(|| Persist::new(&save_path)) };
-                        let mut g = Game::new(rt, ps); g.resize(size.0 as f64, size.1 as f64, [insets[0] as f64, insets[1] as f64, insets[2] as f64, insets[3] as f64]);
+                        let mut g = Game::new(rt, ps); g.resize(size.0 as f64, size.1 as f64, [insets[0] as f64, insets[1] as f64, insets[2] as f64, insets[3] as f64]); g.attach(r);
                         *game = Some(g); set_status("game ready".into()); }
                     Err(e) => set_status(format!("runtime failed: {e}")),
                 }
-            } else if had_scene { if let Some(g) = game.as_mut() { if g.loading.is_none() { g.scene_reloaded(); } } }
+            } else if had_scene { if let Some(g) = game.as_mut() { if g.loading.is_none() { g.scene_reloaded(); g.attach(r); } } }
             if let Some(g) = game.as_mut() {
                 if (g.w - size.0 as f64).abs() > 0.5 || (g.h - size.1 as f64).abs() > 0.5 || g.inset_px != [insets[0] as f64, insets[1] as f64, insets[2] as f64, insets[3] as f64] {
                     g.resize(size.0 as f64, size.1 as f64, [insets[0] as f64, insets[1] as f64, insets[2] as f64, insets[3] as f64]); }

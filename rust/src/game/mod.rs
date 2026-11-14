@@ -18,6 +18,8 @@ use std::collections::HashMap;
 
 pub const TIRE_R: f64 = 0.31;
 pub const VEH_L: f64 = 1.22 - -1.28;
+/// ground tiles switch to every 2nd grid line past LOD1 metres, every 4th past LOD2
+const LOD1: f64 = 150.0; const LOD2: f64 = 300.0;
 const REST: f64 = 0.21; const STOP: f64 = 0.33;
 const PIX: [f64; 3] = [170.0, 220.0, 340.0];
 pub const MAPS: [&str; 6] = ["forest", "snow", "canyon", "lakes", "touge", "riviera"];
@@ -98,6 +100,7 @@ pub struct Game {
     shadow_op: f32, pub flash: f64, pub speed_k: f64, clock: std::time::Instant, pub last_pidx: usize,
     /// test hook: the demo driver drives your car too
     pub auto: bool,
+    tile_lod: Vec<usize>, fps30: Option<bool>,
 }
 
 pub fn path_idx(w: &World, x: f64, z: f64) -> usize {
@@ -134,15 +137,20 @@ impl Game {
             sf_pos, sf_init: false, boats,
             sun_vis: 0.0, expo: 1.0, dim: 1.0, expo_tun: false, sun_uv: [0.5, 0.8],
             hap_t: 0.0, hap_cool: 0.0, aud_wet: 0.0, car_audio_on: false, race_was: false, pop_cool: 0.0, fps_acc: 0.0, fps_n: 0, hud_tick: false, hud: hud::Canvas::new(320, 180),
-            shadow_op: -1.0, flash: 0.0, speed_k: 0.0, clock: std::time::Instant::now(), last_pidx: 0, auto: false, rt,
+            shadow_op: -1.0, flash: 0.0, speed_k: 0.0, clock: std::time::Instant::now(), last_pidx: 0, auto: false, tile_lod: Vec::new(), fps30: None, rt,
         };
         if let Some(e) = bridge::lock().as_ref() { g.place_at(&e.world, 6); }
         g
     }
     pub fn into_persist(self) -> Persist { self.ps }
+    /// once the scene is on the GPU: coarse grids for the far ground tiles
+    pub fn attach(&mut self, r: &mut Renderer) {
+        for t in &self.rt.tiles { r.add_grid_lods(t.0, t.1, t.2); }
+        self.tile_lod = vec![usize::MAX; self.rt.tiles.len()];
+    }
     /// the GPU copy of the scene was rebuilt (lost GL context): push every object state again
     pub fn scene_reloaded(&mut self) {
-        self.obj_last.clear(); for v in self.cull_vis.iter_mut() { *v = !*v; } self.shadow_op = -1.0; for v in self.glit_op.iter_mut() { *v = -1.0; }
+        self.tile_lod.clear(); self.obj_last.clear(); for v in self.cull_vis.iter_mut() { *v = !*v; } self.shadow_op = -1.0; for v in self.glit_op.iter_mut() { *v = -1.0; }
         self.race.shown = false; self.race_was = self.race.on; self.dust_was = true; self.hud.invalidate();
     }
     pub fn clock_ms(&self) -> f64 { self.clock.elapsed().as_secs_f64() * 1000.0 }
@@ -343,6 +351,8 @@ impl Game {
         drop(guard);
         self.hud_frame(r);
         self.write_frame(r);
+        let slow = self.state == State::Title;   // the menu's film crew runs at 30 fps, the driving at 60
+        if self.fps30 != Some(slow) { self.fps30 = Some(slow); self.events.push(if slow { "fps 30".into() } else { "fps 60".into() }); }
         self.ps.saves.flush();
     }
 
@@ -462,6 +472,11 @@ impl Game {
         self.set_node("shadow", Some([s.x, gh + 0.05, s.z]), Some([0.0, s.h, 0.0]), Some([1.0 + clamp(above - 0.08, 0.0, 4.0) * 0.12; 3]));
         let op = (0.62 * clamp(1.0 - (above - 0.08) / 3.5, 0.12, 1.0)) as f32;
         if let Some(id) = self.rt.shadow_obj { if (op - self.shadow_op).abs() > 1e-4 { r.set_opacity(id, op); self.shadow_op = op; } }
+        // far ground tiles drawn from every 2nd / 4th grid line (4x / 16x fewer triangles), with a little hysteresis
+        if self.tile_lod.len() == self.rt.tiles.len() { for k in 0..self.rt.tiles.len() { let (id, _, _, c) = self.rt.tiles[k]; let d = (cp[0] - c[0]).hypot(cp[2] - c[2]); let cur = self.tile_lod[k];
+            let h = if cur == usize::MAX { 0.0 } else { 12.0 };
+            let lod = if d < LOD1 + if cur == 0 { h } else { -h } { 0 } else if d < LOD2 + if cur <= 1 { h } else { -h } { 1 } else { 2 };
+            if lod != cur { r.set_lod(id, lod); self.tile_lod[k] = lod; } } }
         // culling by distance (fog-swallowed chunks)
         for k in 0..self.rt.cull.len() { let c = &self.rt.cull[k]; let d = ((cp[0] - c.c[0]).powi(2) + (cp[1] - c.c[1]).powi(2) + (cp[2] - c.c[2]).powi(2)).sqrt();
             let vis = d - c.r < c.d; if vis != self.cull_vis[k] { self.cull_vis[k] = vis; for &id in &c.ids { r.set_vis(id, vis); } } }

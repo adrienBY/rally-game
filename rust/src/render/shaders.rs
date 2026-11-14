@@ -166,11 +166,12 @@ void main() {
   if (edge > 0.002) { vec3 bl = c; for (int i = 1; i <= 5; i++) bl += texture(tScene, vUv - fromC * 0.028 * uSpeed * float(i)).rgb; c = mix(c, bl / 6.0, edge); }
   float acc = 0.0;
   if (uSunVis > 0.01) { vec2 d = uSun - vUv; float L = length(d); if (L > 1.3) d *= 1.3 / L;
-    vec2 st = d / 20.0; vec2 p = vUv; float w = 1.0;
-    for (int i = 0; i < 20; i++) { p += st; vec4 s = texture(tScene, clamp(p + uTexel * 0.5, 0.001, 0.999));
+    // 10 taps over the same reach as the browser's 20 (half the cost): neighbouring pixels take alternate halves of the 20 positions
+    vec2 st = d / 10.0; float odd = mod(floor(gl_FragCoord.x) + floor(gl_FragCoord.y), 2.0); vec2 p = vUv - st * 0.5 * odd; float w = 1.0 + 0.05 * odd;
+    for (int i = 0; i < 10; i++) { p += st; vec4 s = texture(tScene, clamp(p + uTexel * 0.5, 0.001, 0.999));
       float l = dot(s.rgb, vec3(0.3, 0.59, 0.11)), near = 1.0 - smoothstep(0.04, 0.42, length((p - uSun) * vec2(1.6, 1.0)));
-      acc += smoothstep(0.66, 0.92, l) * (1.0 - s.a) * w * (0.25 + 0.75 * near); w *= 0.952; }
-    acc /= 13.0; }
+      acc += smoothstep(0.66, 0.92, l) * (1.0 - s.a) * w * (0.25 + 0.75 * near); w *= 0.9063; }
+    acc /= 6.67; }
   c += vec3(1.0, 0.93, 0.74) * acc * 0.85 * uSunVis * (0.9 + 0.1 * sin(uTime * 0.7 + vUv.x * 3.0));
   c *= uExpo; c += vec3(1.0, 0.96, 0.9) * smoothstep(0.75, 1.7, dot(c, vec3(0.3, 0.59, 0.11))) * 0.6 * clamp(uExpo - 1.0, 0.0, 1.0);
   { float l = dot(c, vec3(0.3, 0.59, 0.11)); c += uSplitS * (1.0 - l) * (1.0 - l) + uSplitH * l * l; }

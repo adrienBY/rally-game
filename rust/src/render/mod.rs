@@ -30,6 +30,8 @@ struct Object {
     count: i32, ibuf: Option<glow::Buffer>, cbuf: Option<glow::Buffer>, ibs: Option<[f32; 4]>, vao: glow::VertexArray, dr: Option<(i32, i32)>,
     /// mesh program (index into mesh_list), resolved once at load; usize::MAX for sky/points/dust
     prog: usize, no_normal: bool, no_uv: bool, no_color: bool,
+    /// coarser index buffers (every 2nd / 4th grid line) for far ground tiles, and which one to draw (0 = full)
+    lods: Vec<(glow::Buffer, i32)>, lod: usize,
 }
 struct GpuScene {
     texs: Vec<Texture>, geos: Vec<Geometry>, mats: Vec<Material>, objs: Vec<Object>,
@@ -123,6 +125,24 @@ impl Renderer {
         let gl = &self.gl; let Some(s) = self.scene.as_ref() else { return }; let Some(o) = s.objs.get(id) else { return };
         if let Some(a) = s.geos[o.geo].attrs.iter().find(|a| a.name == name) { unsafe { gl.bind_buffer(glow::ARRAY_BUFFER, Some(a.buf)); gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, f32_bytes(data), glow::DYNAMIC_DRAW); } }
     }
+    /// coarse versions of a tw x th vertex grid tile (same winding as the page builds it): every 2nd and every 4th grid line, edges kept
+    pub fn add_grid_lods(&mut self, id: usize, tw: usize, th: usize) {
+        let gl = &self.gl; let Some(o) = self.scene.as_mut().and_then(|s| s.objs.get_mut(id)) else { return };
+        if !o.lods.is_empty() || tw < 3 || th < 3 { return; }
+        for step in [2usize, 4] {
+            let lines = |n: usize| { let mut v: Vec<usize> = (0..n).step_by(step).collect(); if *v.last().unwrap() != n - 1 { v.push(n - 1); } v };
+            let (xs, ys) = (lines(tw), lines(th)); let mut idx: Vec<u32> = Vec::with_capacity(xs.len() * ys.len() * 6);
+            for j in 0..ys.len() - 1 { for i in 0..xs.len() - 1 {
+                let (x0, x1, y0, y1) = (xs[i], xs[i + 1], ys[j], ys[j + 1]);
+                let (a, b, c, d) = ((x0 + tw * y0) as u32, (x0 + tw * y1) as u32, (x1 + tw * y1) as u32, (x1 + tw * y0) as u32);
+                idx.extend_from_slice(&[a, b, d, b, c, d]); } }
+            unsafe { let Ok(buf) = gl.create_buffer() else { return }; gl.bind_vertex_array(None); gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(buf));
+                gl.buffer_data_u8_slice(glow::ELEMENT_ARRAY_BUFFER, std::slice::from_raw_parts(idx.as_ptr() as *const u8, idx.len() * 4), glow::STATIC_DRAW);
+                gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, None); o.lods.push((buf, idx.len() as i32)); }
+        }
+    }
+    pub fn set_lod(&mut self, id: usize, lod: usize) { if let Some(o) = self.scene.as_mut().and_then(|s| s.objs.get_mut(id)) { o.lod = lod; } }
+
     /// the HUD canvas (straight RGBA, top row first)
     pub fn set_hud(&mut self, rgba: &[u8], w: i32, h: i32) {
         let gl = &self.gl;
@@ -143,7 +163,7 @@ impl Renderer {
         if let Some(s) = self.scene.take() {
             for t in s.texs { gl.delete_texture(t.tex); }
             for g in s.geos { for a in g.attrs { gl.delete_buffer(a.buf); } if let Some(i) = g.index { gl.delete_buffer(i); } }
-            for o in s.objs { gl.delete_vertex_array(o.vao); if let Some(b) = o.ibuf { gl.delete_buffer(b); } if let Some(b) = o.cbuf { gl.delete_buffer(b); } }
+            for o in s.objs { gl.delete_vertex_array(o.vao); if let Some(b) = o.ibuf { gl.delete_buffer(b); } if let Some(b) = o.cbuf { gl.delete_buffer(b); } for (b, _) in o.lods { gl.delete_buffer(b); } }
         }
     }
 
@@ -226,7 +246,7 @@ impl Renderer {
             let mi = o["m"].as_u64().unwrap_or(0) as usize;
             let has = |n: &str| geo.attrs.iter().any(|a| a.name == n);
             let (no_normal, no_uv, no_color) = (!has("normal"), !has("uv"), !has("color"));
-            objs.push(Object { prog: usize::MAX, no_normal, no_uv, no_color, kind, geo: gi, mat: mi, mw, ro: o["ro"].as_i64().unwrap_or(0) as i32, cull: o["cull"].as_i64() == Some(1), vis: o["vis"].as_i64() != Some(0), car: o["car"].as_i64() == Some(1),
+            objs.push(Object { lods: Vec::new(), lod: 0, prog: usize::MAX, no_normal, no_uv, no_color, kind, geo: gi, mat: mi, mw, ro: o["ro"].as_i64().unwrap_or(0) as i32, cull: o["cull"].as_i64() == Some(1), vis: o["vis"].as_i64() != Some(0), car: o["car"].as_i64() == Some(1),
                 opacity: mats.get(mi).map(|m| m.opacity).unwrap_or(1.0), count: o["count"].as_i64().unwrap_or(1) as i32, ibuf, cbuf,
                 ibs: o["ibs"].as_array().map(|a| [f(&a[0]), f(&a[1]), f(&a[2]), f(&a[3])]), vao,
                 dr: o["dr"].as_array().map(|a| (a[0].as_i64().unwrap_or(0) as i32, a[1].as_i64().unwrap_or(0) as i32)) });
@@ -404,6 +424,8 @@ impl Renderer {
                 ObjKind::Points => gl.draw_arrays(glow::POINTS, start, full),
                 ObjKind::Inst => { if g.index.is_some() { gl.draw_elements_instanced(glow::TRIANGLES, full, glow::UNSIGNED_INT, start * 4, o.count); }
                     else { gl.draw_arrays_instanced(glow::TRIANGLES, start, full, o.count); } tris += (full as u32 / 3) * o.count as u32; }
+                ObjKind::Mesh if o.lod > 0 && o.lod <= o.lods.len() => { let (b, n) = o.lods[o.lod - 1];   // a far ground tile: the coarse grid, then the VAO's own indices back
+                    gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(b)); gl.draw_elements(glow::TRIANGLES, n, glow::UNSIGNED_INT, 0); gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, g.index); tris += n as u32 / 3; }
                 ObjKind::Mesh => { if g.index.is_some() { gl.draw_elements(glow::TRIANGLES, full, glow::UNSIGNED_INT, start * 4); } else { gl.draw_arrays(glow::TRIANGLES, start, full); } tris += full as u32 / 3; }
             }
             calls += 1;

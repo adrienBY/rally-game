@@ -685,7 +685,7 @@ function lampAt(x, z) { if (!LAN.length) return 0; let a = 0; const ci = Math.fl
       for (let iy = 0; iy < th - 1; iy++) for (let ix = 0; ix < tw - 1; ix++) { const a = ix + tw * iy, b = ix + tw * (iy + 1), c = ix + 1 + tw * (iy + 1), d = ix + 1 + tw * iy; I.push(a, b, d, b, c, d); }
       const tg = new THREE.BufferGeometry(); tg.setAttribute("position", new THREE.BufferAttribute(P, 3)); tg.setAttribute("normal", new THREE.BufferAttribute(N, 3));
       tg.setAttribute("color", new THREE.BufferAttribute(Cc, 3)); tg.setAttribute("uv", new THREE.BufferAttribute(UV2, 2)); tg.setIndex(I); tg.computeBoundingSphere();
-      const tm = new THREE.Mesh(tg, gm); tm.userData.dyn = true; scene.add(tm); CULL.push({ o: tm, c: tg.boundingSphere.center.clone(), r: tg.boundingSphere.radius, d: FOGCUT }); tiles++; }
+      const tm = new THREE.Mesh(tg, gm); tm.userData.dyn = true; tm.userData.grid = [tw, th]; scene.add(tm); CULL.push({ o: tm, c: tg.boundingSphere.center.clone(), r: tg.boundingSphere.radius, d: FOGCUT }); tiles++; }
     geo.dispose(); window.__groundTiles = tiles; }
   const AC = [-1.08, -0.78, -0.42, 0, 0.42, 0.78, 1.08], NA = AC.length;
   const P = new Float32Array(NP * NA * 3), UVA = new Float32Array(NP * NA * 2), CO = new Float32Array(NP * NA * 3), IDX = [];
@@ -2727,6 +2727,7 @@ function rtPacket() {
     boats: BOATS.ims ? { list: BOATS.list, hull: ids(BOATS.ims.hull)[0], sail: ids(BOATS.ims.sail)[0], cab: ids(BOATS.ims.cab)[0], wake: ids(BOATS.ims.wake)[0] } : null,
     snow: (SNOW || TOU) ? { obj: ids(snowfall)[0], n: SFN, pos: Array.from(sfPos), seed: Array.from(sfSeed) } : null,
     dust: { obj: ids(dust)[0], n: DN },
+    tiles: scene.children.filter(o => o.userData.grid).map(o => [ids(o)[0], ...o.userData.grid, ...o.geometry.boundingSphere.center.toArray()]),   // stage ground grids: the app draws far ones coarser
     saves: {} };
   try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.startsWith("fogwood-")) pk.saves[k] = localStorage.getItem(k); } } catch (_) {}
   const json = new TextEncoder().encode(JSON.stringify(pk)), out = new Uint8Array(8 + json.length), dv = new DataView(out.buffer);

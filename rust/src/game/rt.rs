@@ -22,6 +22,8 @@ pub struct Rt {
     pub boats: Vec<Boat>, pub boat_ims: Option<[usize; 4]>,
     pub snow: Option<(usize, usize, Vec<f32>, Vec<f32>)>, pub dust: Option<(usize, usize)>,
     pub saves: Vec<(String, String)>,
+    /// stage ground tiles: object, grid width, grid height (vertices), centre
+    pub tiles: Vec<(usize, usize, usize, [f64; 3])>,
 }
 
 fn f(v: &Value) -> f64 { v.as_f64().unwrap_or(0.0) }
@@ -67,6 +69,7 @@ pub fn parse(pkt: &[u8]) -> Result<Rt, String> {
         split, nodes, objn, rg_parts, rg_shadow: id(&j["rg"]["shadow"]),
         shadow_obj: id(&j["car"]["shadow"]), glit: j["glit"].as_array().map(|a| a.iter().filter_map(id).collect()).unwrap_or_default(), cull,
         boats, boat_ims, snow, dust,
+        tiles: j["tiles"].as_array().cloned().unwrap_or_default().iter().map(|t| { let a = arr(t); (a[0] as usize, a[1] as usize, a[2] as usize, [a[3], a[4], a[5]]) }).collect(),
         saves: j["saves"].as_object().map(|o| o.iter().map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string())).collect()).unwrap_or_default(),
     })
 }

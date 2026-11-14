@@ -50,7 +50,7 @@ fn main() {
             for c in 0..chs { for i in 0..frames { let q = (i * ch as usize + c) * 2; m.extend_from_slice(&data[q..q + 2]); } }
             fogwood_audio::native::message(&m); println!("loaded {} {} ch {} Hz {} frames", f, chs, rate, frames);
         }
-        let mut g = Game::new(rt, Persist::new("/tmp/game_host.sav")); g.resize(w as f64, h as f64, [0.0; 4]);
+        let mut g = Game::new(rt, Persist::new("/tmp/game_host.sav")); g.resize(w as f64, h as f64, [0.0; 4]); if std::env::var("NOLOD").is_err() { g.attach(&mut r); }
         let gl = r.gl();
         let tex = gl.create_texture().unwrap(); gl.bind_texture(glow::TEXTURE_2D, Some(tex));
         gl.tex_image_2d(glow::TEXTURE_2D, 0, glow::RGBA8 as i32, w, h, 0, glow::RGBA, glow::UNSIGNED_BYTE, None);
