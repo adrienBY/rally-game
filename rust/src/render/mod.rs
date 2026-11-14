@@ -26,7 +26,7 @@ struct Geometry { attrs: Vec<Attr>, index: Option<glow::Buffer>, count: i32, dr:
 #[derive(PartialEq)]
 enum ObjKind { Mesh, Inst, Points }
 struct Object {
-    kind: ObjKind, geo: usize, mat: usize, mw: M4, ro: i32, cull: bool, vis: bool, opacity: f32,
+    kind: ObjKind, geo: usize, mat: usize, mw: M4, ro: i32, cull: bool, vis: bool, opacity: f32, car: bool,
     count: i32, ibuf: Option<glow::Buffer>, cbuf: Option<glow::Buffer>, ibs: Option<[f32; 4]>, vao: glow::VertexArray, dr: Option<(i32, i32)>,
 }
 struct GpuScene {
@@ -35,7 +35,7 @@ struct GpuScene {
 }
 #[derive(Clone, Copy, Default)]
 pub struct FrameState { pub lw: i32, pub lh: i32, pub view: M4, pub proj: M4, pub cam: [f32; 3], pub time: f32, pub wind: f32, pub sun: [f32; 2],
-    pub sun_vis: f32, pub flash: f32, pub speed: f32, pub dust_scale: f32, pub valid: bool }
+    pub sun_vis: f32, pub flash: f32, pub speed: f32, pub dust_scale: f32, pub expo: f32, pub dim: f32, pub valid: bool }
 
 struct Program { prog: glow::Program, u: HashMap<&'static str, glow::UniformLocation> }
 
@@ -46,9 +46,9 @@ pub struct Renderer {
     pub frame: FrameState, pub stats: (u32, u32), pub only: Option<Vec<usize>>,
 }
 
-const UNIFORMS: [&str; 37] = ["uModel", "uView", "uProj", "uNormalM", "uMapM", "uTime", "uWind", "uColor", "uOpacity", "uMap", "uAlphaTest", "uHemiSky",
+const UNIFORMS: [&str; 39] = ["uModel", "uView", "uProj", "uNormalM", "uMapM", "uTime", "uWind", "uColor", "uOpacity", "uMap", "uAlphaTest", "uHemiSky",
     "uHemiGround", "uHemiDir", "uDirColor", "uDirDir", "uFogColor", "uFogDensity", "uCamPos", "uSpec", "uShin", "uEmissive", "uSun", "uFog", "uTop", "uGlow",
-    "uHalo", "uSize", "uScale", "uDens", "uCol", "tScene", "uSunVis", "uFlash", "uSpeed", "uSunUv", "uDummy"];
+    "uHalo", "uSize", "uScale", "uDens", "uCol", "tScene", "uSunVis", "uFlash", "uSpeed", "uExpo", "uDim", "uSunUv", "uDummy"];
 
 unsafe fn compile(gl: &Gl, vs: &str, fs: &str) -> Result<Program, String> {
     let p = gl.create_program()?;
@@ -180,7 +180,7 @@ impl Renderer {
             }
             gl.bind_vertex_array(None);
             let mi = o["m"].as_u64().unwrap_or(0) as usize;
-            objs.push(Object { kind, geo: gi, mat: mi, mw, ro: o["ro"].as_i64().unwrap_or(0) as i32, cull: o["cull"].as_i64() == Some(1), vis: o["vis"].as_i64() != Some(0),
+            objs.push(Object { kind, geo: gi, mat: mi, mw, ro: o["ro"].as_i64().unwrap_or(0) as i32, cull: o["cull"].as_i64() == Some(1), vis: o["vis"].as_i64() != Some(0), car: o["car"].as_i64() == Some(1),
                 opacity: mats.get(mi).map(|m| m.opacity).unwrap_or(1.0), count: o["count"].as_i64().unwrap_or(1) as i32, ibuf, cbuf,
                 ibs: o["ibs"].as_array().map(|a| [f(&a[0]), f(&a[1]), f(&a[2]), f(&a[3])]), vao,
                 dr: o["dr"].as_array().map(|a| (a[0].as_i64().unwrap_or(0) as i32, a[1].as_i64().unwrap_or(0) as i32)) });
@@ -208,16 +208,16 @@ impl Renderer {
         Ok(())
     }
 
-    /// Frame packet (f32 LE): magic 7001, LW, LH, view16, proj16, cam3, time, wind, sunx, suny, sunvis, flash, speed, dustScale,
+    /// Frame packet (f32 LE): magic 7001, LW, LH, view16, proj16, cam3, time, wind, sunx, suny, sunvis, flash, speed, dustScale, exposure, carDim,
     /// nObj, {id, vis, opacity, mw16}*, nBuf, {1, geo, attr, len, data} | {2, obj, count, len, mats, lenc, cols}.
     pub unsafe fn apply_frame(&mut self, pkt: &[u8]) -> Result<(), String> {
-        let v = as_f32(pkt); if v.len() < 47 || v[0] != 7001.0 { return Err("bad frame".into()); }
+        let v = as_f32(pkt); if v.len() < 49 || v[0] != 7001.0 { return Err("bad frame".into()); }
         let fr = &mut self.frame; fr.lw = v[1] as i32; fr.lh = v[2] as i32;
         fr.view.copy_from_slice(&v[3..19]); fr.proj.copy_from_slice(&v[19..35]); fr.cam = [v[35], v[36], v[37]];
-        fr.time = v[38]; fr.wind = v[39]; fr.sun = [v[40], v[41]]; fr.sun_vis = v[42]; fr.flash = v[43]; fr.speed = v[44]; fr.dust_scale = v[45]; fr.valid = true;
+        fr.time = v[38]; fr.wind = v[39]; fr.sun = [v[40], v[41]]; fr.sun_vis = v[42]; fr.flash = v[43]; fr.speed = v[44]; fr.dust_scale = v[45]; fr.expo = v[46]; fr.dim = v[47]; fr.valid = true;
         let Some(s) = self.scene.as_mut() else { return Ok(()) };
         let gl = &self.gl;
-        let mut p = 46; let n = v[p] as usize; p += 1;
+        let mut p = 48; let n = v[p] as usize; p += 1;
         for _ in 0..n { if p + 19 > v.len() { return Err("short obj".into()); }
             let id = v[p] as usize; if let Some(o) = s.objs.get_mut(id) { o.vis = v[p + 1] != 0.0; o.opacity = v[p + 2]; o.mw.copy_from_slice(&v[p + 3..p + 19]); } p += 19; }
         if p >= v.len() { return Ok(()); }
@@ -325,7 +325,7 @@ impl Renderer {
                     gl.uniform_3_f32_slice(u("uHemiSky"), &s.hemi.0); gl.uniform_3_f32_slice(u("uHemiGround"), &s.hemi.1); gl.uniform_3_f32_slice(u("uHemiDir"), &s.hemi.2);
                     gl.uniform_3_f32_slice(u("uDirColor"), &s.dir.0); gl.uniform_3_f32_slice(u("uDirDir"), &s.dir.1);
                     gl.uniform_3_f32_slice(u("uFogColor"), &s.fog_c); gl.uniform_1_f32(u("uFogDensity"), if m.fog { s.fog_d } else { 0.0 }); gl.uniform_3_f32_slice(u("uCamPos"), &fr.cam);
-                    gl.uniform_3_f32_slice(u("uSpec"), &m.spec); gl.uniform_1_f32(u("uShin"), m.shin.max(1e-4)); gl.uniform_3_f32_slice(u("uEmissive"), &m.emis);
+                    gl.uniform_1_f32(u("uDim"), if o.car { fr.dim.max(0.05) } else { 1.0 }); gl.uniform_3_f32_slice(u("uSpec"), &m.spec); gl.uniform_1_f32(u("uShin"), m.shin.max(1e-4)); gl.uniform_3_f32_slice(u("uEmissive"), &m.emis);
                     gl.uniform_1_i32(u("uMap"), 0);
                     if m.map >= 0 { if let Some(t) = s.texs.get(m.map as usize) { gl.active_texture(glow::TEXTURE0); gl.bind_texture(glow::TEXTURE_2D, Some(t.tex)); } }
                 }
@@ -351,7 +351,7 @@ impl Renderer {
         let p = &self.post; gl.use_program(Some(p.prog));
         gl.active_texture(glow::TEXTURE0); gl.bind_texture(glow::TEXTURE_2D, Some(t1)); gl.uniform_1_i32(p.u.get("tScene"), 0);
         gl.uniform_2_f32(p.u.get("uSun"), fr.sun[0], fr.sun[1]); gl.uniform_1_f32(p.u.get("uSunVis"), fr.sun_vis); gl.uniform_1_f32(p.u.get("uTime"), fr.time);
-        gl.uniform_1_f32(p.u.get("uFlash"), fr.flash); gl.uniform_1_f32(p.u.get("uSpeed"), fr.speed);
+        gl.uniform_1_f32(p.u.get("uFlash"), fr.flash); gl.uniform_1_f32(p.u.get("uSpeed"), fr.speed); gl.uniform_1_f32(p.u.get("uExpo"), if fr.expo > 0.0 { fr.expo } else { 1.0 });
         gl.bind_vertex_array(Some(self.quad_vao)); gl.draw_arrays(glow::TRIANGLES, 0, 3); gl.bind_vertex_array(None);
         // nearest-neighbour upscale to the screen
         gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(f2)); gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, screen);

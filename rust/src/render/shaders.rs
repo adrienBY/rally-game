@@ -67,7 +67,7 @@ pub fn mesh_fs(k: &MeshKey) -> String {
 #define RECIPROCAL_PI 0.3183098861837907
 uniform vec3 uColor; uniform float uOpacity; uniform sampler2D uMap; uniform float uAlphaTest;
 uniform vec3 uHemiSky; uniform vec3 uHemiGround; uniform vec3 uHemiDir; uniform vec3 uDirColor; uniform vec3 uDirDir;
-uniform vec3 uFogColor; uniform float uFogDensity; uniform vec3 uCamPos; uniform vec3 uSpec; uniform float uShin; uniform vec3 uEmissive;
+uniform vec3 uFogColor; uniform float uFogDensity; uniform vec3 uCamPos; uniform vec3 uSpec; uniform float uShin; uniform vec3 uEmissive; uniform float uDim;
 in vec3 vN; in vec2 vUv; in vec3 vColor; in float vFogDepth; in vec3 vWorld;
 out vec4 fragColor;
 void main() {
@@ -89,13 +89,13 @@ void main() {
 #endif
   vec3 irr = clamp(dot(N, uDirDir), 0.0, 1.0) * uDirColor;
   vec3 hemi = mix(uHemiGround, uHemiSky, 0.5 * dot(N, uHemiDir) + 0.5);
-  outC = (irr + hemi) * dc.rgb * RECIPROCAL_PI + uEmissive;
+  outC = (irr + hemi) * dc.rgb * RECIPROCAL_PI * uDim + uEmissive;
 #if LIT == 2
   vec3 V = normalize(uCamPos - vWorld); vec3 H = normalize(uDirDir + V);
   float dNH = clamp(dot(N, H), 0.0, 1.0), dVH = clamp(dot(V, H), 0.0, 1.0);
   float fres = exp2((-5.55473 * dVH - 6.98316) * dVH); vec3 F = uSpec + (vec3(1.0) - uSpec) * fres;
   float D = RECIPROCAL_PI * (uShin * 0.5 + 1.0) * pow(dNH, uShin);
-  outC += irr * F * (0.25 * D);
+  outC += irr * F * (0.25 * D) * uDim;
 #endif
 #endif
 #ifdef TRANSPARENT
@@ -155,7 +155,7 @@ void main() { vUv = vtx * 0.5 + 0.5; gl_Position = vec4(vtx, 0.0, 1.0); }
 "#;
 pub const POST_FS: &str = r#"#version 300 es
 precision highp float;
-uniform sampler2D tScene; uniform vec2 uSun; uniform float uSunVis; uniform float uTime; uniform float uFlash; uniform float uSpeed;
+uniform sampler2D tScene; uniform vec2 uSun; uniform float uSunVis; uniform float uTime; uniform float uFlash; uniform float uSpeed; uniform float uExpo;
 in vec2 vUv; out vec4 fragColor;
 const float BAYER[16] = float[16](0., 8., 2., 10., 12., 4., 14., 6., 3., 11., 1., 9., 15., 7., 13., 5.);
 float bayer(vec2 p) { vec2 q = mod(floor(p), 4.0); int i = int(q.x + q.y * 4.0); return BAYER[i] / 16.0 - 0.47; }
@@ -163,12 +163,14 @@ void main() {
   vec3 c = texture(tScene, vUv).rgb;
   vec2 fromC = vUv - vec2(0.5, 0.52); float edge = smoothstep(0.12, 0.62, length(fromC)) * uSpeed;
   if (edge > 0.002) { vec3 bl = c; for (int i = 1; i <= 5; i++) bl += texture(tScene, vUv - fromC * 0.028 * uSpeed * float(i)).rgb; c = mix(c, bl / 6.0, edge); }
-  vec2 d = uSun - vUv; float L = length(d); if (L > 1.3) d *= 1.3 / L;
-  vec2 st = d / 20.0; vec2 p = vUv; float acc = 0.0, w = 1.0;
-  for (int i = 0; i < 20; i++) { p += st; vec4 s = texture(tScene, clamp(p, 0.001, 0.999));
-    float l = dot(s.rgb, vec3(0.3, 0.59, 0.11)); acc += smoothstep(0.66, 0.92, l) * (1.0 - s.a) * w; w *= 0.952; }
-  acc /= 13.0;
+  float acc = 0.0;
+  if (uSunVis > 0.01) { vec2 d = uSun - vUv; float L = length(d); if (L > 1.3) d *= 1.3 / L;
+    vec2 st = d / 20.0; vec2 p = vUv; float w = 1.0;
+    for (int i = 0; i < 20; i++) { p += st; vec4 s = texture(tScene, clamp(p, 0.001, 0.999));
+      float l = dot(s.rgb, vec3(0.3, 0.59, 0.11)); acc += smoothstep(0.66, 0.92, l) * (1.0 - s.a) * w; w *= 0.952; }
+    acc /= 13.0; }
   c += vec3(1.0, 0.93, 0.74) * acc * 0.85 * uSunVis * (0.9 + 0.1 * sin(uTime * 0.7 + vUv.x * 3.0));
+  c *= uExpo; c += vec3(1.0, 0.96, 0.9) * smoothstep(0.75, 1.7, dot(c, vec3(0.3, 0.59, 0.11))) * 0.6 * clamp(uExpo - 1.0, 0.0, 1.0);
   float g = dot(c, vec3(0.3, 0.59, 0.11)); c = mix(vec3(g), c, 0.86);
   c = (c - 0.5) * 1.08 + 0.5; c *= vec3(1.0, 1.0, 0.97);
   vec2 vv = vUv - 0.5; c *= 1.0 - dot(vv, vv) * (0.5 + uSpeed * 0.7);

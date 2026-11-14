@@ -36,5 +36,5 @@ fn run(name: &str) {
 #[test] fn snow() { run("snow"); }
 #[test] fn canyon() { run("canyon"); }
 #[test] fn lakes() { run("lakes"); }
-#[test] fn iceland() { run("iceland"); }
 #[test] fn touge() { run("touge"); }
+#[test] fn riviera() { run("riviera"); }

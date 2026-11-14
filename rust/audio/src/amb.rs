@@ -164,6 +164,7 @@ impl Amb {
             3 => Preset { wind: 0.45, wind_lp: 3200.0, howl: 0.0, leaves: 0.25, birds: 0.32, cicada: 0.0 },
             4 => Preset { wind: 1.15, wind_lp: 1800.0, howl: 0.25, leaves: 0.0, birds: 0.0, cicada: 0.0 },
             5 => Preset { wind: 0.3, wind_lp: 2600.0, howl: 0.0, leaves: 0.35, birds: 0.0, cicada: 0.0 },
+            6 => Preset { wind: 0.42, wind_lp: 3400.0, howl: 0.0, leaves: 0.18, birds: 0.1, cicada: 0.3 },
             _ => Preset { wind: 0.38, wind_lp: 3600.0, howl: 0.0, leaves: 0.5, birds: 0.55, cicada: 0.0 },
         };
         for v in self.voices.iter_mut() { v.kind = Kind::Off; }
@@ -181,6 +182,7 @@ impl Amb {
             4 => &[(Kind::Plover, 3, 30.0, 110.0, 1.0, 0.45, 25.0)],
             5 => &[(Kind::Cricket, 6, 6.0, 30.0, 0.3, 0.32, 5.0), (Kind::Higurashi, 1, 40.0, 90.0, 8.0, 0.55, 22.0), (Kind::Owl, 1, 70.0, 140.0, 12.0, 0.6, 30.0),
                     (Kind::Bell, 1, 600.0, 650.0, -60.0, 2.4, 300.0)],
+            6 => &[(Kind::Cricket, 4, 6.0, 30.0, 0.3, 0.24, 5.0), (Kind::Bird, 2, 20.0, 70.0, 6.0, 0.28, 12.0)],
             _ => &[],
         };
         let mut idx = 0;
