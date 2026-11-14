@@ -133,13 +133,16 @@ impl Engine {
             let (rl, rr) = self.rev.run(send, send, sr); l += rl; r += rr;
             // master: fade, gentle limiter, soft clip
             self.master += (self.p.master - self.master) * (1.0 / (0.15 * sr));
-            l *= self.master * 0.8; r *= self.master * 0.8;
+            let g = self.master * 0.8 * FX_LEVEL; l *= g; r *= g;
             let pk = fabsf(l).max(fabsf(r)); let want = if pk > 0.85 { 0.85 / pk } else { 1.0 };
             self.lim = if want < self.lim { want } else { self.lim + (want - self.lim) * (1.0 / (0.25 * sr)) };
             out[i * 2] = ftanh(l * self.lim); out[i * 2 + 1] = ftanh(r * self.lim);
         }
     }
 }
+
+/// everything this engine plays sits a little under the page's engine and tyres
+const FX_LEVEL: f32 = 0.6;
 
 // ---------------- WebAssembly interface (AudioWorklet) ----------------
 static mut ENGINE: Option<Engine> = None;

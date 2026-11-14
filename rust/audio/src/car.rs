@@ -11,6 +11,8 @@ pub const S_METAL: usize = 9;
 pub const S_PLANK: usize = 10;
 pub const S_SOFT: usize = 11;
 pub const S_WATER_A: usize = 5;
+/// The page plays the engine and tyres itself (the build 16 recordings); this engine then only adds water and one-shots.
+pub const PAGE_CAR: bool = true;
 
 #[derive(Clone, Copy, Default)]
 pub struct CarIn { pub rpm: f32, pub thr: f32, pub speed: f32, pub slide: f32, pub on_road: f32, pub surface: u32, pub wet: f32, pub air: f32,
@@ -62,6 +64,19 @@ impl Car {
     pub fn shift(&mut self) { self.clunk = 1.0; }
     pub fn splash(&mut self, v: f32) { self.shot(S_SPLASH, 0.8, 1.1, clampf(v / 18.0, 0.2, 0.7), false); }
 
+    /// water churn in a ford plus impacts, landings and splashes
+    fn fx_only(&mut self, w: f32, smp: &[Option<crate::dsp::Sample>]) -> f32 {
+        let sr = self.sr; let spd = self.spd;
+        let mut out = 0.0;
+        if self.wet > 0.001 {
+            let (wa, _) = if let Some(s) = &smp[S_WATER_A] { self.water.tick(s, 1.0 + spd * 0.02, true) } else { (0.0, 0.0) };
+            out += (wa * 0.7 + self.spray.run(w) * 0.25) * self.wet * smooth(1.0, 8.0, spd);
+        }
+        for s in self.shots.iter_mut() { if s.1.done { continue; } if let Some(sm) = &smp[s.0] { let (a, _) = s.1.tick(sm, s.3, false); out += a * s.2 * if s.4 { 0.8 } else { 1.0 }; } else { s.1.done = true; } }
+        if self.thump > 0.001 { self.thump_ph += 52.0 / sr; out += fsin(self.thump_ph) * self.thump * 0.5; self.thump *= 1.0 - 9.0 / sr; }
+        out
+    }
+
     /// Returns (engine, tyres) mono signals at the car, already balanced for the camera mode.
     #[inline]
     pub fn tick(&mut self, i: &CarIn, smp: &[Option<crate::dsp::Sample>]) -> (f32, f32) {
@@ -71,6 +86,7 @@ impl Car {
         self.spd += (i.speed - self.spd) * ks; self.slide += (i.slide - self.slide) * k; self.wet += (i.wet - self.wet) * ks; self.air += (i.air - self.air) * k * 2.0;
         self.road += (i.on_road - self.road) * ks;
         let rpm = self.rpm; let load = self.load; let w = self.rng.bi();
+        if PAGE_CAR { return (0.0, self.fx_only(w, smp)); }
 
         // ---- firing pulses: four cylinders over two crank revolutions, slightly uneven like a real engine
         self.cyc += rpm / 120.0 / sr; if self.cyc >= 1.0 { self.cyc -= 1.0; }
