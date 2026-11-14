@@ -6,6 +6,8 @@ use std::sync::Mutex;
 
 pub struct Engine { pub world: World, pub obstacles: Obstacles, pub grid: Vec<u8> }
 static ENGINE: Mutex<Option<Engine>> = Mutex::new(None);
+/// the stage's world and obstacles, for the native game loop
+pub fn lock() -> std::sync::MutexGuard<'static, Option<Engine>> { ENGINE.lock().unwrap_or_else(|e| e.into_inner()) }
 
 pub fn parse_csv(s: &str) -> Vec<f64> {
     s.split(',').filter(|t| !t.is_empty()).map(|t| match t.trim() {

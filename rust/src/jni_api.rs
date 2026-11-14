@@ -63,3 +63,21 @@ pub extern "system" fn Java_com_fogwood_rally_NativeCore_audioRender<'l>(env: JN
     BUF.with(|b| { let mut b = b.borrow_mut(); let n = (frames.max(0) as usize) * 2; if b.len() < n { b.resize(n, 0.0); }
         fogwood_audio::native::render(&mut b[..n]); let _ = env.set_float_array_region(&out, 0, &b[..n]); });
 }
+
+// ---- runtime mode: the native game loop ----
+use jni::sys::{jfloat, jlong};
+#[no_mangle]
+pub extern "system" fn Java_com_fogwood_rally_NativeCore_rtInit<'l>(mut env: JNIEnv<'l>, _c: JClass<'l>, path: JString<'l>) -> jstring {
+    let p = s(&mut env, &path); let m = crate::gfx::rt_init(&p); out(&mut env, m)
+}
+#[no_mangle]
+pub extern "system" fn Java_com_fogwood_rally_NativeCore_rtTouch<'l>(_env: JNIEnv<'l>, _c: JClass<'l>, action: jint, id: jint, x: jfloat, y: jfloat) { crate::gfx::rt_touch(action, id, x, y); }
+#[no_mangle]
+pub extern "system" fn Java_com_fogwood_rally_NativeCore_rtBack<'l>(_env: JNIEnv<'l>, _c: JClass<'l>) -> jboolean { if crate::gfx::rt_back() { 1 } else { 0 } }
+#[no_mangle]
+pub extern "system" fn Java_com_fogwood_rally_NativeCore_rtInsets<'l>(_env: JNIEnv<'l>, _c: JClass<'l>, t: jfloat, r: jfloat, b: jfloat, l: jfloat) { crate::gfx::rt_insets(t, r, b, l); }
+/// GL thread: one game frame; dt in nanoseconds. Returns the app events, one per line.
+#[no_mangle]
+pub extern "system" fn Java_com_fogwood_rally_NativeCore_rtFrame<'l>(mut env: JNIEnv<'l>, _c: JClass<'l>, dt_ns: jlong) -> jstring {
+    let e = crate::gfx::rt_frame(dt_ns as f64 * 1e-9); out(&mut env, e)
+}

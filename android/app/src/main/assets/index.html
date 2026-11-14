@@ -39,7 +39,10 @@ THREE.ColorManagement.enabled = false;
    in a browser the same code runs as WebAssembly inside an AudioWorklet. The page only decodes the recordings once
    and then streams small binary messages: per-frame car/listener state, events, the stage's emitters and preset.
    Each stage is built by boot() and torn down cleanly when you switch, so switching never reloads the page. */
-const SND_IDS = { wind: [0, 1], birds: [1, 1], impact: [4, 0], water_a: [5, 1], water_b: [6, 1], traffic: [7, 1], splash: [8, 0], metal: [9, 0], plank: [10, 0], soft: [11, 0], wind2: [12, 1] };
+/* app runtime mode (?rt=1 inside the Android app): this page only builds each stage and hands it to the Rust engine, which then runs
+   the whole game (loop, camera, rivals, HUD, sound) natively; the page sleeps until the next stage is wanted */
+const RT_MODE = typeof location !== "undefined" && /[?&]rt=1/.test(location.search) && !!(window.FogwoodGL && window.FogwoodNative);
+const SND_IDS = RT_MODE ? { wind: [0, 1], birds: [1, 1], engine: [2, 1], skid: [3, 1], impact: [4, 0], water_a: [5, 1], water_b: [6, 1], traffic: [7, 1], splash: [8, 0], metal: [9, 0], plank: [10, 0], soft: [11, 0], wind2: [12, 1] } : { wind: [0, 1], birds: [1, 1], impact: [4, 0], water_a: [5, 1], water_b: [6, 1], traffic: [7, 1], splash: [8, 0], metal: [9, 0], plank: [10, 0], soft: [11, 0], wind2: [12, 1] };
 const SHARED = { ac: null, node: null, native: (window.FogwoodAudio && typeof window.FogwoodAudio.postMessage === "function") ? window.FogwoodAudio : null,
   msgs: [], ready: false, started: false, queue: [] };
 SHARED.send = (f32) => { const ab = f32.buffer.byteLength === f32.byteLength ? f32.buffer : f32.slice().buffer;
@@ -86,7 +89,7 @@ SHARED.start = async () => {
 };
 /* engine and tyres: the original recordings through Web Audio, exactly as in build 16 (the Rust engine plays everything else) */
 const CAR = { ac: null, dec: {}, ready: false };
-CAR.promise = (async () => { try {
+CAR.promise = (async () => { if (RT_MODE) return; try {
   const src = { wind: window.__AUDIO.wind, engine: window.__AUDIO.engine, skid: window.__AUDIO.skid, impact: window.__AUDIO.impact };
   const AC = window.AudioContext || window.webkitAudioContext; CAR.ac = new AC();
   const b64 = (t) => { const s = atob(t), u = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i); return u.buffer; };
@@ -2687,7 +2690,52 @@ function nglFrame() {
   NGL.postMessage(NB.slice(0, NN).buffer);
 }
 window.__nglExport = nglExport; window.__nglFrame = () => nglFrame();
-window.__nglResend = () => { nglSent = false; };   // the app lost its GL context (e.g. after a long pause): send the scene again
+/* runtime handoff ("FRT1" + json): everything the Rust game needs besides the scene itself - the road, the tuning, which scene objects
+   move and how they hang together, the rivals' puppet, culling, boats, saves. Objects are referred to by their scene packet ids. */
+function rtPacket() {
+  const idOf = new Map(); NGL_OBJ.forEach((r, id) => { if (!idOf.has(r.o)) idOf.set(r.o, []); idOf.get(r.o).push(id); });
+  const ids = (o) => idOf.get(o) || [];
+  const M = (m) => Array.from(m.elements), inv = (m) => new THREE.Matrix4().copy(m).invert();
+  scene.updateMatrixWorld(true);
+  const NODES = [], nodeIx = new Map();
+  const dynOf = (o) => { for (let q = o; q; q = q.parent) if (nodeIx.has(q)) return q; return null; };
+  const addNode = (o, name) => { if (!o || nodeIx.has(o)) return; const P = o.parent ? dynOf(o.parent) : null;
+    const pre = P ? inv(P.matrixWorld).multiply(o.parent.matrixWorld) : (o.parent ? o.parent.matrixWorld.clone() : new THREE.Matrix4());
+    nodeIx.set(o, NODES.length); NODES.push({ name, parent: P ? nodeIx.get(P) : -1, pre: M(pre), p: o.position.toArray(), r: [o.rotation.x, o.rotation.y, o.rotation.z], o: o.rotation.order, s: o.scale.toArray() }); };
+  addNode(car.root, "car");
+  car.wheels.forEach((w, i) => { addNode(w.pivot, "pivot" + i); addNode(w.spin, "spin" + i); });
+  addNode(car.shadow, "shadow"); addNode(sky, "sky"); addNode(peaks, "peaks"); addNode(starG, "stars");
+  waterL.forEach((m, i) => addNode(m, "water" + i)); GLIT.forEach((m, i) => addNode(m, "glit" + i)); CLOUDS.forEach((m, i) => addNode(m, "clouds" + i)); SUNB.forEach((m, i) => addNode(m, "sunb" + i));
+  addNode(snowfall, "snowfall"); addNode(dust, "dust");
+  const local = (o) => { const n = dynOf(o); return n ? [nodeIx.get(n), M(inv(n.matrixWorld).multiply(o.matrixWorld))] : null; };
+  const OBJN = []; NGL_OBJ.forEach((r, id) => { const l = local(r.o); if (l) OBJN.push([id, l[0], ...l[1]]); });
+  // the rivals: every instanced part follows one node of the car puppet (wheel parts: four instances, one per wheel)
+  const ol = [], pl = []; car.root.traverse(o => ol.push(o)); RG.puppet.traverse(o => pl.push(o)); const orig = new Map(); pl.forEach((o, i) => orig.set(o, ol[i]));
+  const rg = { parts: RG.parts.map(p => ({ obj: ids(p.im)[0], src: (p.wsrc || [p.src]).map(m => local(orig.get(m))) })), shadow: ids(RG.sh)[0] };
+  const flagsOf = (o) => o ? 1 : 0;
+  const pk = { v: 1, map: MAPN, mapId: SNOW ? 1 : CAN ? 2 : LAK ? 3 : ICE ? 4 : TOU ? 5 : RIV ? 6 : 0, NP, GXH, GZH,
+    sun: SUN.toArray(), fogD: scene.fog.density, far: camera.far, near: camera.near,
+    path: PATH.flat(), tan: TAN.flat(), roadh: Array.from(ROADH), vprof: Array.from(VPROF), vcurve: Array.from(VCURVE), jcap: Array.from(JCAP), drop: Array.from(DROP),
+    rline: Array.from(RLINE), rprof: Array.from(RPROF),
+    tune: { ...TUNE }, susp: { K: SUSP.K, C: SUSP.C, KARB: SUSP.KARB }, iz: VEH.Iz,
+    tun: TUN.map(t => [t.m, t.half, t.i0, t.i1]), vil: VIL ? [VIL.p, VIL.n] : null,
+    obstacles: obstacles.map(o => [o.x, o.z, o.r, o.m || 0]),
+    split: [...post.uniforms.uSplitS.value.toArray(), ...post.uniforms.uSplitH.value.toArray()],
+    nodes: NODES, objn: OBJN, rg,
+    car: { shadow: ids(car.shadow)[0] }, glit: GLIT.map(m => ids(m)[0]),
+    cull: CULL.map(c => [ids(c.o), c.c.x, c.c.y, c.c.z, c.r, c.d]),
+    boats: BOATS.ims ? { list: BOATS.list, hull: ids(BOATS.ims.hull)[0], sail: ids(BOATS.ims.sail)[0], cab: ids(BOATS.ims.cab)[0], wake: ids(BOATS.ims.wake)[0] } : null,
+    snow: (SNOW || TOU) ? { obj: ids(snowfall)[0], n: SFN, pos: Array.from(sfPos), seed: Array.from(sfSeed) } : null,
+    dust: { obj: ids(dust)[0], n: DN },
+    saves: {} };
+  try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.startsWith("fogwood-")) pk.saves[k] = localStorage.getItem(k); } } catch (_) {}
+  const json = new TextEncoder().encode(JSON.stringify(pk)), out = new Uint8Array(8 + json.length), dv = new DataView(out.buffer);
+  dv.setUint32(0, 0x31545246, true); dv.setUint32(4, json.length, true); out.set(json, 8);   // "FRT1"
+  return out.buffer;
+}
+function rtHandoff() { NGL.postMessage(nglExport()); nglSent = true; NGL.postMessage(rtPacket()); }
+window.__rtPacket = rtPacket;
+window.__nglResend = () => { nglSent = false; if (RT_MODE) { NGL.postMessage(nglExport()); nglSent = true; } };   // the app lost its GL context (e.g. after a long pause): send the scene again
 
 /* ================= frame loop ================= */
 const fwd = new THREE.Vector3(), v3 = new THREE.Vector3(), lookT = new THREE.Vector3();
@@ -2802,7 +2850,7 @@ function frame(now) {
   window.__frozen = frozen;
   window.__frozenCheck = () => { const m = new THREE.Matrix4(), bad = []; scene.traverse(o => { let t = o; while (t.parent && t.parent !== scene) t = t.parent; if (!t.userData.frozen) return;
     m.compose(o.position, o.quaternion, o.scale); const e = m.elements, f = o.matrix.elements; for (let k = 0; k < 16; k++) if (Math.abs(e[k] - f[k]) > 1e-4) { bad.push((o.name || o.type) + "@" + scene.children.indexOf(t)); break; } }); return bad; }; }
-requestAnimationFrame(frame);
+if (RT_MODE) rtHandoff(); else requestAnimationFrame(frame);
 
 window.__hudBench = (skip) => { const t0 = text, b0 = box, sp0 = SPEEDO.get, cl = hud.clearRect; const nop = () => {};
   if (skip === "text") text = nop; if (skip === "box") box = nop; if (skip === "clear") hud.clearRect = nop;
@@ -2834,6 +2882,7 @@ return () => {
   for (const id of ["tuneBtn", "tunePanel", "tuneStyle"]) document.getElementById(id)?.remove();
 };
 }
+window.__rtBoot = (name) => switchMap(name);   // the Rust engine asks for the next stage
 CURRENT = boot({ "#snow": "snow", "#canyon": "canyon", "#lakes": "lakes", "#touge": "touge", "#riviera": "riviera" }[location.hash] || "forest");
 </script>
 </body></html>

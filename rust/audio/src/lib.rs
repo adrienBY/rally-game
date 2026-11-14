@@ -11,6 +11,7 @@
 pub mod amb;
 pub mod car;
 pub mod dsp;
+pub mod webcar;
 
 use amb::{Amb, EmVoice, Emitter};
 use car::{Car, CarIn};
@@ -28,6 +29,7 @@ pub struct Engine {
     car: Car, car_delay: Delay, car_d: f32, car_dt: f32, car_spat: Spat,
     amb: Amb, ems: Vec<Emitter>, ev: Vec<EmVoice>, rev: Reverb, map: u32,
     blk: usize, mgr: f32, sel: f32, lim: f32, master: f32, have_params: bool, pink_l: Pink, pink_r: Pink,
+    webcar: webcar::WebCar,
 }
 
 impl Engine {
@@ -36,7 +38,7 @@ impl Engine {
         let mut e = Engine { sr, rng: Rng(0x6d2b_79f5), p: Params::default(), samples: (0..NSAMPLES).map(|_| None).collect(),
             car: Car::new(sr), car_delay: Delay::new((sr * 1.3) as usize), car_d: 1.0, car_dt: 1.0, car_spat: Spat::new(sr),
             amb: Amb::new(sr), ems: Vec::new(), ev: (0..8).map(|i| EmVoice::new(sr, 77 + i * 31)).collect(), rev: Reverb::new(sr), map: 99,
-            blk: 0, mgr: 0.0, sel: 0.0, lim: 1.0, master: 0.0, have_params: false, pink_l: Pink::default(), pink_r: Pink::default() };
+            blk: 0, mgr: 0.0, sel: 0.0, lim: 1.0, master: 0.0, have_params: false, pink_l: Pink::default(), pink_r: Pink::default(), webcar: webcar::WebCar::new(sr) };
         e.p.master = 0.0; e.set_map(0); e
     }
 
@@ -75,6 +77,9 @@ impl Engine {
                 self.samples[id] = Some(Sample::new(l, r, rate, self.sr, looped));
             }
             5 => self.set_map(f(1) as u32),
+            6 => self.webcar.params(&f),
+            7 => self.webcar.event(&f),
+            8 => self.webcar.rivals(&f, &self.samples),
             _ => {}
         }
     }
@@ -136,10 +141,14 @@ impl Engine {
             let g = self.master * 0.8 * FX_LEVEL; l *= g; r *= g;
             let pk = fabsf(l).max(fabsf(r)); let want = if pk > 0.85 { 0.85 / pk } else { 1.0 };
             self.lim = if want < self.lim { want } else { self.lim + (want - self.lim) * (1.0 / (0.25 * sr)) };
-            out[i * 2] = ftanh(l * self.lim); out[i * 2 + 1] = ftanh(r * self.lim);
+            let (cl, cr) = self.webcar.tick(&self.samples);
+            out[i * 2] = soft(ftanh(l * self.lim) + cl); out[i * 2 + 1] = soft(ftanh(r * self.lim) + cr);
         }
     }
 }
+
+/// untouched below 0.8, then rounds off towards 1 instead of clipping (a full grid of rival engines revving next to you)
+#[inline] fn soft(x: f32) -> f32 { let a = fabsf(x); if a <= 0.8 { x } else { let y = 0.8 + 0.2 * ftanh((a - 0.8) / 0.2); if x < 0.0 { -y } else { y } } }
 
 /// everything this engine plays sits a little under the page's engine and tyres
 const FX_LEVEL: f32 = 0.6;

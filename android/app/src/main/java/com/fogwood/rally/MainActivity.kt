@@ -9,7 +9,10 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.view.Choreographer
+import android.view.MotionEvent
 import android.view.Surface
+import android.view.View
 import android.view.SurfaceHolder
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -19,6 +22,7 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
+import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -31,8 +35,9 @@ import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 
 /**
- * Layout: a GLSurfaceView where the Rust renderer draws the 3D world, with the game's WebView on top
- * (transparent page; it runs the game logic, input, audio and the HUD).
+ * Runtime mode (normal): the Rust engine runs the whole game in a GLSurfaceView - frame loop, physics, rivals, camera, HUD, sound -
+ * driven at 60 fps by the display's vsync. A hidden WebView only builds each stage once and hands it over, then sleeps.
+ * Fallback: if the native renderer can't start, the page runs the game itself with WebGL.
  */
 class MainActivity : Activity() {
     private lateinit var web: WebView
@@ -40,6 +45,20 @@ class MainActivity : Activity() {
     private var glView: GLSurfaceView? = null
     private val main = Handler(Looper.getMainLooper())
     private val audio = AudioOut()
+    /** the native game loop is in charge (the page only builds stages) */
+    private var rtMode = false
+    @Volatile private var looping = false
+    /** vsync ticks: one game frame every ~16.7 ms, so 90/120 Hz screens still run a steady 60 */
+    private val vsync = object : Choreographer.FrameCallback {
+        var last = 0L
+        override fun doFrame(t: Long) {
+            if (!looping) return
+            if (t - last >= 12_500_000L) { last = t; glView?.requestRender() }
+            Choreographer.getInstance().postFrameCallback(this)
+        }
+    }
+    private fun startLoop() { if (rtMode && !looping) { looping = true; vsync.last = 0L; Choreographer.getInstance().postFrameCallback(vsync) } }
+    private fun stopLoop() { looping = false; Choreographer.getInstance().removeFrameCallback(vsync) }
 
     /** Exposed to the game as window.FogwoodNative. Only present when the Rust library loaded. */
     inner class Bridge {
@@ -69,15 +88,20 @@ class MainActivity : Activity() {
 
     private inner class SceneRenderer : GLSurfaceView.Renderer {
         private var frames = 0
+        private var lastNs = 0L
         override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
             val resend = NativeCore.glInit()
             Log.i(TAG, "GL ready: ${NativeCore.glStatus()}")
             checkFailure()
-            if (resend) main.post { web.evaluateJavascript("window.__nglResend && window.__nglResend()", null) }
+            if (resend) main.post { web.resumeTimers(); web.evaluateJavascript("window.__nglResend && window.__nglResend()") { if (rtMode) web.pauseTimers() } }
         }
         override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) = NativeCore.glResize(width, height)
         override fun onDrawFrame(gl: GL10?) {
-            NativeCore.glDraw()
+            if (rtMode) {
+                val now = System.nanoTime(); val dt = if (lastNs == 0L) 16_666_667L else now - lastNs; lastNs = now
+                val ev = NativeCore.rtFrame(dt)
+                if (ev.isNotEmpty()) handleEvents(ev)
+            } else NativeCore.glDraw()
             frames++
             if (frames < 240 || frames % 600 == 0) checkFailure()
             if (frames % 600 == 1) Log.i(TAG, "renderer: ${NativeCore.glStatus()}")
@@ -92,14 +116,27 @@ class MainActivity : Activity() {
         }
     }
     @Volatile private var fellBack = false
+    /** the page has handed its stage over (and had time to finish decoding the recordings): no timers, no work until the next stage */
+    private val sleepPage = Runnable { if (rtMode) web.pauseTimers() }
+
+    /** events from the native game: "h <kind> <strength>" haptics, "map <name>" build that stage */
+    private fun handleEvents(ev: String) {
+        for (line in ev.lineSequence()) {
+            if (line.startsWith("h ")) { val p = line.split(' '); if (p.size == 3) haptics.play(p[1], p[2].toFloatOrNull() ?: 0.5f) }
+            else if (line.startsWith("map ")) { val name = line.substring(4).filter { it.isLetter() }
+                main.post { main.removeCallbacks(sleepPage); web.resumeTimers(); web.evaluateJavascript("window.__rtBoot && window.__rtBoot('$name')", null) } }
+        }
+    }
 
     @SuppressLint("RequiresFeature")
     private fun fallBackToWebGl() {
+        stopLoop(); rtMode = false
         try { WebViewCompat.removeWebMessageListener(web, "FogwoodGL") } catch (_: Throwable) {}
         glView?.let { (it.parent as? ViewGroup)?.removeView(it) }
         glView = null
+        web.resumeTimers(); web.visibility = View.VISIBLE
         web.setBackgroundColor(Color.rgb(11, 16, 11))
-        web.reload()
+        web.loadUrl("https://appassets.androidplatform.net/assets/index.html")
     }
 
     @SuppressLint("SetJavaScriptEnabled", "RequiresFeature")
@@ -126,6 +163,8 @@ class MainActivity : Activity() {
         val nativeGl = NativeCore.loaded &&
             WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) &&
             WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_ARRAY_BUFFER)
+        rtMode = nativeGl
+        val startMap = if (rtMode) NativeCore.rtInit(filesDir.absolutePath + "/fogwood.sav") else "forest"
         if (nativeGl) {
             glView = GLSurfaceView(this).apply {
                 setEGLContextClientVersion(3)
@@ -143,6 +182,22 @@ class MainActivity : Activity() {
                 })
             }
             root.addView(glView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            // touch goes straight to the native game, in screen pixels
+            glView?.setOnTouchListener { _, e ->
+                if (!rtMode) return@setOnTouchListener false
+                val i = e.actionIndex
+                when (e.actionMasked) {
+                    MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> NativeCore.rtTouch(0, e.getPointerId(i), e.getX(i), e.getY(i))
+                    MotionEvent.ACTION_MOVE -> for (k in 0 until e.pointerCount) NativeCore.rtTouch(1, e.getPointerId(k), e.getX(k), e.getY(k))
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> NativeCore.rtTouch(2, e.getPointerId(i), e.getX(i), e.getY(i))
+                    MotionEvent.ACTION_CANCEL -> for (k in 0 until e.pointerCount) NativeCore.rtTouch(2, e.getPointerId(k), e.getX(k), e.getY(k))
+                }
+                true
+            }
+            // the camera notch / rounded corners: the HUD keeps clear of them
+            ViewCompat.setOnApplyWindowInsetsListener(root) { v, ins ->
+                val c = ins.getInsets(WindowInsetsCompat.Type.displayCutout())
+                NativeCore.rtInsets(c.top.toFloat(), c.right.toFloat(), c.bottom.toFloat(), c.left.toFloat()); ViewCompat.onApplyWindowInsets(v, ins) }
         }
 
         web = WebView(this).apply {
@@ -169,8 +224,11 @@ class MainActivity : Activity() {
             // window.FogwoodGL.postMessage(ArrayBuffer): scene once, then one small packet per frame
             WebViewCompat.addWebMessageListener(web, "FogwoodGL", setOf("https://appassets.androidplatform.net")) { _, message, _, _, _ ->
                 if (message.type == WebMessageCompat.TYPE_ARRAY_BUFFER) {
-                    NativeCore.glMessage(message.arrayBuffer)
-                    glView?.requestRender()
+                    val b = message.arrayBuffer
+                    NativeCore.glMessage(b)
+                    if (!rtMode) glView?.requestRender()
+                    // the stage handoff is the page's last word: let it sleep until the next stage is wanted
+                    else if (b.size >= 4 && b[0] == 'F'.code.toByte() && b[1] == 'R'.code.toByte() && b[2] == 'T'.code.toByte()) { main.removeCallbacks(sleepPage); main.postDelayed(sleepPage, 8000) }
                 }
             }
         }
@@ -182,11 +240,14 @@ class MainActivity : Activity() {
             audio.start()
         }
         root.addView(web, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        if (rtMode) web.visibility = View.INVISIBLE   // builds stages only; never drawn, never touched
         setContentView(root)
         hideBars()
         pickMode(60f)?.let { applyMode(it.modeId); Log.i(TAG, "display ${it.refreshRate} Hz") }
-        if (savedInstanceState == null) web.loadUrl("https://appassets.androidplatform.net/assets/index.html")
+        if (rtMode) web.loadUrl("https://appassets.androidplatform.net/assets/index.html?rt=1#$startMap")
+        else if (savedInstanceState == null) web.loadUrl("https://appassets.androidplatform.net/assets/index.html")
         else web.restoreState(savedInstanceState)
+        startLoop()
     }
 
     private fun hideBars() {
@@ -202,23 +263,26 @@ class MainActivity : Activity() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
-        web.saveState(outState)
+        if (!rtMode) web.saveState(outState)
     }
 
     /** Back while driving returns to the stage menu; back on the menu leaves the app. */
     @Deprecated("Uses the classic back callback; predictive back is not enabled")
     @Suppress("DEPRECATION")
     override fun onBackPressed() {
+        if (rtMode) { if (!NativeCore.rtBack()) finish(); return }
         web.evaluateJavascript("(window.__back && window.__back()) ? 1 : 0") { r -> if (r != "1") finish() }
     }
 
     override fun onPause() {
-        web.evaluateJavascript("window.__appPause && window.__appPause(true)", null)
+        stopLoop()
+        if (!rtMode) web.evaluateJavascript("window.__appPause && window.__appPause(true)", null)
         web.onPause(); glView?.onPause(); audio.stop(); super.onPause()
     }
     override fun onResume() {
         super.onResume(); web.onResume(); glView?.onResume(); hideBars(); if (NativeCore.loaded) audio.start()
-        web.evaluateJavascript("window.__appPause && window.__appPause(false)", null)
+        if (!rtMode) web.evaluateJavascript("window.__appPause && window.__appPause(false)", null)
+        startLoop()
     }
     override fun onDestroy() { audio.stop(); web.destroy(); super.onDestroy() }
 

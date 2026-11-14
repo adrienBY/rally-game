@@ -58,11 +58,12 @@ pub struct Renderer {
     quad_vao: glow::VertexArray, _quad_buf: glow::Buffer,
     tgt: Option<(i32, i32, glow::Framebuffer, glow::Texture, glow::Renderbuffer, glow::Framebuffer, glow::Texture)>,
     pub frame: FrameState, pub stats: (u32, u32), pub only: Option<Vec<usize>>,
+    hud: Option<(glow::Texture, i32, i32)>,
 }
 
 const UNIFORMS: [&str; 42] = ["uModel", "uView", "uProj", "uNormalM", "uMapM", "uTime", "uWind", "uColor", "uOpacity", "uMap", "uAlphaTest", "uHemiSky",
     "uHemiGround", "uHemiDir", "uDirColor", "uDirDir", "uFogColor", "uFogDensity", "uCamPos", "uSpec", "uShin", "uEmissive", "uSun", "uFog", "uTop", "uGlow",
-    "uHalo", "uSize", "uScale", "uDens", "uCol", "tScene", "uSunVis", "uFlash", "uSpeed", "uExpo", "uDim", "uSplitS", "uSplitH", "uTexel", "uSunUv", "uDummy"];
+    "uHalo", "uSize", "uScale", "uDens", "uCol", "tScene", "uSunVis", "uFlash", "uSpeed", "uExpo", "uDim", "uSplitS", "uSplitH", "uTexel", "tHud", "uHudOn"];
 
 unsafe fn compile(gl: &Gl, vs: &str, fs: &str) -> Result<Program, String> {
     let p = gl.create_program()?;
@@ -102,10 +103,40 @@ impl Renderer {
         gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, f32_bytes(&tri), glow::STATIC_DRAW);
         gl.enable_vertex_attrib_array(11); gl.vertex_attrib_pointer_f32(11, 2, glow::FLOAT, false, 8, 0);
         gl.bind_vertex_array(None);
-        Ok(Renderer { gl, scene: None, mesh_progs: HashMap::new(), mesh_list: Vec::new(), sky, points, dust, post, quad_vao, _quad_buf: qb, tgt: None, frame: FrameState::default(), stats: (0, 0), only: None })
+        Ok(Renderer { gl, scene: None, mesh_progs: HashMap::new(), mesh_list: Vec::new(), sky, points, dust, post, quad_vao, _quad_buf: qb, tgt: None, frame: FrameState::default(), stats: (0, 0), only: None, hud: None })
     }
 
     pub fn has_scene(&self) -> bool { self.scene.is_some() }
+
+    // ---------------- direct scene access for the native game loop ----------------
+    pub fn set_matrix(&mut self, id: usize, mw: &[f32; 16]) { if let Some(o) = self.scene.as_mut().and_then(|s| s.objs.get_mut(id)) { o.mw = *mw; } }
+    pub fn set_vis(&mut self, id: usize, vis: bool) { if let Some(o) = self.scene.as_mut().and_then(|s| s.objs.get_mut(id)) { o.vis = vis; } }
+    pub fn set_opacity(&mut self, id: usize, op: f32) { if let Some(o) = self.scene.as_mut().and_then(|s| s.objs.get_mut(id)) { o.opacity = op; } }
+    /// instance matrices (count instances; the buffer keeps the size it was created with)
+    pub fn set_instances(&mut self, id: usize, count: i32, mats: &[f32]) {
+        let gl = &self.gl; let Some(o) = self.scene.as_mut().and_then(|s| s.objs.get_mut(id)) else { return };
+        o.count = count;
+        if let Some(b) = o.ibuf { if !mats.is_empty() { unsafe { gl.bind_buffer(glow::ARRAY_BUFFER, Some(b)); gl.buffer_sub_data_u8_slice(glow::ARRAY_BUFFER, 0, f32_bytes(mats)); } } }
+    }
+    /// replace a vertex attribute of the geometry an object draws (dust, falling snow)
+    pub fn set_attr(&mut self, id: usize, name: &str, data: &[f32]) {
+        let gl = &self.gl; let Some(s) = self.scene.as_ref() else { return }; let Some(o) = s.objs.get(id) else { return };
+        if let Some(a) = s.geos[o.geo].attrs.iter().find(|a| a.name == name) { unsafe { gl.bind_buffer(glow::ARRAY_BUFFER, Some(a.buf)); gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, f32_bytes(data), glow::DYNAMIC_DRAW); } }
+    }
+    /// the HUD canvas (straight RGBA, top row first)
+    pub fn set_hud(&mut self, rgba: &[u8], w: i32, h: i32) {
+        let gl = &self.gl;
+        unsafe {
+            let tex = match self.hud { Some((t, hw, hh)) if hw == w && hh == h => t,
+                _ => { if let Some((t, _, _)) = self.hud.take() { gl.delete_texture(t); }
+                    let Ok(t) = gl.create_texture() else { return }; gl.bind_texture(glow::TEXTURE_2D, Some(t));
+                    gl.tex_image_2d(glow::TEXTURE_2D, 0, glow::RGBA8 as i32, w, h, 0, glow::RGBA, glow::UNSIGNED_BYTE, None);
+                    for (k, v) in [(glow::TEXTURE_MIN_FILTER, glow::NEAREST), (glow::TEXTURE_MAG_FILTER, glow::NEAREST), (glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE), (glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE)] { gl.tex_parameter_i32(glow::TEXTURE_2D, k, v as i32); }
+                    self.hud = Some((t, w, h)); t } };
+            gl.bind_texture(glow::TEXTURE_2D, Some(tex)); gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
+            gl.tex_sub_image_2d(glow::TEXTURE_2D, 0, 0, 0, w, h, glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelUnpackData::Slice(rgba));
+        }
+    }
 
     unsafe fn free_scene(&mut self) {
         let gl = &self.gl;
@@ -384,6 +415,8 @@ impl Renderer {
         gl.active_texture(glow::TEXTURE0); gl.bind_texture(glow::TEXTURE_2D, Some(t1)); gl.uniform_1_i32(p.u(U!("tScene")), 0);
         gl.uniform_2_f32(p.u(U!("uSun")), fr.sun[0], fr.sun[1]); gl.uniform_1_f32(p.u(U!("uSunVis")), fr.sun_vis); gl.uniform_1_f32(p.u(U!("uTime")), fr.time);
         gl.uniform_1_f32(p.u(U!("uFlash")), fr.flash); gl.uniform_1_f32(p.u(U!("uSpeed")), fr.speed); gl.uniform_1_f32(p.u(U!("uExpo")), if fr.expo > 0.0 { fr.expo } else { 1.0 });
+        if let Some((ht, _, _)) = self.hud { gl.active_texture(glow::TEXTURE1); gl.bind_texture(glow::TEXTURE_2D, Some(ht)); gl.uniform_1_i32(p.u(U!("tHud")), 1); gl.uniform_1_f32(p.u(U!("uHudOn")), 1.0); gl.active_texture(glow::TEXTURE0); }
+        else { gl.uniform_1_f32(p.u(U!("uHudOn")), 0.0); }
         gl.uniform_3_f32_slice(p.u(U!("uSplitS")), &fr.split_s); gl.uniform_3_f32_slice(p.u(U!("uSplitH")), &fr.split_h); gl.uniform_2_f32(p.u(U!("uTexel")), fr.texel[0], fr.texel[1]);
         gl.bind_vertex_array(Some(self.quad_vao)); gl.draw_arrays(glow::TRIANGLES, 0, 3); gl.bind_vertex_array(None);
         // nearest-neighbour upscale to the screen

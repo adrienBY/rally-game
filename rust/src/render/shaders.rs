@@ -156,6 +156,7 @@ void main() { vUv = vtx * 0.5 + 0.5; gl_Position = vec4(vtx, 0.0, 1.0); }
 pub const POST_FS: &str = r#"#version 300 es
 precision highp float;
 uniform sampler2D tScene; uniform vec2 uSun; uniform float uSunVis; uniform float uTime; uniform float uFlash; uniform float uSpeed; uniform float uExpo; uniform vec3 uSplitS; uniform vec3 uSplitH; uniform vec2 uTexel;
+uniform sampler2D tHud; uniform float uHudOn;
 in vec2 vUv; out vec4 fragColor;
 const float BAYER[16] = float[16](0., 8., 2., 10., 12., 4., 14., 6., 3., 11., 1., 9., 15., 7., 13., 5.);
 float bayer(vec2 p) { vec2 q = mod(floor(p), 4.0); int i = int(q.x + q.y * 4.0); return BAYER[i] / 16.0 - 0.47; }
@@ -177,6 +178,7 @@ void main() {
   c = (c - 0.5) * 1.08 + 0.5; c *= vec3(1.0, 1.0, 0.97);
   vec2 vv = vUv - 0.5; c *= 1.0 - dot(vv, vv) * (0.5 + uSpeed * 0.7);
   c += vec3(0.25, 0.2, 0.15) * uFlash;
+  if (uHudOn > 0.5) { vec4 h = texture(tHud, vec2(vUv.x, 1.0 - vUv.y)); c = mix(c, h.rgb, h.a); }   // the HUD, drawn at the same resolution, dithered with the scene
   c += bayer(gl_FragCoord.xy) / 26.0;
   c = floor(clamp(c, 0.0, 1.0) * 26.0 + 0.5) / 26.0;
   fragColor = vec4(c, 1.0);

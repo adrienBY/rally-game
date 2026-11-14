@@ -21,6 +21,17 @@ object NativeCore {
     @JvmStatic external fun glMessage(data: ByteArray)
     @JvmStatic external fun glStatus(): String
 
+    // runtime mode: the native game loop
+    /** Where records and settings are kept; returns the stage to open with. */
+    @JvmStatic external fun rtInit(savePath: String): String
+    /** Pointer event in screen pixels: action 0 down, 1 move, 2 up/cancel. */
+    @JvmStatic external fun rtTouch(action: Int, id: Int, x: Float, y: Float)
+    /** Back pressed: true when the game used it (driving -> menu). */
+    @JvmStatic external fun rtBack(): Boolean
+    @JvmStatic external fun rtInsets(top: Float, right: Float, bottom: Float, left: Float)
+    /** GL thread: run and draw one frame (dt in ns); returns app events, one per line. */
+    @JvmStatic external fun rtFrame(dtNanos: Long): String
+
     // sound engine
     @JvmStatic external fun audioInit(sampleRate: Int)
     /** A binary message from the page (params, events, emitters, recordings, stage preset). */

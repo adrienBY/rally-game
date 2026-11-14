@@ -50,7 +50,7 @@ pub fn ridged(x: f64, z: f64) -> f64 {
 #[inline] pub fn js_round(v: f64) -> f64 { (v + 0.5).floor() }
 /// JS Math.sign (0 stays 0)
 #[inline] pub fn sgn(v: f64) -> f64 { if v > 0.0 { 1.0 } else if v < 0.0 { -1.0 } else { 0.0 } }
-#[inline] pub fn wrap_a(a: f64) -> f64 { a.sin().atan2(a.cos()) }
+#[inline] pub fn wrap_a(a: f64) -> f64 { libm::atan2(libm::sin(a), libm::cos(a)) }   // fdlibm, like V8 (and the same on every platform)
 
 #[cfg(test)]
 mod tests {

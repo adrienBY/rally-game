@@ -10,3 +10,4 @@ pub mod render;
 pub mod gfx;
 #[cfg(any(target_os = "android", feature = "jni-host"))]
 mod jni_api;
+pub mod game;
