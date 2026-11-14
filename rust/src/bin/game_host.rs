@@ -72,6 +72,9 @@ fn main() {
                     "online" => { let k = parts[1]; let key: &'static str = fogwood_core::game::online::KEYS.iter().find(|x| **x == k).copied().unwrap_or("online"); g.online_tap(key);
                         if key == "on_host" { if let Some(c) = fogwood_core::net::with(|s| s.code) { std::fs::write("/tmp/fw_code", c.to_string()).unwrap(); println!("hosting {}", c); } } }
                     "joincode" => { let c = std::fs::read_to_string("/tmp/fw_code").unwrap(); g.online_tap("online"); g.online_tap("on_join"); for ch in c.trim().chars() { let k: &'static str = ["k0","k1","k2","k3","k4","k5","k6","k7","k8","k9"][ch.to_digit(10).unwrap() as usize]; g.online_tap(k); } g.online_tap("kok"); println!("joined {}", c.trim()); }
+                    "settings" => g.open_settings(),
+                    "sclose" => g.close_settings(),
+                    "stap" => { let f: f64 = parts.get(2).and_then(|v| v.parse().ok()).unwrap_or(0.5); let key = parts[1].replace(".", ":"); println!("stap {} {} vol={} hap={} pix={} rays={}", key, g.settings_tap_key(&key, f), g.ps.vol, g.ps.hap, g.ps.pix_idx, g.ps.rays); }
                     "netstat" => { fogwood_core::net::with(|s| println!("traffic t={:.1} bytes {:?} packets {:?}", t, s.traffic.get(), s.packets.get())); }
                     "net" => { fogwood_core::net::with(|s| println!("net t={:.1} host={} up={} peers={:?} host_now={:.2}", t, s.is_host, s.brokers_up(), s.peers.values().map(|p| (p.name.clone(), p.link(), (p.rtt * 1000.0) as i32)).collect::<Vec<_>>(), s.host_now())); }
                     "rstate" => { println!("race t={:.1} on={} online={} phase={:?} go={:.2} race_t={:.2} pos={} cars={:?}", t, g.race.on, g.race.online, g.race.phase, g.go, g.race.t, g.race.pos,

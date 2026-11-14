@@ -24,12 +24,12 @@ pub fn hud(gm: &mut Game) {
         let w = bw.max(text_w(label, u) + 6.0 * u); let x = bx + bw - w; ui.push((k, Rect { x, y: pt, w, h: bh }));
         g.panel(x, pt, w, bh, u, if on { rgba(243, 207, 98, 0.28) } else { PANEL }, Some(if on { AMBER } else { EDGE }));
         g.tx(label, x + (w - text_w(label, u)) / 2.0, pt + 3.0 * u, u, if on { AMBER } else { INK }); bx = x - gap - bw; };
-    btn(g, &mut ui, "snd", "SND", gm.ps.sound_on); btn(g, &mut ui, "vib", "VIB", gm.ps.vib_on); btn(g, &mut ui, "pix", "PIX", false);
+    btn(g, &mut ui, "set", "SET", gm.set.open);
     let drive = gm.state == State::Drive;
     if drive { btn(g, &mut ui, "cam", "CAM", false); btn(g, &mut ui, "rst", "RST", false); btn(g, &mut ui, "menu", "MENU", false); }
     for k in ["cam", "rst", "menu"] { gm.ui.remove(k); }
-    { let rec = gm.bench_secs; let l = match rec { Some(s) => format!("REC {}", s), None => "REC".to_string() }; btn(g, &mut ui, "rec", &l, rec.is_some()); }   // temporary benchmark button
-    { let l = match &gm.tel { Some(t) => format!("TEL {}:{:02}", (t.t / 60.0) as u32, (t.t as u32) % 60), None => "TEL".to_string() }; btn(g, &mut ui, "tel", &l, gm.tel.is_some()); }
+    if gm.ps.debug { let rec = gm.bench_secs; let l = match rec { Some(s) => format!("REC {}", s), None => "REC".to_string() }; btn(g, &mut ui, "rec", &l, rec.is_some()); }   // temporary benchmark button
+    if gm.ps.debug || gm.tel.is_some() { let l = match &gm.tel { Some(t) => format!("TEL {}:{:02}", (t.t / 60.0) as u32, (t.t as u32) % 60), None => "TEL".to_string() }; btn(g, &mut ui, "tel", &l, gm.tel.is_some()); }
     if gm.state == State::Title && gm.ps.online_ui != super::online::OnlineUi::Closed && !portrait {
         g.rect_c(0.0, 0.0, lw, lh, rgba(6, 9, 6, 0.42));
         super::online::draw(&gm.ps, &gm.rt.map, g, &mut ui, lw, lh, u, pt + 16.0 * u);
@@ -107,8 +107,8 @@ pub fn hud(gm: &mut Game) {
             let mut rr = r0; while rr <= r { g.rect_c(js_round(xx + a.cos() * rr), js_round(yy0 - a.sin() * rr), u, u, c); rr += u; } rpm += 125.0; } }
     let na = std::f64::consts::PI - clamp(rpm_s, 0.0, 8000.0) / 8000.0 * std::f64::consts::PI; g.px_line(cx, cy - u, cx + na.cos() * (r - 5.0 * u), cy - u - na.sin() * (r - 5.0 * u), RED, u, u);
     let gear = if gm.car.gear < 0.0 { "R".to_string() } else { format!("{}", gm.car.gear as i64) }; g.tx(&gear, cx - text_w(&gear, 2.0 * u) / 2.0, cy - 23.0 * u, 2.0 * u, INK);
-    let kmh = format!("{:03}", js_round(gm.car.u.abs() * 3.6) as i64); g.tx(&kmh, cx - text_w(&kmh, u) / 2.0, cy - 8.0 * u, u, AMBER);
-    g.tx("KM/H", cx + r + 6.0 * u, cy - 8.0 * u, u, rgba(233, 236, 226, 0.6));
+    let kmh = format!("{:03}", js_round(gm.car.u.abs() * if gm.ps.mph { 2.23694 } else { 3.6 }) as i64); g.tx(&kmh, cx - text_w(&kmh, u) / 2.0, cy - 8.0 * u, u, AMBER);
+    g.tx(if gm.ps.mph { "MPH" } else { "KM/H" }, cx + r + 6.0 * u, cy - 8.0 * u, u, rgba(233, 236, 226, 0.6));
     if gm.ps.touch_used {
         let (sw, shh) = (38.0 * u, 32.0 * u); let sy = lh - pb - shh;
         let left = Rect { x: pl, y: sy, w: sw, h: shh }; let right = Rect { x: pl + sw + 4.0 * u, y: sy, w: sw, h: shh }; ui.push(("left", left)); ui.push(("right", right));
@@ -151,4 +151,6 @@ pub fn hud(gm: &mut Game) {
         let tc = "TAP TO CONTINUE"; if ((now / 500.0) as i64) % 2 == 0 { g.text(tc, rx + (rw - text_w(tc, u)) / 2.0, ry + rh - 10.0 * u, u, INK, None); }
     }
     for (k, r) in ui { gm.ui.insert(k, r); }
+    let paused = gm.settings_paused(); let cam = gm.cam.mode as u8; let time = gm.time;
+    super::settings::draw(&mut gm.set, &gm.ps, cam, paused, &mut gm.hud, lw, lh, u, time);
 }

@@ -298,7 +298,7 @@ pub fn audio(g: &mut Game) {
         let (dx, dz) = (s.x - cp[0], s.z - cp[2]); let d = (dx * dx + dz * dz + (s.y - cp[1]).powi(2)).sqrt().max(1.0);
         let nn = clamp((s.rpm - 900.0) / 6400.0, 0.0, 1.05); let vr = ((s.vx - g.car.vx) * dx + (s.vz - g.car.vz) * dz) / d;
         let rate = (0.95 + nn * 2.6) * ENG_PITCH[ri] * clamp(343.0 / (343.0 + vr), 0.8, 1.25);
-        let gain = if g.ps.sound_on && !gone { 0.85 / (1.0 + (d / 17.0) * (d / 17.0)) * (0.6 + 0.4 * nn) } else { 0.0 };
+        let gain = if g.ps.sound_on && !gone && !g.settings_paused() { g.ps.rvol as f64 / 10.0 * g.ps.vol as f64 / 10.0 * 0.85 / (1.0 + (d / 17.0) * (d / 17.0)) * (0.6 + 0.4 * nn) } else { 0.0 };
         let lp = (1200.0 + nn * 3000.0 - d * 12.0).max(500.0); let pan = clamp((dx * rx + dz * rz) / rl / d, -1.0, 1.0) * 0.85;
         v.extend_from_slice(&[ri as f32, rate as f32, (0.15 + nn * 0.5) as f32, gain as f32, lp as f32, pan as f32]); n += 1; }
     v[1] = n as f32; g.audio_msg(&v);

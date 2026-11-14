@@ -6,6 +6,7 @@ pub mod race;
 pub mod rt;
 pub mod telemetry;
 pub mod online;
+pub mod settings;
 mod draw;
 
 use crate::bridge;
@@ -23,7 +24,7 @@ pub const VEH_L: f64 = 1.22 - -1.28;
 /// ground tiles switch to every 2nd grid line past LOD1 metres, every 4th past LOD2
 const LOD1: f64 = 150.0; const LOD2: f64 = 300.0;
 const REST: f64 = 0.21; const STOP: f64 = 0.33;
-const PIX: [f64; 3] = [170.0, 220.0, 340.0];
+pub(crate) const PIX: [f64; 3] = [170.0, 220.0, 340.0];
 pub const MAPS: [&str; 6] = ["forest", "snow", "canyon", "lakes", "touge", "riviera"];
 
 /// xorshift64*: the page's Math.random / seeded rnd() stand-in (particles, mistakes, grid reactions)
@@ -67,11 +68,14 @@ pub struct CamState { pub y: f64, pub h: f64, pub init: bool, pub mode: i32, pub
 pub struct Persist { pub saves: Saves, pub sound_on: bool, pub vib_on: bool, pub pix_idx: usize, pub touch_used: bool, pub downgraded: bool,
     pub race_mode: bool, pub race_skill: f64,
     /// online: which room screen is open, your name in rooms, laps for a hosted race
-    pub online_ui: online::OnlineUi, pub name: String, pub online_laps: u8 }
+    pub online_ui: online::OnlineUi, pub name: String, pub online_laps: u8,
+    /// settings screen: volumes 0..10, haptics 0..3, sun rays, mph, camera view, camera shake, 30 fps battery saver, debug buttons
+    pub vol: i32, pub rvol: i32, pub hap: i32, pub rays: bool, pub mph: bool, pub cam_mode: u8, pub shake: bool, pub saver: bool, pub debug: bool }
 impl Persist {
     pub fn new(save_path: &str) -> Persist {
         let saves = Saves::load(save_path);
-        let mut p = Persist { saves, sound_on: true, vib_on: true, pix_idx: 2, touch_used: false, downgraded: false, race_mode: false, race_skill: 0.95, online_ui: online::OnlineUi::Closed, name: String::new(), online_laps: 2 };
+        let mut p = Persist { saves, sound_on: true, vib_on: true, pix_idx: 2, touch_used: false, downgraded: false, race_mode: false, race_skill: 0.95, online_ui: online::OnlineUi::Closed, name: String::new(), online_laps: 2,
+            vol: 10, rvol: 8, hap: 2, rays: true, mph: false, cam_mode: 0, shake: true, saver: false, debug: true };
         p.reload(); p
     }
     pub fn reload(&mut self) {
@@ -82,6 +86,23 @@ impl Persist {
         match self.saves.get("fogwood-name") { Some(n) if !n.is_empty() => self.name = n.to_string(), _ => {
             let k = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(7) % 90 + 10;
             self.name = format!("DRIVER{}", k); let n = self.name.clone(); self.saves.set("fogwood-name", n); } }
+        let gi = |s: &Saves, k: &str| s.get(k).and_then(|v| v.parse::<i32>().ok());
+        if let Some(v) = gi(&self.saves, "fogwood-vol") { self.vol = v.clamp(0, 10); }
+        if let Some(v) = gi(&self.saves, "fogwood-rvol") { self.rvol = v.clamp(0, 10); }
+        self.hap = gi(&self.saves, "fogwood-hap").map(|v| v.clamp(0, 3)).unwrap_or(if self.vib_on { 2 } else { 0 }); self.vib_on = self.hap > 0;
+        if let Some(v) = gi(&self.saves, "fogwood-cam") { self.cam_mode = v.clamp(0, 2) as u8; }
+        if let Some(v) = gi(&self.saves, "fogwood-olaps") { self.online_laps = v.clamp(1, 5) as u8; }
+        for (k, f) in [("fogwood-rays", &mut self.rays), ("fogwood-mph", &mut self.mph), ("fogwood-shake", &mut self.shake), ("fogwood-saver", &mut self.saver), ("fogwood-debug", &mut self.debug)] {
+            if let Some(v) = self.saves.get(k) { *f = v == "1"; } }
+        if self.saves.get("fogwood-dg") == Some("1") { self.downgraded = true; }
+    }
+    /// save every setting from the settings screen
+    pub fn store(&mut self) {
+        let b = |v: bool| if v { "1".to_string() } else { "0".to_string() };
+        let kv = [("fogwood-vol", self.vol.to_string()), ("fogwood-rvol", self.rvol.to_string()), ("fogwood-hap", self.hap.to_string()), ("fogwood-vib", b(self.vib_on)),
+            ("fogwood-pix", self.pix_idx.to_string()), ("fogwood-cam", self.cam_mode.to_string()), ("fogwood-olaps", self.online_laps.to_string()), ("fogwood-rays", b(self.rays)),
+            ("fogwood-mph", b(self.mph)), ("fogwood-shake", b(self.shake)), ("fogwood-saver", b(self.saver)), ("fogwood-debug", b(self.debug)), ("fogwood-dg", b(self.downgraded))];
+        for (k, v) in kv { self.saves.set(k, v); }
     }
 }
 
@@ -113,6 +134,8 @@ pub struct Game {
     pub prof: [f32; 8], pub hud_uploaded: bool, pub bench_req: bool, pub bench_secs: Option<u32>, pub d_live: usize,
     /// driving telemetry (TEL button) and a note for its next row
     pub tel: Option<telemetry::Tel>, pub tel_note: String,
+    /// the settings screen
+    pub set: settings::Settings,
 }
 
 pub fn path_idx(w: &World, x: f64, z: f64) -> usize {
@@ -141,7 +164,7 @@ impl Game {
             np, snow: mid == 1, can: mid == 2, lak: mid == 3, tou: mid == 5, riv: mid == 6,
             tune: Tune::from_slice(&tv), cam_follow, car: Car::new(), rpm_shown: 900.0, shake: 0.0, car_hit: 0.0, prev_throttle: 0.0,
             state: State::Title, g_t: 0.0, lap: 1, lap_start: 0.0, best, flags: [false; 3], last_idx: 0, msg: String::new(), msg_t: 0.0, wrong_t: 0.0, started: false, go: 0.0,
-            cam: CamState { y: 0.0, h: 0.0, init: false, mode: 0, fov: 56.0, lag: 0.0, cp: None, cr: None, shot: -1, cut_t: 0.0, passed: 0.0, anchor: [0.0; 3], target: 0, side: 1.0 },
+            cam: CamState { y: 0.0, h: 0.0, init: false, mode: ps.cam_mode as i32, fov: 56.0, lag: 0.0, cp: None, cr: None, shot: -1, cut_t: 0.0, passed: 0.0, anchor: [0.0; 3], target: 0, side: 1.0 },
             cam_pos: [0.0; 3], cam_rot: ID, fov_now: 56.0, view: ID, proj: ID, w: 1280.0, h: 720.0, lw: 320, lh: 180, u: 1.0, inset: [0.0; 4], inset_px: [0.0; 4],
             race, ui: HashMap::new(), touches: HashMap::new(), time: 0.0, wind: 0.5, rng: Rng(0x9E3779B97F4A7C15 ^ (mid as u64 + 1)), events: Vec::new(), ps, loading: None,
             node_base, node_world: vec![ID; rt.nodes.len()], obj_last: HashMap::new(), named, cull_vis: vec![true; ncull], glit_op: vec![-1.0; nglit],
@@ -149,7 +172,7 @@ impl Game {
             sf_pos, sf_init: false, boats,
             sun_vis: 0.0, expo: 1.0, dim: 1.0, expo_tun: false, sun_uv: [0.5, 0.8],
             hap_t: 0.0, hap_cool: 0.0, aud_wet: 0.0, car_audio_on: false, race_was: false, pop_cool: 0.0, fps_acc: 0.0, fps_n: 0, hud_tick: false, hud: hud::Canvas::new(320, 180),
-            shadow_op: -1.0, flash: 0.0, speed_k: 0.0, clock: std::time::Instant::now(), last_pidx: 0, auto: false, tile_lod: Vec::new(), fps30: None, shade_dim: 1.0, prof: [0.0; 8], hud_uploaded: false, bench_req: false, bench_secs: None, d_live: 0, tel: None, tel_note: String::new(), rt,
+            shadow_op: -1.0, flash: 0.0, speed_k: 0.0, clock: std::time::Instant::now(), last_pidx: 0, auto: false, tile_lod: Vec::new(), fps30: None, shade_dim: 1.0, prof: [0.0; 8], hud_uploaded: false, bench_req: false, bench_secs: None, d_live: 0, tel: None, tel_note: String::new(), set: Default::default(), rt,
         };
         if let Some(e) = bridge::lock().as_ref() { g.place_at(&e.world, 6); }
         g
@@ -184,7 +207,7 @@ impl Game {
     }
     pub fn place_at(&mut self, w: &World, i: usize) { Self::place_raw(&mut self.car, &self.rt, w, i); self.cam.init = false; }
 
-    pub fn buzz(&mut self, k: &str, s: f64) { if self.ps.vib_on { self.events.push(format!("h {} {:.3}", k, s.clamp(0.0, 1.0))); } }
+    pub fn buzz(&mut self, k: &str, s: f64) { if self.ps.vib_on { let g = [0.0, 0.55, 0.8, 1.0][self.ps.hap.clamp(0, 3) as usize]; self.events.push(format!("h {} {:.3}", k, (s * g).clamp(0.0, 1.0))); } }
     pub fn flash_msg(&mut self, m: &str, t: f64) { self.msg = m.to_string(); self.msg_t = t; }
 
     // ---------------- screen ----------------
@@ -232,12 +255,14 @@ impl Game {
     /// pointer events in screen pixels: 0 down, 1 move, 2 up/cancel
     pub fn touch(&mut self, action: i32, id: i32, sx: f64, sy: f64) {
         let (x, y) = self.low_xy(sx, sy);
+        if self.settings_touch(action, id, x, y) { return; }
         match action {
             0 => {
                 self.ps.touch_used = true; let b = self.hit_button(x, y);
                 if let Some(b) = b { self.buzz("tap", if TOPB.contains(&b) || b.starts_with("map") { 0.55 } else { 0.4 }); } else if self.state == State::Title { self.buzz("tap", 0.55); }
                 if let Some(k) = b { if online::KEYS.contains(&k) && self.state == State::Title { self.online_tap(k); return; } }
                 match b {
+                    Some("set") => self.open_settings(),
                     Some("snd") => self.toggle_sound(),
                     Some("vib") => { self.ps.vib_on = !self.ps.vib_on; self.ps.saves.set("fogwood-vib", if self.ps.vib_on { "1".into() } else { "0".into() }); if self.ps.vib_on { self.buzz("shift", 0.7); }
                         let m = if self.ps.vib_on { "HAPTICS ON" } else { "HAPTICS OFF" }; self.flash_msg(m, 1.0); }
@@ -263,12 +288,12 @@ impl Game {
         }
     }
     /// Android back: to the menu while driving; false lets the app close from the menu
-    pub fn back(&mut self) -> bool { self.to_title() }
+    pub fn back(&mut self) -> bool { if self.set.open { self.close_settings(); return true; } self.to_title() }
 
     pub fn switch_map(&mut self, name: &str) { if self.loading.is_none() { self.loading = Some(name.to_string()); self.events.push(format!("map {}", name)); self.ps.saves.set("fogwood-map", name.to_string()); } }
     fn toggle_mode(&mut self) { self.ps.race_mode = !self.ps.race_mode; self.ps.saves.set("fogwood-mode", if self.ps.race_mode { "race".into() } else { "tt".into() }); }
     pub fn toggle_sound(&mut self) { self.ps.sound_on = !self.ps.sound_on; let m = if self.ps.sound_on { "SOUND ON" } else { "SOUND OFF" }; self.flash_msg(m, 1.0); }
-    fn cycle_cam(&mut self) { self.cam.mode = (self.cam.mode + 1) % 3; self.cam.init = false; self.flash_msg(["CHASE CAM", "CLOSE CAM", "BONNET CAM"][self.cam.mode as usize], 1.2); }
+    fn cycle_cam(&mut self) { self.cam.mode = (self.cam.mode + 1) % 3; self.cam.init = false; self.ps.cam_mode = self.cam.mode as u8; self.ps.store(); self.flash_msg(["CHASE CAM", "CLOSE CAM", "BONNET CAM"][self.cam.mode as usize], 1.2); }
     fn reset_car(&mut self) { if self.state != State::Drive { return; } let g = bridge::lock(); if let Some(e) = g.as_ref() { let i = path_idx(&e.world, self.car.x, self.car.z); self.place_at(&e.world, i); } drop(g); self.flash_msg("RESET", 1.0); if self.tel.is_some() { self.tel_note.push_str("reset;"); } }
     pub fn start_game(&mut self) {
         if self.state != State::Title { return; }
@@ -328,10 +353,11 @@ impl Game {
         let mut tp = std::time::Instant::now(); let mut prof = [0f32; 8];
         macro_rules! lap { ($k:expr) => {{ let n = std::time::Instant::now(); prof[$k] += (n - tp).as_secs_f32() * 1000.0; tp = n; }} }
         self.online_tick(w, dt);
-        let shifted = self.car.update(w, obs, &self.tune, dt, &inp); lap!(0);
+        let paused = self.settings_paused();   // settings open while driving alone: the world holds still
+        let shifted = if paused { false } else { self.car.update(w, obs, &self.tune, dt, &inp) }; lap!(0);
         if shifted { if self.state == State::Drive { self.buzz("shift", 0.45); } self.audio_msg(&[7.0, 2.0]); }
-        if self.state == State::Drive { if self.race.on { race::step(self, w, obs, dt); } else { self.update_lap(w, dt); } } lap!(1);
-        if self.tel.is_some() { let ti = path_idx(w, self.car.x, self.car.z); self.tel_frame(&inp, dt, ti); }
+        if self.state == State::Drive && !paused { if self.race.on { race::step(self, w, obs, dt); } else { self.update_lap(w, dt); } } lap!(1);
+        if self.tel.is_some() && !paused { let ti = path_idx(w, self.car.x, self.car.z); self.tel_frame(&inp, dt, ti); }
         self.update_audio(w, dt, &inp, gust); lap!(2);
         if self.car.landed { let v = -self.car.land_v; self.car.landed = false;
             if v > 1.8 && self.state == State::Drive { self.buzz("land", clamp((v - 1.5) / 7.0, 0.15, 1.0)); }
@@ -375,7 +401,7 @@ impl Game {
         drop(guard);
         self.hud_uploaded = false; self.hud_frame(r); lap!(7); self.prof = prof;
         self.write_frame(r);
-        let slow = self.state == State::Title;   // the menu's film crew runs at 30 fps, the driving at 60
+        let slow = self.state == State::Title || self.ps.saver;   // the menu's film crew runs at 30 fps, the driving at 60 (30 with the battery saver)
         if self.fps30 != Some(slow) { self.fps30 = Some(slow); self.events.push(if slow { "fps 30".into() } else { "fps 60".into() }); }
         self.ps.saves.flush();
     }
@@ -395,7 +421,7 @@ impl Game {
             self.cam.h += wrap_a(s.h - self.cam.h) * (dt * if self.state == State::Title { 4.0 } else { self.cam_follow }).min(1.0);
             let (sh, ch) = (self.cam.h.sin(), self.cam.h.cos()); let (cxp, czp) = (s.x - sh * dist, s.z - ch * dist);
             let ty = (s.y + up).max(w.height(cxp, czp) + 0.9); self.cam.y += (ty - self.cam.y) * (dt * 14.0).min(1.0);
-            let shk = self.shake * 0.12; let rum = sp_k * sp_k * (if s.on_road { 0.03 } else { 0.07 }) * if s.contacts > 0.0 { 1.0 } else { 0.2 }; let tt = self.time;
+            let sk = if self.ps.shake { 1.0 } else { 0.0 }; let shk = self.shake * 0.12 * sk; let rum = sp_k * sp_k * (if s.on_road { 0.03 } else { 0.07 }) * if s.contacts > 0.0 { 1.0 } else { 0.2 } * sk; let tt = self.time;
             let (a, b, c) = (self.rng.r(-1.0, 1.0), self.rng.r(-1.0, 1.0), self.rng.r(-1.0, 1.0));
             self.cam_pos = [cxp + a * shk + (vnoise(tt * 19.0, 1.3) - 0.5) * rum, self.cam.y + b * shk + (vnoise(tt * 23.0, 7.1) - 0.5) * rum * 1.6, czp + c * shk];
             self.cam_rot = look_rot(self.cam_pos, [s.x + sh * 4.0, s.y + 1.05, s.z + ch * 4.0]);
@@ -594,7 +620,7 @@ impl Game {
         let fr = &mut r.frame;
         fr.lw = self.lw; fr.lh = self.lh; fr.view = to_f32(&self.view); fr.proj = to_f32(&self.proj);
         fr.cam = [self.cam_pos[0] as f32, self.cam_pos[1] as f32, self.cam_pos[2] as f32];
-        fr.time = self.time as f32; fr.wind = self.wind as f32; fr.sun = [self.sun_uv[0] as f32, self.sun_uv[1] as f32]; fr.sun_vis = self.sun_vis as f32;
+        fr.time = self.time as f32; fr.wind = self.wind as f32; fr.sun = [self.sun_uv[0] as f32, self.sun_uv[1] as f32]; fr.sun_vis = if self.ps.rays { self.sun_vis as f32 } else { 0.0 };
         fr.flash = self.flash as f32; fr.speed = (if self.cam.mode == 2 { self.speed_k * 1.1 } else { self.speed_k }) as f32;
         fr.dust_scale = (self.lh as f64 / (2.0 * (self.fov_now * std::f64::consts::PI / 360.0).tan())) as f32;
         fr.expo = self.expo as f32; fr.dim = (self.dim * self.shade_dim) as f32;
@@ -617,9 +643,10 @@ impl Game {
         let slide = if self.snow { clamp((s.slide - 5.5) / 9.0, 0.0, 1.0) } else if tar { clamp((s.slide - 4.8) / 8.0, 0.0, 1.0) } else { clamp((s.slide - 3.0) / 7.0, 0.0, 1.0) };
         let surf = if self.snow { 1.0 } else if self.can { 2.0 } else if tar { 3.0 } else if s.on_road { 4.0 } else { 0.0 };
         let sp = s.vx.hypot(s.vz);
-        let on = self.ps.sound_on && self.car_audio_on;
+        let vol = self.ps.vol as f64 / 10.0 * if self.settings_paused() { 0.0 } else { 1.0 };
+        let on = self.ps.sound_on && self.car_audio_on && vol > 0.0;
         self.audio_msg(&[6.0, self.rpm_shown as f32, thr as f32, slide as f32, surf as f32, (sp / 35.0).min(1.0) as f32, if s.on_road { 1.0 } else { 0.0 },
-            if self.expo_tun { 1.0 } else { 0.0 }, if s.shift_t > 0.0 { 1.0 } else { 0.0 }, if on { 0.9 } else { 0.0 }]);
+            if self.expo_tun { 1.0 } else { 0.0 }, if s.shift_t > 0.0 { 1.0 } else { 0.0 }, if on { (0.9 * vol) as f32 } else { 0.0 }]);
         self.pop_cool -= dt;
         if self.prev_throttle > 0.0 && inp.throttle == 0.0 && self.rpm_shown > 4800.0 && self.pop_cool <= 0.0 && s.gear > 0.0 {
             self.pop_cool = 0.6; let a = self.rng.r(1.9, 2.4); let two = self.rng.f() < 0.5; let b = self.rng.r(2.2, 2.6);
@@ -629,7 +656,7 @@ impl Game {
         self.aud_wet = wet;
         if s.impact > 1.5 { let m = if self.car_hit > 0.0 { 1.0 } else { self.obstacle_mat(s.x, s.z) }; self.audio_msg(&[2.0, 1.0, s.impact as f32, m as f32]); } self.car_hit = 0.0;
         let fwd = [-self.cam_rot[8], -self.cam_rot[10]]; let on_road: f64 = s.wh.iter().map(|w| if w.road { 0.25 } else { 0.0 }).sum();
-        let master = if self.ps.sound_on { 0.9 } else { 0.0 };
+        let master = if self.ps.sound_on { 0.9 * vol } else { 0.0 };
         let cp = self.cam_pos; let _ = w;
         self.audio_msg(&[1.0, self.rpm_shown as f32, thr as f32, sp as f32, s.slide as f32, on_road as f32, if self.snow { 1.0 } else if self.can { 2.0 } else if self.tou || self.riv { 3.0 } else { 0.0 }, wet as f32,
             if s.contacts == 0.0 { 1.0 } else { 0.0 }, s.gear as f32, if self.state == State::Title { 3.0 } else { self.cam.mode as f32 }, cp[0] as f32, cp[1] as f32, cp[2] as f32, fwd[0].atan2(fwd[1]) as f32,
@@ -646,7 +673,7 @@ impl Game {
     }
 }
 
-pub const TOPB: [&str; 8] = ["snd", "vib", "cam", "pix", "rst", "menu", "rec", "tel"];
+pub const TOPB: [&str; 6] = ["set", "cam", "rst", "menu", "rec", "tel"];
 #[inline] pub fn js_round(v: f64) -> f64 { (v + 0.5).floor() }
 pub fn fmt(t: Option<f64>) -> String {
     match t { None => "-:--.--".into(), Some(t) => { let m = (t / 60.0).floor(); let s = t - m * 60.0; format!("{}:{}{:.2}", m as i64, if s < 10.0 { "0" } else { "" }, s) } }
