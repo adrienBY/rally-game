@@ -166,7 +166,7 @@ void main() { vUv = vtx * 0.5 + 0.5; gl_Position = vec4(vtx, 0.0, 1.0); }
 pub const POST_FS: &str = r#"#version 300 es
 precision highp float;
 uniform sampler2D tScene; uniform vec2 uSun; uniform float uSunVis; uniform float uTime; uniform float uFlash; uniform float uSpeed; uniform float uExpo; uniform vec3 uSplitS; uniform vec3 uSplitH; uniform vec2 uTexel;
-uniform sampler2D tHud; uniform float uHudOn;
+uniform sampler2D tHud; uniform float uHudOn; uniform sampler2D tRay; uniform float uRayOn;
 in vec2 vUv; out vec4 fragColor;
 const float BAYER[16] = float[16](0., 8., 2., 10., 12., 4., 14., 6., 3., 11., 1., 9., 15., 7., 13., 5.);
 float bayer(vec2 p) { vec2 q = mod(floor(p), 4.0); int i = int(q.x + q.y * 4.0); return BAYER[i] / 16.0 - 0.47; }
@@ -174,14 +174,7 @@ void main() {
   vec3 c = texture(tScene, vUv).rgb;
   vec2 fromC = vUv - vec2(0.5, 0.52); float edge = smoothstep(0.12, 0.62, length(fromC)) * uSpeed;
   if (edge > 0.002) { vec3 bl = c; for (int i = 1; i <= 5; i++) bl += texture(tScene, vUv - fromC * 0.028 * uSpeed * float(i)).rgb; c = mix(c, bl / 6.0, edge); }
-  float acc = 0.0;
-  if (uSunVis > 0.01) { vec2 d = uSun - vUv; float L = length(d); if (L > 1.3) d *= 1.3 / L;
-    // 10 taps over the same reach as the browser's 20 (half the cost): neighbouring pixels take alternate halves of the 20 positions
-    vec2 st = d / 10.0; float odd = mod(floor(gl_FragCoord.x) + floor(gl_FragCoord.y), 2.0); vec2 p = vUv - st * 0.5 * odd; float w = 1.0 + 0.05 * odd;
-    for (int i = 0; i < 10; i++) { p += st; vec4 s = texture(tScene, clamp(p + uTexel * 0.5, 0.001, 0.999));
-      float l = dot(s.rgb, vec3(0.3, 0.59, 0.11)), near = 1.0 - smoothstep(0.04, 0.42, length((p - uSun) * vec2(1.6, 1.0)));
-      acc += smoothstep(0.66, 0.92, l) * (1.0 - s.a) * w * (0.25 + 0.75 * near); w *= 0.9063; }
-    acc /= 6.67; }
+  float acc = uRayOn > 0.5 ? texture(tRay, vUv).r : 0.0;   // god rays: marched at quarter resolution over a pre-blurred bright mask, upsampled bilinearly
   c += vec3(1.0, 0.93, 0.74) * acc * 0.85 * uSunVis * (0.9 + 0.1 * sin(uTime * 0.7 + vUv.x * 3.0));
   c *= uExpo; c += vec3(1.0, 0.96, 0.9) * smoothstep(0.75, 1.7, dot(c, vec3(0.3, 0.59, 0.11))) * 0.6 * clamp(uExpo - 1.0, 0.0, 1.0);
   { float l = dot(c, vec3(0.3, 0.59, 0.11)); c += uSplitS * (1.0 - l) * (1.0 - l) + uSplitH * l * l; }
@@ -193,5 +186,42 @@ void main() {
   c += bayer(gl_FragCoord.xy) / 26.0;
   c = floor(clamp(c, 0.0, 1.0) * 26.0 + 0.5) / 26.0;
   fragColor = vec4(c, 1.0);
+}
+"#;
+
+/// God-ray mask at quarter resolution: each texel averages a 4x4 block of the scene (4 bilinear taps), keeping only bright sky.
+pub const MASK_FS: &str = r#"#version 300 es
+precision highp float;
+uniform sampler2D tScene; uniform vec2 uTexel;
+in vec2 vUv; out vec4 fragColor;
+float m(vec2 p) { vec4 s = texture(tScene, p); return smoothstep(0.66, 0.92, dot(s.rgb, vec3(0.3, 0.59, 0.11))) * (1.0 - s.a); }
+void main() {
+  vec2 o = uTexel;
+  fragColor = vec4((m(vUv + vec2(-o.x, -o.y)) + m(vUv + vec2(o.x, -o.y)) + m(vUv + vec2(-o.x, o.y)) + m(vUv + vec2(o.x, o.y))) * 0.25, 0.0, 0.0, 1.0);
+}
+"#;
+/// Radial march toward the sun over the smooth mask, at quarter resolution: fixed sample positions (no per-pixel jitter), so it holds still frame to frame.
+pub const RAY_FS: &str = r#"#version 300 es
+precision highp float;
+uniform sampler2D tMask; uniform vec2 uSun;
+in vec2 vUv; out vec4 fragColor;
+void main() {
+  vec2 d = uSun - vUv; float L = length(d); if (L > 1.3) d *= 1.3 / L;
+  vec2 st = d / 16.0; vec2 p = vUv; float w = 1.0, acc = 0.0;
+  for (int i = 0; i < 16; i++) { p += st; float near = 1.0 - smoothstep(0.04, 0.42, length((p - uSun) * vec2(1.6, 1.0)));
+    acc += texture(tMask, clamp(p, 0.0, 1.0)).r * w * (0.25 + 0.75 * near); w *= 0.94; }
+  fragColor = vec4(acc / 9.6, 0.0, 0.0, 1.0);
+}
+"#;
+/// Final upscale to the screen ("sharp bilinear"): each low-res pixel stays a flat block, and only the one screen pixel on its border blends with
+/// the neighbour. With a non-integer scale (756 -> 2800 is x3.7), plain nearest makes pixels 3 or 4 wide by turns, so edges jump as things move.
+pub const UPSCALE_FS: &str = r#"#version 300 es
+precision highp float;
+uniform sampler2D tScene; uniform vec2 uSrc; uniform vec2 uZoom;
+in vec2 vUv; out vec4 fragColor;
+void main() {
+  vec2 px = vUv * uSrc, i = floor(px), f = px - i - 0.5, reg = 0.5 - 0.5 / uZoom;
+  vec2 g = (f - clamp(f, -reg, reg)) * uZoom + 0.5;
+  fragColor = vec4(texture(tScene, (i + g) / uSrc).rgb, 1.0);
 }
 "#;

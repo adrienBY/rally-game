@@ -58,7 +58,8 @@ const fn ui(n: &str) -> usize {
 macro_rules! U { ($n:literal) => {{ const I: usize = ui($n); I }} }
 
 pub struct Renderer {
-    gl: Gl, scene: Option<GpuScene>, mesh_progs: HashMap<MeshKey, usize>, mesh_list: Vec<Program>, sky: Program, points: Program, dust: Program, post: Program,
+    gl: Gl, scene: Option<GpuScene>, mesh_progs: HashMap<MeshKey, usize>, mesh_list: Vec<Program>, sky: Program, points: Program, dust: Program, post: Program, mask: Program, ray: Program, up: Program,
+    rays: Option<(i32, i32, glow::Framebuffer, glow::Texture, glow::Framebuffer, glow::Texture)>,   // quarter-res god-ray mask + rays
     quad_vao: glow::VertexArray, _quad_buf: glow::Buffer,
     tgt: Option<(i32, i32, glow::Framebuffer, glow::Texture, glow::Renderbuffer, glow::Framebuffer, glow::Texture)>,
     pub frame: FrameState, pub stats: (u32, u32), pub only: Option<Vec<usize>>,
@@ -68,9 +69,9 @@ pub struct Renderer {
     tq_free: Vec<(glow::Query, glow::Query)>, tq_pending: std::collections::VecDeque<(glow::Query, glow::Query, u64)>, tq_cur: Option<(glow::Query, glow::Query)>, tq_made: usize, tq_post: bool,
 }
 
-const UNIFORMS: [&str; 45] = ["uModel", "uView", "uProj", "uNormalM", "uMapM", "uTime", "uWind", "uColor", "uOpacity", "uMap", "uAlphaTest", "uHemiSky",
+const UNIFORMS: [&str; 50] = ["uModel", "uView", "uProj", "uNormalM", "uMapM", "uTime", "uWind", "uColor", "uOpacity", "uMap", "uAlphaTest", "uHemiSky",
     "uHemiGround", "uHemiDir", "uDirColor", "uDirDir", "uFogColor", "uFogDensity", "uCamPos", "uSpec", "uShin", "uEmissive", "uSun", "uFog", "uTop", "uGlow",
-    "uHalo", "uSize", "uScale", "uDens", "uCol", "tScene", "uSunVis", "uFlash", "uSpeed", "uExpo", "uDim", "uSplitS", "uSplitH", "uTexel", "tHud", "uHudOn", "uSkySun", "uSkyGlow", "uSkyHalo"];
+    "uHalo", "uSize", "uScale", "uDens", "uCol", "tScene", "uSunVis", "uFlash", "uSpeed", "uExpo", "uDim", "uSplitS", "uSplitH", "uTexel", "tHud", "uHudOn", "uSkySun", "uSkyGlow", "uSkyHalo", "tMask", "tRay", "uRayOn", "uSrc", "uZoom"];
 
 unsafe fn compile(gl: &Gl, vs: &str, fs: &str) -> Result<Program, String> {
     let p = gl.create_program()?;
@@ -103,14 +104,15 @@ impl Renderer {
     /// Must be called on a thread with a current GLES 3 context.
     pub unsafe fn new(gl: Gl) -> Result<Renderer, String> {
         let sky = compile(&gl, SKY_VS, SKY_FS)?; let points = compile(&gl, POINTS_VS, POINTS_FS)?;
-        let dust = compile(&gl, DUST_VS, DUST_FS)?; let post = compile(&gl, POST_VS, POST_FS)?;
+        let dust = compile(&gl, DUST_VS, DUST_FS)?;
+        let post = compile(&gl, POST_VS, POST_FS)?; let mask = compile(&gl, POST_VS, MASK_FS)?; let ray = compile(&gl, POST_VS, RAY_FS)?; let up = compile(&gl, POST_VS, UPSCALE_FS)?;
         let quad_vao = gl.create_vertex_array()?; let qb = gl.create_buffer()?;
         gl.bind_vertex_array(Some(quad_vao)); gl.bind_buffer(glow::ARRAY_BUFFER, Some(qb));
         let tri: [f32; 6] = [-1.0, -1.0, 3.0, -1.0, -1.0, 3.0];
         gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, f32_bytes(&tri), glow::STATIC_DRAW);
         gl.enable_vertex_attrib_array(11); gl.vertex_attrib_pointer_f32(11, 2, glow::FLOAT, false, 8, 0);
         gl.bind_vertex_array(None);
-        Ok(Renderer { gl, scene: None, mesh_progs: HashMap::new(), mesh_list: Vec::new(), sky, points, dust, post, quad_vao, _quad_buf: qb, tgt: None, frame: FrameState::default(), stats: (0, 0), only: None, hud: None,
+        Ok(Renderer { gl, scene: None, mesh_progs: HashMap::new(), mesh_list: Vec::new(), sky, points, dust, post, mask, ray, up, rays: None, quad_vao, _quad_buf: qb, tgt: None, frame: FrameState::default(), stats: (0, 0), only: None, hud: None,
             timing: false, frame_id: 0, draw_cpu_ms: 0.0, gpu_results: Vec::new(), has_timer: false, tq_free: Vec::new(), tq_pending: Default::default(), tq_cur: None, tq_made: 0, tq_post: false })
     }
 
@@ -338,10 +340,20 @@ impl Renderer {
         let f1 = gl.create_framebuffer()?; gl.bind_framebuffer(glow::FRAMEBUFFER, Some(f1));
         gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(t1), 0);
         gl.framebuffer_renderbuffer(glow::FRAMEBUFFER, glow::DEPTH_ATTACHMENT, glow::RENDERBUFFER, Some(rb));
-        let t2 = mk_tex(glow::NEAREST)?; let f2 = gl.create_framebuffer()?; gl.bind_framebuffer(glow::FRAMEBUFFER, Some(f2));
+        let t2 = mk_tex(glow::LINEAR)?; let f2 = gl.create_framebuffer()?; gl.bind_framebuffer(glow::FRAMEBUFFER, Some(f2));
         gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(t2), 0);
         if gl.check_framebuffer_status(glow::FRAMEBUFFER) != glow::FRAMEBUFFER_COMPLETE { return Err("framebuffer incomplete".into()); }
         self.tgt = Some((lw, lh, f1, t1, rb, f2, t2));
+        if let Some((_, _, fm, tm, fr_, tr)) = self.rays.take() { gl.delete_framebuffer(fm); gl.delete_texture(tm); gl.delete_framebuffer(fr_); gl.delete_texture(tr); }
+        let (mw, mh) = ((lw + 3) / 4, (lh + 3) / 4);
+        let mk_small = || -> Result<(glow::Framebuffer, glow::Texture), String> { let t = gl.create_texture()?; gl.bind_texture(glow::TEXTURE_2D, Some(t));
+            gl.tex_image_2d(glow::TEXTURE_2D, 0, glow::RGBA8 as i32, mw, mh, 0, glow::RGBA, glow::UNSIGNED_BYTE, None);
+            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32); gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
+            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32); gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
+            let f = gl.create_framebuffer()?; gl.bind_framebuffer(glow::FRAMEBUFFER, Some(f)); gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(t), 0);
+            if gl.check_framebuffer_status(glow::FRAMEBUFFER) != glow::FRAMEBUFFER_COMPLETE { return Err("ray framebuffer incomplete".into()); } Ok((f, t)) };
+        let (fm, tm) = mk_small()?; let (fr_, tr) = mk_small()?;
+        self.rays = Some((mw, mh, fm, tm, fr_, tr));
         Ok(())
     }
 
@@ -478,9 +490,21 @@ impl Renderer {
         } }
         gl.bind_vertex_array(None); gl.disable(glow::BLEND); gl.disable(glow::POLYGON_OFFSET_FILL); gl.disable(glow::CULL_FACE); gl.depth_mask(true);
         let post_q = if let Some((_, b)) = tq { gl.end_query(0x88BF); gl.begin_query(0x88BF, b); true } else { false };   // benchmark: scene pass done, post + upscale next
+        gl.disable(glow::DEPTH_TEST);
+        let rays_on = fr.sun_vis > 0.01;
+        if rays_on { let (mw, mh, fm, tm, fr_, _) = self.rays.unwrap();
+            gl.bind_vertex_array(Some(self.quad_vao)); gl.viewport(0, 0, mw, mh);
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fm)); let p = &self.mask; gl.use_program(Some(p.prog));
+            gl.active_texture(glow::TEXTURE0); gl.bind_texture(glow::TEXTURE_2D, Some(t1)); gl.uniform_1_i32(p.u(U!("tScene")), 0); gl.uniform_2_f32(p.u(U!("uTexel")), fr.texel[0], fr.texel[1]);
+            gl.draw_arrays(glow::TRIANGLES, 0, 3);
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fr_)); let p = &self.ray; gl.use_program(Some(p.prog));
+            gl.bind_texture(glow::TEXTURE_2D, Some(tm)); gl.uniform_1_i32(p.u(U!("tMask")), 0); gl.uniform_2_f32(p.u(U!("uSun")), fr.sun[0], fr.sun[1]);
+            gl.draw_arrays(glow::TRIANGLES, 0, 3); gl.bind_vertex_array(None); }
         // post at render resolution
-        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(f2)); gl.viewport(0, 0, lw, lh); gl.disable(glow::DEPTH_TEST);
+        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(f2)); gl.viewport(0, 0, lw, lh);
         let p = &self.post; gl.use_program(Some(p.prog));
+        if rays_on { gl.active_texture(glow::TEXTURE2); gl.bind_texture(glow::TEXTURE_2D, Some(self.rays.unwrap().5)); gl.uniform_1_i32(p.u(U!("tRay")), 2); gl.active_texture(glow::TEXTURE0); }
+        gl.uniform_1_f32(p.u(U!("uRayOn")), if rays_on { 1.0 } else { 0.0 });
         gl.active_texture(glow::TEXTURE0); gl.bind_texture(glow::TEXTURE_2D, Some(t1)); gl.uniform_1_i32(p.u(U!("tScene")), 0);
         gl.uniform_2_f32(p.u(U!("uSun")), fr.sun[0], fr.sun[1]); gl.uniform_1_f32(p.u(U!("uSunVis")), fr.sun_vis); gl.uniform_1_f32(p.u(U!("uTime")), fr.time);
         gl.uniform_1_f32(p.u(U!("uFlash")), fr.flash); gl.uniform_1_f32(p.u(U!("uSpeed")), fr.speed); gl.uniform_1_f32(p.u(U!("uExpo")), if fr.expo > 0.0 { fr.expo } else { 1.0 });
@@ -488,10 +512,11 @@ impl Renderer {
         else { gl.uniform_1_f32(p.u(U!("uHudOn")), 0.0); }
         gl.uniform_3_f32_slice(p.u(U!("uSplitS")), &fr.split_s); gl.uniform_3_f32_slice(p.u(U!("uSplitH")), &fr.split_h); gl.uniform_2_f32(p.u(U!("uTexel")), fr.texel[0], fr.texel[1]);
         gl.bind_vertex_array(Some(self.quad_vao)); gl.draw_arrays(glow::TRIANGLES, 0, 3); gl.bind_vertex_array(None);
-        // nearest-neighbour upscale to the screen
-        gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(f2)); gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, screen);
-        gl.blit_framebuffer(0, 0, lw, lh, 0, 0, w, h, glow::COLOR_BUFFER_BIT, glow::NEAREST);
-        gl.bind_framebuffer(glow::FRAMEBUFFER, screen);
+        // sharp-bilinear upscale to the screen (flat pixels, one blended screen pixel at each border: steady under a non-integer scale)
+        let t2 = self.tgt.unwrap().6; gl.bind_framebuffer(glow::FRAMEBUFFER, screen); gl.viewport(0, 0, w, h);
+        let p = &self.up; gl.use_program(Some(p.prog)); gl.active_texture(glow::TEXTURE0); gl.bind_texture(glow::TEXTURE_2D, Some(t2)); gl.uniform_1_i32(p.u(U!("tScene")), 0);
+        gl.uniform_2_f32(p.u(U!("uSrc")), lw as f32, lh as f32); gl.uniform_2_f32(p.u(U!("uZoom")), (w as f32 / lw as f32).max(1.0), (h as f32 / lh as f32).max(1.0));
+        gl.bind_vertex_array(Some(self.quad_vao)); gl.draw_arrays(glow::TRIANGLES, 0, 3); gl.bind_vertex_array(None);
         self.stats = (calls, tris); self.tq_post = post_q;
         Ok(())
     }

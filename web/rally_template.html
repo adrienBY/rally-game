@@ -592,13 +592,13 @@ function bakeSunShadows() {
     const W = c.R, L = Math.min(c.R * 3, (c.L || c.R * 0.6) / tanE + c.R / sinE * 0.4 + c.R * 0.5), span = Math.ceil(Math.max(W, L)) + 1;
     for (let j = -span; j <= span; j++) for (let i = -span; i <= span; i++) { const x = Math.round(sx) + i, z = Math.round(sz) + j, ax = x - sx, az = z - sz;
       const a = ax * dx + az * dz, b = -ax * dz + az * dx, q = (a / L) ** 2 + (b / W) ** 2; if (q >= 1) continue;
-      const dap = 0.72 + 0.28 * vnoise(x * 0.55 + 11, z * 0.55 - 7);   // light through the gaps in the leaves
+      const dap = 0.78 + 0.22 * vnoise(x * 0.38 + 11, z * 0.38 - 7);   // light through the gaps in the leaves (broad flecks: fine ones shimmer once they shrink below a pixel)
       put(x, z, Math.min(1, c.d * 1.12) * smooth(1, 0.4, q) * dap); }
     // the trunk, from its foot to the canopy's shadow
     const tl = Math.max(0, off - L * 0.6), w = c.tr + 0.35;
     for (let s2 = 0; s2 <= tl; s2 += 0.5) { const x = t.x + dx * s2, z = t.z + dz * s2; put(x, z, 0.5); put(x - dz * w * 0.5, z + dx * w * 0.5, 0.25); put(x + dz * w * 0.5, z - dx * w * 0.5, 0.25); } }
-  // soften by a pixel (shadows of leaves are never razor sharp at this distance)
-  { const T = new Float32Array(SS); for (let z = 1; z < GNZ - 1; z++) for (let x = 1; x < GNX - 1; x++) { const q = z * GNX + x; SS[q] = T[q] * 0.5 + (T[q - 1] + T[q + 1] + T[q - GNX] + T[q + GNX]) * 0.125; } }
+  // soften twice (penumbrae of leaves are wide at this distance, and soft edges hold still on far ground instead of crawling)
+  for (let pass = 0; pass < 2; pass++) { const T = new Float32Array(SS); for (let z = 1; z < GNZ - 1; z++) for (let x = 1; x < GNX - 1; x++) { const q = z * GNX + x; SS[q] = T[q] * 0.5 + (T[q - 1] + T[q + 1] + T[q - GNX] + T[q + GNX]) * 0.125; } }
   const tint = (geo) => { const P = geo.attributes.position.array, C = geo.attributes.color.array;
     for (let i = 0; i < P.length / 3; i++) { const o = sunShadowAt(P[i * 3], P[i * 3 + 2]); if (o < 0.004) continue; for (let c = 0; c < 3; c++) C[i * 3 + c] *= shadowMul(o, c); }
     geo.attributes.color.needsUpdate = true; };

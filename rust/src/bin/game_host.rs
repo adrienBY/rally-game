@@ -58,7 +58,7 @@ fn main() {
         gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(tex), 0);
         let mut steps: Vec<(f64, String)> = a[4].split(',').filter_map(|s| { let (t, act) = s.split_once(':')?; Some((t.parse().ok()?, act.to_string())) }).collect();
         steps.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap());
-        let end = steps.last().map(|s| s.0).unwrap_or(1.0) + 0.05; let dt = 1.0 / 60.0; let mut t = 0.0; let mut k = 0; let mut log = false; let mut next_log = 0.0;
+        let end = steps.last().map(|s| s.0).unwrap_or(1.0) + 0.05; let dt = 1.0 / 60.0; let mut t = 0.0; let mut k = 0; let mut log = false; let mut next_log = 0.0; let mut burst: i32 = 0;
         let mut tick_ms = 0.0f64; let mut ticks = 0;
         let mut audio = vec![0f32; 800 * 2]; let (mut arms, mut apk, mut anb, mut aclip) = (0f64, 0f32, 0f64, 0f64);
         while t < end {
@@ -76,6 +76,7 @@ fn main() {
                             let i = fogwood_core::game::path_idx(&e.world, g.car.x, g.car.z) as i64; let mut d = i - last; if d < -900 { d += np as i64; } if d > 900 { d -= np as i64; } prog += d; last = i;
                             if prog >= np as i64 { break; } tt += 1.0 / 60.0; }
                         println!("aisim t={:.1} prog={} x={:.6} z={:.6}", tt, prog, g.car.x, g.car.z); }
+                    "burst" => { burst = parts[1].parse().unwrap_or(30); }
                     "shot" => {
                         r.draw(Some(fb), w, h).expect("draw"); let gl = r.gl(); gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fb));
                         let mut px = vec![0u8; (w * h * 4) as usize]; gl.read_pixels(0, 0, w, h, glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelPackData::Slice(&mut px));
@@ -88,9 +89,13 @@ fn main() {
                     _ => println!("unknown {}", act),
                 }
             }
+            if burst > 0 { burst -= 1; r.draw(Some(fb), w, h).expect("draw"); let gl = r.gl(); gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fb));
+                let mut px = vec![0u8; (w * h * 4) as usize]; gl.read_pixels(0, 0, w, h, glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelPackData::Slice(&mut px));
+                let mut out = Vec::with_capacity((w * h * 3) as usize); for y in (0..h).rev() { for x in 0..w { let i = ((y * w + x) * 4) as usize; out.extend_from_slice(&px[i..i + 3]); } }
+                std::fs::write(format!("{}/b{:05.2}.rgb", a[3], t), out).unwrap(); }
             let t0 = std::time::Instant::now(); g.tick(&mut r, dt); if std::env::var("HUDCHECK").is_ok() && !g.hud.verify() { println!("HUD MISMATCH at t={:.2}", t); } tick_ms += t0.elapsed().as_secs_f64() * 1000.0; ticks += 1;
             fogwood_audio::native::render(&mut audio); { let (mut s2, mut pk) = (0f64, 0f32); for v in &audio { s2 += (*v as f64) * (*v as f64); pk = pk.max(v.abs()); if !v.is_finite() { println!("audio NaN"); break; } } arms += s2 / audio.len() as f64; apk = apk.max(pk); anb += 1.0; if pk >= 0.999 { aclip += 1.0; } }
-            if log && t >= next_log { next_log = t + 1.0; let c = &g.car; println!("log t={:.1} x={:.2} z={:.2} kmh={:.0} gear={} race_t={:.1} pos={} cars={:?}", t, c.x, c.z, c.u * 3.6, c.gear, g.race.t, g.race.pos,
+            if log && t >= next_log { next_log = t + 1.0; let c = &g.car; println!("log t={:.1} x={:.2} z={:.2} kmh={:.0} gear={} sunvis={:.2} race_t={:.1} pos={} cars={:?}", t, c.x, c.z, c.u * 3.6, c.gear, g.sun_vis, g.race.t, g.race.pos,
                 g.race.cars.iter().map(|q| (q.r.map(|i| fogwood_core::game::race::RIVALS[i].tag).unwrap_or("YOU"), (q.prog as i64), q.resets)).collect::<Vec<_>>()); }
             for e in g.events.drain(..) { if !e.starts_with("h ") { println!("event {}", e); } }
             t += dt;
