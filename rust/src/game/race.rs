@@ -26,33 +26,47 @@ pub struct RCar {
     pub cap: f64, pub pv: f64, pub boost: f64, pub form: f64, pub mist: f64, pub mist_cd: f64, pub stuck_t: f64, pub lap_t0: f64, pub laps_done: i64,
     pub last: Option<f64>, pub best: Option<f64>, pub finished: bool, pub finish_t: f64, pub react: f64, pub tag_x: f64, pub tag_y: f64, pub tag_on: bool,
     pub err: f64, pub trust: f64, pub off_at: Option<usize>, pub resets: i32,
+    /// online: the peer driving this car (its colour still comes from `r`) and their name
+    pub remote: Option<u32>, pub name: String,
 }
-impl RCar { pub fn is_player(&self) -> bool { self.r.is_none() } }
+impl RCar {
+    pub fn is_player(&self) -> bool { self.r.is_none() }
+    /// driven by this phone's AI (not you, not another player)
+    pub fn is_ai(&self) -> bool { self.r.is_some() && self.remote.is_none() }
+    /// three-letter tag for standings and name tags
+    pub fn tag(&self) -> String { if self.remote.is_some() { let t: String = self.name.chars().filter(|c| c.is_ascii_alphanumeric()).take(3).collect(); if t.is_empty() { "???".into() } else { t.to_uppercase() } } else { RIVALS[self.r.unwrap_or(0)].tag.to_string() } }
+    /// name on the results board
+    pub fn full_name(&self) -> String { if self.remote.is_some() { self.name.to_uppercase() } else { let nm = RIVALS[self.r.unwrap_or(0)].name; format!("{}. {}", &nm[..1], nm.split(' ').nth(1).unwrap_or("")) } }
+}
 
 pub struct Race {
     pub on: bool, pub laps: i64, pub cars: Vec<RCar>, pub player: usize, pub phase: Phase, pub t: f64, pub done_t: f64, pub note: String, pub pos: usize,
     pub order: Vec<usize>, pub finish_pos: usize, pub rlearn: Vec<f64>, pub shown: bool,
+    /// online race: lights out at `go_at` on the host's clock
+    pub online: bool, pub go_at: f64,
 }
 
 impl Race {
     pub fn new(rt: &Rt, ps: &Persist) -> Race {
         let np = rt.np; let n = (np + 9) / 10; let mut rlearn = vec![1.0; n];
         if let Some(v) = ps.saves.get(&format!("fogwood-learn-{}", rt.map)) { if v.len() == n * 2 { for i in 0..n { rlearn[i] = 0.7 + v[i * 2..i * 2 + 2].parse::<f64>().unwrap_or(99.0) / 330.0; } } }
-        Race { on: false, laps: if np > 2300 { 2 } else { 3 }, cars: Vec::new(), player: 0, phase: Phase::Off, t: 0.0, done_t: 0.0, note: String::new(), pos: 0, order: Vec::new(), finish_pos: 0, rlearn, shown: false }
+        Race { on: false, laps: if np > 2300 { 2 } else { 3 }, cars: Vec::new(), player: 0, phase: Phase::Off, t: 0.0, done_t: 0.0, note: String::new(), pos: 0, order: Vec::new(), finish_pos: 0, rlearn, shown: false, online: false, go_at: 0.0 }
     }
 }
 
-fn mk_car(g: &mut Game, r: Option<usize>, k: usize, lat: f64) -> RCar {
+pub(crate) fn mk_car(g: &mut Game, r: Option<usize>, k: usize, lat: f64) -> RCar {
     let form = 0.98 + g.rng.f() * 0.04; let mist_cd = 5.0 + g.rng.f() * 5.0; let react = 0.12 + g.rng.f() * 0.4;
     RCar { r, car: Car::new(), prog: k as f64 - g.np as f64, last_idx: k, i: k, lat, v: 0.0, lane: lat, lane_t: lat, pass_t: 3.0, cap: 99.0, pv: 1.0, boost: 0.0, form, mist: 0.0, mist_cd,
-        stuck_t: 0.0, lap_t0: 0.0, laps_done: 0, last: None, best: None, finished: false, finish_t: 0.0, react, tag_x: -99.0, tag_y: -99.0, tag_on: false, err: 0.0, trust: 1.0, off_at: None, resets: 0 }
+        stuck_t: 0.0, lap_t0: 0.0, laps_done: 0, last: None, best: None, finished: false, finish_t: 0.0, react, tag_x: -99.0, tag_y: -99.0, tag_on: false, err: 0.0, trust: 1.0, off_at: None, resets: 0, remote: None, name: String::new() }
 }
 /// rcPlace: on the road at index i, lat metres right of the centre line, optionally already rolling
-fn rc_place(c: &mut Car, rt: &Rt, w: &World, i: usize, lat: f64, speed: f64) {
+pub(crate) fn rc_place(c: &mut Car, rt: &Rt, w: &World, i: usize, lat: f64, speed: f64) {
     Game::place_raw(c, rt, w, i); let tn = rt.tan[i]; c.x += -tn[1] * lat; c.z += tn[0] * lat; c.y = w.height(c.x, c.z) + 0.075;
     if speed > 0.0 { c.vx = tn[0] * speed; c.vz = tn[1] * speed; c.gear = if speed > 20.0 { 3.0 } else { 2.0 }; c.rpm = 4300.0; for wh in c.wh.iter_mut() { wh.w = speed / super::TIRE_R; } }
 }
 
+/// grid slot s: (path index, metres right of the centre line)
+pub(crate) fn slot(np: usize, s: usize) -> (usize, f64) { let row = s >> 1; let col = s & 1; ((np * 4 - 9 - row * 11 - col * 5) % np, if col == 1 { 1.55 } else { -1.55 }) }
 pub fn start(g: &mut Game, w: &World) {
     let np = g.np; g.race.on = true; g.race.phase = Phase::Grid; g.race.t = 0.0; g.race.done_t = 0.0; g.race.note.clear(); g.race.cars.clear(); g.go = 4.5;
     let slot = |s: usize| -> (usize, f64) { let row = s >> 1; let col = s & 1; ((np * 4 - 9 - row * 11 - col * 5) % np, if col == 1 { 1.55 } else { -1.55 }) };
@@ -66,7 +80,7 @@ pub fn start(g: &mut Game, w: &World) {
         let mut c = mk_car(g, Some(order[ri]), k, lat); ri += 1; rc_place(&mut c.car, &g.rt, w, k, lat, 0.0); g.race.cars.push(c);
     }
 }
-pub fn stop(g: &mut Game) { g.race.on = false; g.race.phase = Phase::Off; g.race.cars.clear(); }
+pub fn stop(g: &mut Game) { g.race.online = false; g.race.on = false; g.race.phase = Phase::Off; g.race.cars.clear(); }
 
 fn state<'a>(g: &'a Game, k: usize) -> &'a Car { if g.race.cars[k].is_player() { &g.car } else { &g.race.cars[k].car } }
 
@@ -77,7 +91,7 @@ fn plan(g: &mut Game, w: &World, dt: f64) {
         let c = &mut g.race.cars[k]; c.i = i; c.lat = (st.x - p[0]) * -tn[1] + (st.z - p[1]) * tn[0]; c.v = (st.vx * tn[0] + st.vz * tn[1]).max(0.0); }
     let pprog = g.race.cars[g.race.player].prog; let skill = g.ps.race_skill; let br = 6.5 * g.tune.mu_road;
     for k in 0..n {
-        if g.race.cars[k].is_player() { continue; }
+        if !g.race.cars[k].is_ai() { continue; }
         let (cprog, clat, cv, ci, clane, aggr) = { let c = &g.race.cars[k]; (c.prog, c.lat, c.v, c.i, c.lane, RIVALS[c.r.unwrap()].aggr) };
         let gap = pprog - cprog; let band = clamp(gap / 1100.0, -0.07, 0.07);
         let pv = { let c = &g.race.cars[k]; RIVALS[c.r.unwrap()].pace * skill * (1.0 + band) * c.form };
@@ -203,7 +217,8 @@ fn finish(g: &mut Game) {
     let next = if g.race.cars.iter().filter(|c| !c.is_player() && c.finished).count() == 0 {
         let mut best = 1e9; for c in &g.race.cars { if !c.is_player() { best = f64::min(best, (laps * np - c.prog) / c.v.max(15.0)); } } best } else { 0.0 };
     let d = if pos == 1 { if next > 10.0 { 0.05 } else if next > 4.0 { 0.03 } else { 0.015 } } else if pos <= 3 { 0.0 } else if pos <= 5 { -0.015 } else { -0.03 };
-    g.ps.race_skill = clamp(g.ps.race_skill + d, 0.84, 1.1); let v = format!("{:.3}", g.ps.race_skill); g.ps.saves.set("fogwood-skill", v);
+    let d = if g.race.online { 0.0 } else { d };
+    if !g.race.online { g.ps.race_skill = clamp(g.ps.race_skill + d, 0.84, 1.1); let v = format!("{:.3}", g.ps.race_skill); g.ps.saves.set("fogwood-skill", v); }
     g.race.note = if d > 0.0 { "RIVALS WILL PUSH HARDER".into() } else if d < 0.0 { "RIVALS WILL EASE OFF".into() } else { String::new() }; g.race.finish_pos = pos;
     let m = if pos == 1 { "YOU WIN!".to_string() } else { format!("FINISHED P{}", pos) }; g.flash_msg(&m, 3.0);
 }
@@ -216,12 +231,13 @@ pub fn results(g: &Game) -> Vec<(usize, f64, bool)> {
 }
 
 pub fn step(g: &mut Game, w: &World, obs: &Obstacles, dt: f64) {
-    if g.go > 0.0 { g.go -= dt; }
+    if g.race.online { if let Some(hn) = crate::net::with(|s| s.host_now()) { g.go = (g.race.go_at - hn + 0.9).max(0.0); if g.race.phase != Phase::Grid { g.race.t = (hn - g.race.go_at).max(0.0); } } }
+    else if g.go > 0.0 { g.go -= dt; }
     if g.race.phase == Phase::Grid && g.go <= 0.9 { g.race.phase = Phase::Race; }
-    if g.race.phase != Phase::Grid { g.race.t += dt; }
+    if g.race.phase != Phase::Grid && !g.race.online { g.race.t += dt; }
     plan(g, w, dt);
     for k in 0..g.race.cars.len() {
-        if g.race.cars[k].is_player() { continue; }
+        if !g.race.cars[k].is_ai() { continue; }
         let bo = g.race.cars[k].boost; let mut t: Tune = g.tune;
         t.power = g.tune.power * (1.0 + bo); t.mu_road = g.tune.mu_road * (RT_MU + bo * 0.4); t.mu_grass = g.tune.mu_grass * (1.0 + bo * 0.4);
         t.a_grip = g.tune.a_grip * RT_GRIP; t.a_yaw_cap = g.tune.a_yaw_cap * RT_YAW;

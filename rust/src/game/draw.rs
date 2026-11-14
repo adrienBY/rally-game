@@ -16,6 +16,8 @@ pub fn hud(gm: &mut Game) {
     let mut ui: Vec<(&'static str, Rect)> = Vec::new();
     let km_total = gm.stage_km();
     let res = if gm.race.on && gm.race.phase == Phase::Done && gm.race.done_t > 1.2 { race::results(gm) } else { Vec::new() };
+    for k in super::online::KEYS { gm.ui.remove(k); }
+    if gm.ps.online_ui != super::online::OnlineUi::Closed { for k in ["mapF", "mapS", "mapC", "mapL", "mapT", "mapR", "mode"] { gm.ui.remove(k); } }
     let g = &mut gm.hud; g.clear();
     let (bw, bh, gap) = (22.0 * u, 13.0 * u, 3.0 * u); let mut bx = lw - pr - bw;
     let mut btn = |g: &mut Canvas, ui: &mut Vec<(&'static str, Rect)>, k: &'static str, label: &str, on: bool| {
@@ -28,7 +30,10 @@ pub fn hud(gm: &mut Game) {
     for k in ["cam", "rst", "menu"] { gm.ui.remove(k); }
     { let rec = gm.bench_secs; let l = match rec { Some(s) => format!("REC {}", s), None => "REC".to_string() }; btn(g, &mut ui, "rec", &l, rec.is_some()); }   // temporary benchmark button
     { let l = match &gm.tel { Some(t) => format!("TEL {}:{:02}", (t.t / 60.0) as u32, (t.t as u32) % 60), None => "TEL".to_string() }; btn(g, &mut ui, "tel", &l, gm.tel.is_some()); }
-    if gm.state == State::Title {
+    if gm.state == State::Title && gm.ps.online_ui != super::online::OnlineUi::Closed && !portrait {
+        g.rect_c(0.0, 0.0, lw, lh, rgba(6, 9, 6, 0.42));
+        super::online::draw(&gm.ps, &gm.rt.map, g, &mut ui, lw, lh, u, pt + 16.0 * u);
+    } else if gm.state == State::Title {
         g.rect_c(0.0, 0.0, lw, lh, rgba(6, 9, 6, 0.42));
         let sc = (4.0 * u).min((lh / 42.0).floor()).min((lw / 46.0).floor()).max(2.0); let ty = js_round(lh * 0.15);
         g.tx("FOGWOOD", (lw - text_w("FOGWOOD", sc)) / 2.0, ty, sc, INK); g.tx("RALLY", (lw - text_w("RALLY", sc)) / 2.0, ty + 9.0 * sc, sc, AMBER);
@@ -49,9 +54,13 @@ pub fn hud(gm: &mut Game) {
                 g.tx(label, x + (mw - text_w(label, u)) / 2.0, my + 3.0 * u, u, if on { AMBER } else { INK }); }
             let rm = gm.ps.race_mode;
             let ml = if rm { format!("MODE: RACE - 5 RIVALS - {} LAPS", gm.race.laps) } else { "MODE: TIME TRIAL".to_string() };
-            let mw2 = text_w(&ml, u) + 12.0 * u; let mx2 = js_round((lw - mw2) / 2.0); let my2 = my + mh + 4.0 * u;
+            let room = crate::net::with(|s| s.code); let ol = match room { Some(c) => format!("ONLINE: ROOM {:06}", c), None => "ONLINE RACE".to_string() };
+            let ow = text_w(&ol, u) + 12.0 * u;
+            let mw2 = text_w(&ml, u) + 12.0 * u; let mx2 = js_round((lw - mw2 - ow - gp) / 2.0); let my2 = my + mh + 4.0 * u;
             ui.push(("mode", Rect { x: mx2, y: my2, w: mw2, h: mh })); g.panel(mx2, my2, mw2, mh, u, if rm { rgba(216, 72, 58, 0.32) } else { PANEL }, Some(if rm { RED } else { EDGE }));
             g.tx(&ml, mx2 + 6.0 * u, my2 + 3.0 * u, u, if rm { INK } else { rgba(233, 236, 226, 0.85) });
+            { let (ox, oy) = (mx2 + mw2 + gp, my2); ui.push(("online", Rect { x: ox, y: oy, w: ow, h: mh }));
+              g.panel(ox, oy, ow, mh, u, if room.is_some() { rgba(243, 207, 98, 0.3) } else { PANEL }, Some(if room.is_some() { AMBER } else { EDGE })); g.tx(&ol, ox + 6.0 * u, oy + 3.0 * u, u, if room.is_some() { AMBER } else { INK }); }
             let c1 = "SOUNDS CC0: KENNEY, LANDEPLAGE, HARGISSSOUND, THREADBARE, RUBBERDUCK, FELIX BLUME";
             if text_w(c1, u) < lw - 10.0 { g.text(c1, (lw - text_w(c1, u)) / 2.0, lh - pb - 8.0 * u, u, rgba(233, 236, 226, 0.5), None); }
         }
@@ -81,11 +90,11 @@ pub fn hud(gm: &mut Game) {
         for (n, &k) in order.iter().enumerate() { let c = &gm.race.cars[k]; let me = c.is_player();
             g.panel(pl, y, rw, 9.0 * u, u, if me { rgba(243, 207, 98, 0.3) } else { rgba(8, 12, 8, 0.5) }, if me { Some(AMBER) } else { None });
             g.rect_c(pl + 3.0 * u, y + 2.0 * u, 3.0 * u, 5.0 * u, css(c.r));
-            g.tx(&format!("{} {}", n + 1, if me { "YOU" } else { RIVALS[c.r.unwrap()].tag }), pl + 8.0 * u, y + u, u, if me { AMBER } else { INK });
+            g.tx(&format!("{} {}", n + 1, if me { "YOU".to_string() } else { c.tag() }), pl + 8.0 * u, y + u, u, if me { AMBER } else { INK });
             if !me && gm.race.phase != Phase::Grid { let gs = (c.prog - pp) / ((c.v + pv) / 2.0).max(12.0);
                 if gs.abs() < 99.0 { let lab = format!("{}{:.1}", if gs > 0.0 { "-" } else { "+" }, gs.abs()); g.text(&lab, pl + rw - 3.0 * u - text_w(&lab, u), y + u, u, rgba(233, 236, 226, 0.7), None); } }
             y += 10.0 * u; }
-        for c in &gm.race.cars { if c.is_player() || !c.tag_on { continue; } let tag = RIVALS[c.r.unwrap()].tag; let w = text_w(tag, u) + 4.0 * u; let x = js_round(c.tag_x - w / 2.0); let ty = js_round(c.tag_y - 9.0 * u);
+        for c in &gm.race.cars { if c.is_player() || !c.tag_on { continue; } let tag = c.tag(); let tag = tag.as_str(); let w = text_w(tag, u) + 4.0 * u; let x = js_round(c.tag_x - w / 2.0); let ty = js_round(c.tag_y - 9.0 * u);
             g.panel(x, ty, w, 9.0 * u, u, rgba(8, 12, 8, 0.55), None); g.rect_c(x, ty + 8.0 * u, w, u, css(c.r)); g.text(tag, x + 2.0 * u, ty + u, u, INK, None); }
     }
     // speedo
@@ -133,7 +142,7 @@ pub fn hud(gm: &mut Game) {
         for (n, (k, t, done)) in res.iter().enumerate() { let c = &gm.race.cars[*k]; let y = ry + (24.0 + n as f64 * 10.0) * u; let me = c.is_player();
             if me { g.rect_c(rx + 2.0 * u, y - u, rw - 4.0 * u, 9.0 * u, rgba(243, 207, 98, 0.18)); }
             g.rect_c(rx + 6.0 * u, y, 3.0 * u, 6.0 * u, css(c.r));
-            let name = if me { "YOU".to_string() } else { let nm = RIVALS[c.r.unwrap()].name; format!("{}. {}", &nm[..1], nm.split(' ').nth(1).unwrap_or("")) };
+            let name = if me { "YOU".to_string() } else { c.full_name() };
             g.tx(&format!("{}  {}", n + 1, name), rx + 12.0 * u, y, u, if me { AMBER } else { INK });
             let tm = if n == 0 { fmt(Some(*t)) } else { format!("+{:.2}{}", t - w0, if *done { "" } else { "*" }) }; g.text(&tm, rx + rw - 62.0 * u - text_w(&tm, u), y, u, INK, None);
             let bl = fmt(c.best); g.text(&bl, rx + rw - 6.0 * u - text_w(&bl, u), y, u, rgba(233, 236, 226, 0.75), None); }

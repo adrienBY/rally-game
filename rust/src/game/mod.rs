@@ -5,6 +5,7 @@ pub mod math;
 pub mod race;
 pub mod rt;
 pub mod telemetry;
+pub mod online;
 mod draw;
 
 use crate::bridge;
@@ -64,11 +65,13 @@ pub struct CamState { pub y: f64, pub h: f64, pub init: bool, pub mode: i32, pub
 
 /// settings that survive switching stages
 pub struct Persist { pub saves: Saves, pub sound_on: bool, pub vib_on: bool, pub pix_idx: usize, pub touch_used: bool, pub downgraded: bool,
-    pub race_mode: bool, pub race_skill: f64 }
+    pub race_mode: bool, pub race_skill: f64,
+    /// online: which room screen is open, your name in rooms, laps for a hosted race
+    pub online_ui: online::OnlineUi, pub name: String, pub online_laps: u8 }
 impl Persist {
     pub fn new(save_path: &str) -> Persist {
         let saves = Saves::load(save_path);
-        let mut p = Persist { saves, sound_on: true, vib_on: true, pix_idx: 2, touch_used: false, downgraded: false, race_mode: false, race_skill: 0.95 };
+        let mut p = Persist { saves, sound_on: true, vib_on: true, pix_idx: 2, touch_used: false, downgraded: false, race_mode: false, race_skill: 0.95, online_ui: online::OnlineUi::Closed, name: String::new(), online_laps: 2 };
         p.reload(); p
     }
     pub fn reload(&mut self) {
@@ -76,6 +79,9 @@ impl Persist {
         if let Some(v) = self.saves.get("fogwood-pix").and_then(|v| v.parse::<usize>().ok()) { if v < PIX.len() { self.pix_idx = v; } }
         self.race_mode = self.saves.get("fogwood-mode") == Some("race");
         if let Some(v) = self.saves.get("fogwood-skill").and_then(|v| v.parse::<f64>().ok()) { if v > 0.8 && v < 1.1 { self.race_skill = v; } }
+        match self.saves.get("fogwood-name") { Some(n) if !n.is_empty() => self.name = n.to_string(), _ => {
+            let k = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(7) % 90 + 10;
+            self.name = format!("DRIVER{}", k); let n = self.name.clone(); self.saves.set("fogwood-name", n); } }
     }
 }
 
@@ -212,7 +218,7 @@ impl Game {
 
     fn hit_button(&self, x: f64, y: f64) -> Option<&'static str> {
         let inb = |b: &Rect, l: f64, r: f64, t: f64, bt: f64| x >= b.x - l && x <= b.x + b.w + r && y >= b.y - t && y <= b.y + b.h + bt;
-        if self.state == State::Title { for k in ["mapF", "mapS", "mapC", "mapL", "mapT", "mapR", "mode"] { if let Some(b) = self.ui.get(k) { if inb(b, 2.0, 2.0, 3.0, 3.0) { return Some(k); } } } }
+        if self.state == State::Title { for k in ["mapF", "mapS", "mapC", "mapL", "mapT", "mapR", "mode"].iter().chain(online::KEYS.iter()) { if let Some(b) = self.ui.get(k) { if inb(b, 2.0, 2.0, 3.0, 3.0) { return Some(k); } } } }
         for k in TOPB { if let Some(b) = self.ui.get(k) { if inb(b, 2.0, 2.0, 2.0, 3.0) { return Some(k); } } }
         let (Some(hb), Some(left), Some(right), Some(gas)) = (self.ui.get("hb"), self.ui.get("left"), self.ui.get("right"), self.ui.get("gas")) else { return None };
         if !self.ps.touch_used { return None; }
@@ -230,6 +236,7 @@ impl Game {
             0 => {
                 self.ps.touch_used = true; let b = self.hit_button(x, y);
                 if let Some(b) = b { self.buzz("tap", if TOPB.contains(&b) || b.starts_with("map") { 0.55 } else { 0.4 }); } else if self.state == State::Title { self.buzz("tap", 0.55); }
+                if let Some(k) = b { if online::KEYS.contains(&k) && self.state == State::Title { self.online_tap(k); return; } }
                 match b {
                     Some("snd") => self.toggle_sound(),
                     Some("vib") => { self.ps.vib_on = !self.ps.vib_on; self.ps.saves.set("fogwood-vib", if self.ps.vib_on { "1".into() } else { "0".into() }); if self.ps.vib_on { self.buzz("shift", 0.7); }
@@ -240,6 +247,8 @@ impl Game {
                     Some("rec") => { self.bench_req = true; }   // temporary: benchmark recording on / off
                     Some("tel") => self.tel_toggle(),
                     Some(k) if k.starts_with("map") => { let want = match k { "mapF" => "forest", "mapS" => "snow", "mapC" => "canyon", "mapL" => "lakes", "mapT" => "touge", _ => "riviera" }; if want != self.rt.map { self.switch_map(want); } }
+                    _ if self.state == State::Title && self.online_open() => {}
+                    _ if self.state == State::Title && crate::net::active() => { self.ps.online_ui = online::OnlineUi::Lobby; }
                     _ if self.state == State::Title => self.start_game(),
                     None if self.race.on && self.race.phase == race::Phase::Done && self.race.done_t > 1.2 => { self.to_title(); }
                     Some("menu") => { self.to_title(); }
@@ -318,6 +327,7 @@ impl Game {
         } else { self.ai_input(w) };
         let mut tp = std::time::Instant::now(); let mut prof = [0f32; 8];
         macro_rules! lap { ($k:expr) => {{ let n = std::time::Instant::now(); prof[$k] += (n - tp).as_secs_f32() * 1000.0; tp = n; }} }
+        self.online_tick(w);
         let shifted = self.car.update(w, obs, &self.tune, dt, &inp); lap!(0);
         if shifted { if self.state == State::Drive { self.buzz("shift", 0.45); } self.audio_msg(&[7.0, 2.0]); }
         if self.state == State::Drive { if self.race.on { race::step(self, w, obs, dt); } else { self.update_lap(w, dt); } } lap!(1);

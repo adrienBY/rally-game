@@ -69,6 +69,12 @@ fn main() {
                     "start" => g.start_game(), "auto" => g.auto = true, "race" => { g.ps.race_mode = true; }
                     "tap" => { let (x, y) = (parts[1].parse::<f64>().unwrap(), parts[2].parse::<f64>().unwrap()); g.touch(0, 7, x, y); g.touch(2, 7, x, y); }
                     "menu" => { g.to_title(); } "log" => log = true, "tel" => g.tel_toggle(),
+                    "online" => { let k = parts[1]; let key: &'static str = fogwood_core::game::online::KEYS.iter().find(|x| **x == k).copied().unwrap_or("online"); g.online_tap(key);
+                        if key == "on_host" { if let Some(c) = fogwood_core::net::with(|s| s.code) { std::fs::write("/tmp/fw_code", c.to_string()).unwrap(); println!("hosting {}", c); } } }
+                    "joincode" => { let c = std::fs::read_to_string("/tmp/fw_code").unwrap(); g.online_tap("online"); g.online_tap("on_join"); for ch in c.trim().chars() { let k: &'static str = ["k0","k1","k2","k3","k4","k5","k6","k7","k8","k9"][ch.to_digit(10).unwrap() as usize]; g.online_tap(k); } g.online_tap("kok"); println!("joined {}", c.trim()); }
+                    "net" => { fogwood_core::net::with(|s| println!("net t={:.1} host={} up={} peers={:?} host_now={:.2}", t, s.is_host, s.brokers_up(), s.peers.values().map(|p| (p.name.clone(), p.link(), (p.rtt * 1000.0) as i32)).collect::<Vec<_>>(), s.host_now())); }
+                    "rstate" => { println!("race t={:.1} on={} online={} phase={:?} go={:.2} race_t={:.2} pos={} cars={:?}", t, g.race.on, g.race.online, g.race.phase, g.go, g.race.t, g.race.pos,
+                        g.race.cars.iter().map(|c| (c.tag(), (c.car.x * 10.0).round() / 10.0, (c.car.z * 10.0).round() / 10.0, c.prog as i64)).collect::<Vec<_>>()); }
                     "aisim" => {   // same as the page's AI lap test: placeAt(0), demo driver + physics at 60 Hz until a full lap
                         let lock = fogwood_core::bridge::lock(); let e = lock.as_ref().unwrap(); let np = g.np;
                         g.place_at(&e.world, 0); let (mut tt, mut prog, mut last) = (0.0, 0i64, fogwood_core::game::path_idx(&e.world, g.car.x, g.car.z) as i64);
@@ -98,7 +104,7 @@ fn main() {
             if log && t >= next_log { next_log = t + 1.0; r.draw(Some(fb), w, h).expect("draw"); let c = &g.car; println!("log calls={} tris={} t={:.1} x={:.2} z={:.2} kmh={:.0} gear={} sunvis={:.2} race_t={:.1} pos={} cars={:?}", r.stats.0, r.stats.1, t, c.x, c.z, c.u * 3.6, c.gear, g.sun_vis, g.race.t, g.race.pos,
                 g.race.cars.iter().map(|q| (q.r.map(|i| fogwood_core::game::race::RIVALS[i].tag).unwrap_or("YOU"), (q.prog as i64), q.resets)).collect::<Vec<_>>()); }
             for e in g.events.drain(..) { if !e.starts_with("h ") { println!("event {}", e); } }
-            t += dt;
+            t += dt; if std::env::var("FW_REALTIME").is_ok() { std::thread::sleep(std::time::Duration::from_secs_f64(dt)); }
         }
         println!("tick avg {:.3} ms over {} frames (incl. hud)", tick_ms / ticks as f64, ticks);
     }
