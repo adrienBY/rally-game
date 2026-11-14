@@ -1,6 +1,6 @@
 # Fogwood Rally — Android
 
-Pixel-art rally game (Forest, Snow, Canyon, Lakes, Touge and Riviera stages) packaged as a native Android app with a custom Rust engine core.
+Pixel-art rally game (Forest, Snow, Canyon, Lakes, Touge and Riviera stages; time trial or races against five AI rivals) packaged as a native Android app with a custom Rust engine core.
 
 ```
 rust/      fogwood_core: stage generation + vehicle physics in Rust (JNI cdylib)

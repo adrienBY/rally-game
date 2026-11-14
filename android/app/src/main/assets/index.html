@@ -1877,10 +1877,11 @@ function syncCar() {
   car.shadow.material.opacity = 0.62 * clamp(1 - (above - 0.08) / 3.5, 0.12, 1); car.shadow.scale.setScalar(1 + clamp(above - 0.08, 0, 4) * 0.12);
 }
 const camState = { y: 0, h: 0, init: false, mode: 0, fov: 56 };
-function placeAt(i) {
+function placeAt(i) { placeRaw(i); camState.init = false; }
+function placeRaw(i) {
   const p = PATH[i], t = TAN[i]; S.x = p[0]; S.z = p[1]; S.h = Math.atan2(t[0], t[1]); S.vx = S.vz = S.r = 0; S.gear = 1; S.rpm = 900; S.steer = 0;
   S.axF = S.ayF = 0; S.y = height(S.x, S.z) + 0.075; S.vy = 0; S.pitch = S.roll = S.pr = S.rr = 0; S.airT = 0; S.landed = false; S.landV = 0;
-  for (const w of WH) { w.w = 0; w.comp = 0.135; w.d = 0.075; w.fz = 2900; } camState.init = false;
+  for (const w of WH) { w.w = 0; w.comp = 0.135; w.d = 0.075; w.fz = 2900; } S.hbT = 0; S.pT = 0; S.pB = 0; S.impact = 0;
 }
 
 /* ================= input ================= */
@@ -1889,6 +1890,8 @@ addEventListener("keydown", e => { if (!alive) return;
   if (e.target && /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return;
   if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"].includes(e.code)) e.preventDefault();
   keys.add(e.code);
+  if (game.state === "title" && e.code === "KeyT") toggleMode();
+  if (game.state === "drive" && RACE.on && RACE.phase === "done" && RACE.doneT > 1.2 && (e.code === "Enter" || e.code === "Space")) { toTitle(); return; }
   if (game.state === "title" && (e.code === "Enter" || e.code === "Space")) startGame();
   if (game.state === "title" && /^Digit[123456]$/.test(e.code)) { const want = ["forest", "snow", "canyon", "lakes", "touge", "riviera"][+e.code[5] - 1]; if (want !== MAPN) { setTimeout(() => switchMap(want), 0); return; } }
   if (e.code === "KeyC") cycleCam(); if (e.code === "KeyR") resetCar(); if (e.code === "KeyM") toggleSound(); if (e.code === "Escape") toTitle();
@@ -1898,7 +1901,7 @@ const touches = new Map(); let touchUsed = false, UI = {};
 const lowXY = (e) => [e.clientX / innerWidth * LW, e.clientY / innerHeight * LH];
 const TOPB = ["snd", "vib", "cam", "pix", "rst", "menu"];
 function hitButton(x, y) {
-  if (game.state === "title") for (const k of ["mapF", "mapS", "mapC", "mapL", "mapT", "mapR"]) { const b = UI[k]; if (b && x >= b.x - 2 && x <= b.x + b.w + 2 && y >= b.y - 3 && y <= b.y + b.h + 3) return k; }
+  if (game.state === "title") for (const k of ["mapF", "mapS", "mapC", "mapL", "mapT", "mapR", "mode"]) { const b = UI[k]; if (b && x >= b.x - 2 && x <= b.x + b.w + 2 && y >= b.y - 3 && y <= b.y + b.h + 3) return k; }
   for (const k of TOPB) { const b = UI[k]; if (b && x >= b.x - 2 && x <= b.x + b.w + 2 && y >= b.y - 2 && y <= b.y + b.h + 3) return k; }
   if (!touchUsed || !UI.left || !UI.gas) return null;
   if (x >= UI.hb.x - 3 && x <= UI.hb.x + UI.hb.w + 3 && y >= UI.hb.y - 3 && y <= UI.hb.y + UI.hb.h + 2) return "hb";
@@ -1912,8 +1915,10 @@ canvas.addEventListener("pointerdown", e => {
   const [x, y] = lowXY(e), b = hitButton(x, y);
   if (b) buzz("tap", TOPB.includes(b) || b.startsWith("map") ? 0.55 : 0.4); else if (game.state === "title") buzz("tap", 0.55);
   if (b === "snd") toggleSound(); else if (b === "vib") { vibOn = !vibOn; try { localStorage.setItem("fogwood-vib", vibOn ? "1" : "0"); } catch (_) {} if (vibOn) buzz("shift", 0.7); flashMsg(vibOn ? "HAPTICS ON" : "HAPTICS OFF", 1); } else if (b === "pix") { pixIdx = (pixIdx + 1) % PIX.length; try { localStorage.setItem("fogwood-pix", String(pixIdx)); } catch (_) {} resize(); flashMsg(["CHUNKY PIXELS", "MEDIUM PIXELS", "FINE PIXELS"][pixIdx], 1); }
+  else if (b === "mode") toggleMode();
   else if (b === "mapF" || b === "mapS" || b === "mapC" || b === "mapL" || b === "mapT" || b === "mapR") { const want = { mapF: "forest", mapS: "snow", mapC: "canyon", mapL: "lakes", mapT: "touge", mapR: "riviera" }[b]; if (want !== MAPN) setTimeout(() => switchMap(want), 0); }
   else if (game.state === "title") startGame();
+  else if (!b && RACE.on && RACE.phase === "done" && RACE.doneT > 1.2) toTitle();
   else if (b === "menu") toTitle(); else if (b === "cam") cycleCam(); else if (b === "rst") resetCar(); else if (b) touches.set(e.pointerId, b);
 }, SIG);
 canvas.addEventListener("pointermove", e => { if (!touches.has(e.pointerId)) return; const [x, y] = lowXY(e), b = hitButton(x, y);
@@ -1937,6 +1942,196 @@ function aiInput() {
   return { steer: clamp(delta / lock, -1, 1), throttle: clamp((vt - u) * 0.5, 0, 1) * slideCut, brake: clamp((u - vt - 1.5) * 0.3, 0, 1), hb: false };
 }
 
+/* ================= race mode: five rival drivers on exactly the same car physics =================
+   Each rival keeps its own car state; for its step the state is swapped into the shared car slot (S + WH), so rivals run
+   through the same tyre model, gearbox and suspension as you - in JS in the browser and in Rust in the app. Cars collide as
+   three circles along their length with real impulses (a hard knock briefly loosens the grip assist, so you can spin). */
+const RIVALS = [
+  { name: "LENA VOSS", tag: "VOS", col: [1.0, 0.3, 0.24], pace: 1.0, aggr: 0.85, cons: 0.86 },
+  { name: "KAITO MORI", tag: "MOR", col: [0.34, 0.55, 1.0], pace: 0.985, aggr: 0.45, cons: 0.97 },
+  { name: "JOOST BAKKER", tag: "BAK", col: [1.0, 0.58, 0.18], pace: 0.99, aggr: 0.95, cons: 0.72 },
+  { name: "RUI SALGADO", tag: "SAL", col: [0.38, 0.86, 0.44], pace: 0.955, aggr: 0.55, cons: 0.9 },
+  { name: "ELISE DUVAL", tag: "DUV", col: [1.0, 0.88, 0.32], pace: 0.935, aggr: 0.35, cons: 0.93 }];
+let raceMode = false; try { raceMode = localStorage.getItem("fogwood-mode") === "race"; } catch (_) {}
+let raceSkill = 0.95; try { const v = parseFloat(localStorage.getItem("fogwood-skill")); if (v > 0.8 && v < 1.1) raceSkill = v; } catch (_) {}
+const RACE = { on: false, laps: NP > 2300 ? 2 : 3, cars: [], player: null, phase: "off", t: 0, doneT: 0, results: null, pos: 0, note: "" };
+let SIMAI = false;
+const PSNAP = { s: {}, w: [{}, {}, {}, {}] };
+function rcSave(c) { const s = c.s; for (const k in S) s[k] = S[k]; for (let i = 0; i < 4; i++) { const a = WH[i], b = c.w[i]; for (const k in a) b[k] = a[k]; } }
+function rcLoad(c) { const s = c.s; for (const k in s) S[k] = s[k]; for (let i = 0; i < 4; i++) { const a = c.w[i], b = WH[i]; for (const k in a) b[k] = a[k]; } }
+const rcState = (c) => c.isPlayer ? (SIMAI ? PSNAP.s : S) : c.s;
+/* racing line: towards the inside of each bend, eased in and out */
+const RLINE = new Float32Array(NP);
+{ const raw = new Float32Array(NP); for (let i = 0; i < NP; i++) { const a = TAN[(i + NP - 10) % NP], b = TAN[(i + 10) % NP]; raw[i] = clamp((a[0] * b[1] - a[1] * b[0]) * 3, -1.8, 1.8); }
+  for (let pass = 0; pass < 3; pass++) { const c = raw.slice(); for (let i = 0; i < NP; i++) { let s = 0; for (let k = -12; k <= 12; k++) s += c[(i + k + NP) % NP]; raw[i] = s / 25; } }
+  RLINE.set(raw); }
+function rcPlace(i, lat, speed) {   // the car currently in the slot, on the road at index i, lat metres right of the centre line
+  placeRaw(i); const tn = TAN[i]; S.x += -tn[1] * lat; S.z += tn[0] * lat; S.y = height(S.x, S.z) + 0.075;
+  if (speed > 0) { S.vx = tn[0] * speed; S.vz = tn[1] * speed; S.gear = speed > 20 ? 3 : 2; S.rpm = 4300; for (const w of WH) w.w = speed / TIRE_R; } }
+function mkCar(r, k, lat) {
+  return { r, isPlayer: !r, s: {}, w: [{}, {}, {}, {}], prog: k - NP, lastIdx: k, i: k, lat, v: 0, lane: lat, laneT: lat, passT: 3, cap: 99, pv: 1,
+    form: 0.98 + Math.random() * 0.04, mist: 0, mistCD: 5 + Math.random() * 5, stuckT: 0, lapT0: 0, lapsDone: 0, last: null, best: null,
+    finished: false, finishT: 0, react: 0.12 + Math.random() * 0.4, eng: null, tagX: -99, tagY: -99, tagOn: false }; }
+function startRace() {
+  RACE.on = true; RACE.phase = "grid"; RACE.t = 0; RACE.doneT = 0; RACE.results = null; RACE.note = ""; RACE.cars = []; game.go = 4.5;
+  const slot = (s) => { const row = s >> 1, col = s & 1; return [(NP - 9 - row * 11 - col * 5) % NP, col ? 1.55 : -1.55]; };
+  const order = RIVALS.map((r, j) => j).sort((a, b) => RIVALS[b].pace - RIVALS[a].pace), PS = 3;
+  { const [k, lat] = slot(PS); placeAt(k); S.x += -TAN[k][1] * lat; S.z += TAN[k][0] * lat; S.y = height(S.x, S.z) + 0.075; RACE.player = mkCar(null, k, lat); }
+  rcSave(PSNAP); SIMAI = true; let ri = 0;
+  for (let s = 0; s < 6; s++) { if (s === PS) { RACE.cars.push(RACE.player); continue; }
+    const [k, lat] = slot(s), c = mkCar(RIVALS[order[ri++]], k, lat); rcPlace(k, lat, 0); rcSave(c); RACE.cars.push(c); }
+  rcLoad(PSNAP); SIMAI = false; RG.show(true);
+}
+function stopRace() { RACE.on = false; RACE.phase = "off"; RG.show(false); for (const c of RACE.cars) if (c.eng && ac) c.eng.g.gain.setTargetAtTime(0, ac.currentTime, 0.05); }
+/* the drivers' heads: who is ahead, can I pass, who is alongside, when do I make a mistake */
+function racePlan(dt) {
+  const cars = RACE.cars, P = RACE.player;
+  for (const c of cars) { const st = rcState(c), i = pathIdx(st.x, st.z), p = PATH[i], tn = TAN[i]; c.i = i; c.lat = (st.x - p[0]) * -tn[1] + (st.z - p[1]) * tn[0]; c.v = Math.max(0, st.vx * tn[0] + st.vz * tn[1]); }
+  for (const c of cars) { if (c.isPlayer || c.finished && RACE.phase === "off") continue;
+    const band = clamp((P.prog - c.prog) / 1600, -0.06, 0.045);   // close racing: rivals ease off a touch when far ahead of you, push when behind
+    c.pv = c.r.pace * raceSkill * (1 + band) * c.form; c.cap = 99;
+    let block = null, bd = 99, side = 0;
+    for (const o of cars) { if (o === c) continue; const dp = o.prog - c.prog, dl = o.lat - c.lat;
+      if (dp > 0 && dp < 60 && Math.abs(dl) < 2.1 + (o.v < c.v - 6 ? 1.0 : 0) && dp < bd) { bd = dp; block = o; }
+      if (Math.abs(dp) < 5.5 && Math.abs(dl) < 2.5) side += dl > 0 ? -1 : 1; }
+    if (block) {
+      const room = (sg) => { const t = clamp(block.lat + sg * 2.45, -2.35, 2.35); return Math.abs(t - block.lat) > 1.95 ? t : null; };
+      const keen = c.r.aggr > 0.6 || c.v - block.v > 1.2 || block.v < VPROF[c.i] * c.pv * 0.8;
+      let t = null; if (keen && bd < 24 && VCURVE[(c.i + 25) % NP] > 13) { const pref = c.lane >= block.lat ? 1 : -1; t = room(pref); if (t === null) t = room(-pref); }
+      const BR = 6.5 * TUNE.muRoad;   // how hard this surface lets you brake
+      if (t !== null) { c.laneT = t; c.passT = 2.2; c.cap = Math.abs(block.lat - c.lat) > 1.5 ? 99 : Math.sqrt(block.v * block.v + 2 * BR * Math.max(0, bd - 6)) + 2; }
+      else c.cap = Math.sqrt(block.v * block.v + 2 * BR * Math.max(0, bd - 7.5));
+    } else if ((c.passT -= dt) <= 0) c.laneT = 0;
+    if (side) c.laneT = clamp(c.laneT + side * 0.9, -2.35, 2.35);
+    const ls = c.passT > 0 ? 2.4 : 1.6; c.lane += clamp(c.laneT - c.lane, -ls * dt, ls * dt);
+    c.mistCD -= dt; c.mist = Math.max(0, c.mist - dt);
+    if (c.mistCD <= 0 && VCURVE[(c.i + 45) % NP] < 18 && VCURVE[c.i] > 24) { c.mistCD = 7; if (Math.random() < (1 - c.r.cons) * 0.5) c.mist = 1.7; }
+  }
+}
+function rivalInput(c) {
+  if (RACE.phase === "grid" || RACE.t < c.react) return { steer: 0, throttle: 0, brake: 0, hb: true };
+  const i = pathIdx(S.x, S.z), u = Math.max(0, S.u), Ld = 7 + u * 0.42, k = (i + Math.round(Ld)) % NP;
+  const lat = clamp(c.lane + RLINE[k] * (1 - Math.min(1, Math.abs(c.lane) / 2.2)), -2.4, 2.4), p = PATH[k], tn = TAN[k];
+  const dx = p[0] - tn[1] * lat - S.x, dz = p[1] + tn[0] * lat - S.z, sp = Math.hypot(S.vx, S.vz), vh = sp > 2 ? Math.atan2(S.vx, S.vz) : S.h;
+  const al = wrapA(Math.atan2(dx, dz) - vh), rWant = 2 * Math.max(sp, 1) * Math.sin(al) / Ld;
+  const delta = wrapA(vh - S.h) + Math.atan(2 * VEH.L * Math.sin(al) / Ld) - (S.r - rWant) * 0.12 + (c.mist > 0 ? Math.sin(uTime.value * 6 + c.lastIdx) * 0.04 : 0);
+  let vt = VPROF[(i + 4) % NP] * c.pv; if (c.mist > 0) vt *= 1.14; vt = Math.min(vt, c.cap);
+  const slideCut = clamp(1 - (Math.abs(S.vl) - 1.5) / 3, 0.15, 1);
+  return { steer: clamp(delta / steerLock(u), -1, 1), throttle: clamp((vt - u) * 0.5, 0, 1) * slideCut, brake: clamp((u - vt - 1.0) * 0.35, 0, 1), hb: false };
+}
+function rivalRecover(c, dt) {   // runs with the rival in the slot: put it back on the road if it is beached, stuck, wrong way or on its roof
+  if (RACE.phase === "grid") return;
+  const i = pathIdx(S.x, S.z), pd = pathDist(S.x, S.z), sp = Math.hypot(S.vx, S.vz), tn = TAN[i], fwd = Math.sin(S.h) * tn[0] + Math.cos(S.h) * tn[1];
+  const off = pd > ROAD + 5, bad = off || (sp < 1.5 && RACE.t > c.react + 2) || Math.abs(S.roll) > 0.9 || Math.abs(S.pitch) > 0.9 || (fwd < -0.2 && sp < 8);
+  c.stuckT = bad ? c.stuckT + dt : Math.max(0, c.stuckT - dt * 2);
+  if (c.stuckT > (off ? 1.6 : 2.6)) { c.stuckT = 0; const k = (i - 6 + NP) % NP; let lat = 0;
+    for (const o of RACE.cars) { if (o === c) continue; const st = rcState(o); if (Math.hypot(st.x - PATH[k][0], st.z - PATH[k][1]) < 6) lat = lat ? -lat : 2.0; }
+    rcPlace(k, lat, Math.min(14, VPROF[k] * 0.6)); c.lane = c.laneT = lat; c.resets = (c.resets || 0) + 1; }
+}
+function carContacts() {
+  const cars = RACE.cars, m = VEH.m, Iz = VEH.Iz;
+  for (let a = 0; a < cars.length; a++) for (let b = a + 1; b < cars.length; b++) {
+    const A = rcState(cars[a]), B = rcState(cars[b]), dx0 = A.x - B.x, dz0 = A.z - B.z; if (dx0 * dx0 + dz0 * dz0 > 30 || Math.abs(A.y - B.y) > 1.6) continue;
+    const sa = Math.sin(A.h), ca = Math.cos(A.h), sb = Math.sin(B.h), cb = Math.cos(B.h); let hit = 0;
+    for (const oa of [1.3, 0, -1.3]) for (const ob of [1.3, 0, -1.3]) {
+      const ax = A.x + sa * oa, az = A.z + ca * oa, bx = B.x + sb * ob, bz = B.z + cb * ob, dx = ax - bx, dz = az - bz, R = 1.72, d2 = dx * dx + dz * dz;
+      if (d2 >= R * R || d2 < 1e-6) continue;
+      const d = Math.sqrt(d2), nx = dx / d, nz = dz / d, pen = (R - d) * 0.5; A.x += nx * pen; A.z += nz * pen; B.x -= nx * pen; B.z -= nz * pen;
+      const cx = (ax + bx) / 2, cz = (az + bz) / 2, pax = cx - A.x, paz = cz - A.z, pbx = cx - B.x, pbz = cz - B.z;
+      const vax = A.vx + A.r * paz, vaz = A.vz - A.r * pax, vbx = B.vx + B.r * pbz, vbz = B.vz - B.r * pbx, vn = (vax - vbx) * nx + (vaz - vbz) * nz; if (vn >= 0) continue;
+      const ra = paz * nx - pax * nz, rb = pbz * nx - pbx * nz, jn = -1.3 * vn / (2 / m + ra * ra / Iz + rb * rb / Iz);
+      A.vx += jn * nx / m; A.vz += jn * nz / m; A.r += jn * ra / Iz; B.vx -= jn * nx / m; B.vz -= jn * nz / m; B.r -= jn * rb / Iz;
+      const tx = -nz, tz = nx, vt = (vax - vbx) * tx + (vaz - vbz) * tz, rta = paz * tx - pax * tz, rtb = pbz * tx - pbx * tz;
+      const jt = clamp(-vt / (2 / m + rta * rta / Iz + rtb * rtb / Iz), -0.35 * jn, 0.35 * jn);
+      A.vx += jt * tx / m; A.vz += jt * tz / m; A.r += jt * rta / Iz; B.vx -= jt * tx / m; B.vz -= jt * tz / m; B.r -= jt * rtb / Iz;
+      hit = Math.max(hit, -vn); }
+    if (hit > 5 && window.__hitLog) window.__hitLog.push([+RACE.t.toFixed(1), cars[a].isPlayer ? 'YOU' : cars[a].r.tag, cars[b].isPlayer ? 'YOU' : cars[b].r.tag, +hit.toFixed(1), Math.round(cars[a].v), Math.round(cars[b].v), cars[a].i]);
+    if (hit > 0.3) { for (const X of [A, B]) { X.impact = Math.max(X.impact || 0, hit); X.hbT = Math.max(X.hbT || 0, clamp((hit - 2) / 6, 0, 0.6)); }
+      if (cars[a].isPlayer || cars[b].isPlayer) S.carHit = Math.max(S.carHit || 0, hit); }
+  }
+}
+function raceProgress(dt) {
+  const cars = RACE.cars, P = RACE.player;
+  for (const c of cars) { const st = rcState(c), i = pathIdx(st.x, st.z); let d = i - c.lastIdx; if (d < -NP / 2) d += NP; if (d > NP / 2) d -= NP; c.prog += d; c.lastIdx = i;
+    if (RACE.phase === "grid" || c.finished) continue;
+    const lap = Math.floor(c.prog / NP);
+    if (lap > c.lapsDone && c.prog > 0) { const lt = RACE.t - c.lapT0; c.last = lt; if (c.best == null || lt < c.best) c.best = lt; c.lapT0 = RACE.t; c.lapsDone = lap;
+      if (c.isPlayer && lap < RACE.laps) flashMsg((lap === RACE.laps - 1 ? "FINAL LAP  " : "LAP " + (lap + 1) + "/" + RACE.laps + "  ") + fmt(lt), 2.5); }
+    if (c.prog >= RACE.laps * NP) { c.finished = true; c.finishT = RACE.t; if (c.isPlayer) finishRace(); } }
+  const order = cars.slice().sort((a, b) => (a.finished && b.finished) ? a.finishT - b.finishT : a.finished ? -1 : b.finished ? 1 : b.prog - a.prog);
+  const pos = order.indexOf(P) + 1; if (RACE.phase === "race" && RACE.pos && pos < RACE.pos) flashMsg("P" + pos, 1.0); RACE.pos = pos; RACE.order = order;
+}
+function finishRace() {
+  RACE.phase = "done"; RACE.doneT = 0; const pos = RACE.order ? RACE.cars.filter(c => c.finished).length : 1;
+  const next = RACE.cars.filter(c => !c.isPlayer && c.finished).length === 0 ? (() => { let best = 1e9; for (const c of RACE.cars) if (!c.isPlayer) best = Math.min(best, (RACE.laps * NP - c.prog) / Math.max(c.v, 15)); return best; })() : 0;
+  const d = pos === 1 ? (next > 5 ? 0.025 : 0.012) : pos <= 3 ? 0 : pos <= 5 ? -0.012 : -0.025;
+  raceSkill = clamp(raceSkill + d, 0.86, 1.06); try { localStorage.setItem("fogwood-skill", raceSkill.toFixed(3)); } catch (_) {}
+  RACE.note = d > 0 ? "RIVALS WILL PUSH HARDER" : d < 0 ? "RIVALS WILL EASE OFF" : ""; RACE.finishPos = pos;
+  flashMsg(pos === 1 ? "YOU WIN!" : "FINISHED P" + pos, 3);
+}
+function raceResults() {
+  return RACE.cars.map(c => ({ c, t: c.finished ? c.finishT : RACE.t + (RACE.laps * NP - c.prog) / Math.max(c.v, 18), done: c.finished })).sort((a, b) => a.t - b.t);
+}
+function raceStep(dt) {
+  if (game.go > 0) game.go -= dt;
+  if (RACE.phase === "grid" && game.go <= 0.9) RACE.phase = "race";
+  if (RACE.phase !== "grid") RACE.t += dt;
+  racePlan(dt);
+  rcSave(PSNAP); SIMAI = true;
+  for (const c of RACE.cars) { if (c.isPlayer) continue; rcLoad(c); vehicleUpdate(dt, rivalInput(c)); rivalRecover(c, dt); rcSave(c); }
+  rcLoad(PSNAP); SIMAI = false;
+  carContacts(); raceProgress(dt);
+  if (RACE.phase === "done") RACE.doneT += dt;
+  const i = pathIdx(S.x, S.z), tn = TAN[i], fwdDot = Math.sin(S.h) * tn[0] + Math.cos(S.h) * tn[1];
+  game.wrongT = (fwdDot < -0.4 && Math.abs(S.u) > 4) ? game.wrongT + dt : Math.max(0, game.wrongT - dt * 2);
+  if (game.msgT > 0) game.msgT -= dt;
+}
+/* rivals on screen: one instanced copy of every part of the car, posed through a puppet of your own car, tinted per team */
+const RG = (() => {
+  const puppet = car.root.clone(true), ol = [], pl = []; car.root.traverse(o => ol.push(o)); puppet.traverse(o => pl.push(o));
+  const map = new Map(); ol.forEach((o, i) => map.set(o, pl[i]));
+  const wheels = car.wheels.map(w => ({ pivot: map.get(w.pivot), spin: map.get(w.spin), front: w.front }));
+  const N = RIVALS.length, parts = [], white = new THREE.Color(1, 1, 1);
+  const addPart = (src, geo, mat, per = 1) => { const im = new THREE.InstancedMesh(geo, mat.clone(), N * per); im.frustumCulled = false; im.visible = false; im.count = N * per;
+    for (let r = 0; r < N * per; r++) im.setColorAt(r, mat.isMeshPhongMaterial ? new THREE.Color(...RIVALS[(r / per) | 0].col) : white);
+    im.instanceColor.needsUpdate = true; scene.add(im); parts.push({ im, src }); return parts[parts.length - 1]; };
+  // the four wheels share their models: one instanced part per wheel piece, four instances per rival
+  const inWheel = new Set(), slots = wheels.map(w => { const l = []; w.pivot.traverse(o => { if (o.isMesh) { l.push(o); inWheel.add(o); } }); return l; });
+  for (let q = 0; q < slots[0].length; q++) { const e = addPart(null, slots[0][q].geometry, slots[0][q].material, 4); e.wsrc = slots.map(l => l[q]); }
+  for (const m of pl) { if (!m.isMesh || inWheel.has(m)) continue;
+    if (!Array.isArray(m.material)) { addPart(m, m.geometry, m.material); continue; }
+    for (const gr of m.geometry.groups) { const g2 = m.geometry.clone(); g2.clearGroups(); g2.setDrawRange(gr.start, gr.count); addPart(m, g2, m.material[gr.materialIndex]); } }
+  const sh = new THREE.InstancedMesh(car.shadow.geometry, car.shadow.material.clone(), N); sh.frustumCulled = false; sh.visible = false; sh.renderOrder = car.shadow.renderOrder; scene.add(sh);
+  return { puppet, wheels, parts, sh, show(on) { for (const p of parts) p.im.visible = on; sh.visible = on; } };
+})();
+function rivalGfx() {
+  const P = RG.puppet; let k = 0;
+  for (const c of RACE.cars) { if (c.isPlayer) continue; const s = c.s;
+    P.position.set(s.x, s.y, s.z); P.rotation.set(-s.pitch, s.h, s.roll);
+    for (let i = 0; i < 4; i++) { const w = RG.wheels[i]; w.spin.rotation.x = c.w[i].ang; if (w.front) w.pivot.rotation.y = s.steer; w.pivot.position.y = TIRE_R - clamp(c.w[i].d, SUSP.REST - SUSP.STOP - 0.04, SUSP.REST); }
+    P.updateMatrixWorld(true); for (const p of RG.parts) { if (p.wsrc) for (let w = 0; w < 4; w++) p.im.setMatrixAt(k * 4 + w, p.wsrc[w].matrixWorld); else p.im.setMatrixAt(k, p.src.matrixWorld); }
+    const gH = height(s.x, s.z); tmpO.position.set(s.x, gH + 0.05, s.z); tmpO.rotation.set(0, s.h, 0); tmpO.scale.setScalar(1 + clamp(s.y - gH - 0.08, 0, 4) * 0.12); tmpO.updateMatrix(); RG.sh.setMatrixAt(k, tmpO.matrix);
+    // where to draw the name tag
+    v3.set(s.x, s.y + 2.1, s.z).project(camera); const d = Math.hypot(s.x - camera.position.x, s.z - camera.position.z);
+    c.tagOn = v3.z < 1 && Math.abs(v3.x) < 1 && Math.abs(v3.y) < 1 && d < 70 && d > 3; c.tagX = (v3.x * 0.5 + 0.5) * LW; c.tagY = (0.5 - v3.y * 0.5) * LH;
+    k++; }
+  for (const p of RG.parts) p.im.instanceMatrix.needsUpdate = true; RG.sh.instanceMatrix.needsUpdate = true;
+}
+/* rival engines: the same recording per car, pitched from its revs, placed left/right, doppler-shifted, fading with distance */
+function rivalAudio() {
+  if (!A.master || !RACE.on) return; const t = ac.currentTime; camera.getWorldDirection(fwd); const rx = -fwd.z, rz = fwd.x, rl = Math.hypot(rx, rz) || 1;
+  for (const c of RACE.cars) { if (c.isPlayer) continue;
+    if (!c.eng) { const g = ac.createGain(); g.gain.value = 0; const lp = ac.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 1500;
+      const src = loopSrc(decoded.engine, 1, lp, Math.random() * 1.5); const pan = ac.createStereoPanner ? ac.createStereoPanner() : null;
+      lp.connect(g); if (pan) { g.connect(pan); pan.connect(A.master); } else g.connect(A.master); c.eng = { src, g, lp, pan }; }
+    const s = c.s, dx = s.x - camera.position.x, dz = s.z - camera.position.z, d = Math.max(1, Math.hypot(dx, dz, s.y - camera.position.y));
+    const n = clamp((s.rpm - 900) / 6400, 0, 1.05), vr = ((s.vx - S.vx) * dx + (s.vz - S.vz) * dz) / d;
+    c.eng.src.playbackRate.setTargetAtTime((0.95 + n * 2.6) * clamp(343 / (343 + vr), 0.8, 1.25), t, 0.04);
+    c.eng.g.gain.setTargetAtTime(soundOn ? 0.42 / (1 + (d / 11) * (d / 11)) * (0.55 + 0.45 * n) : 0, t, 0.06);
+    c.eng.lp.frequency.setTargetAtTime(Math.max(380, 900 + n * 2600 - d * 9), t, 0.08);
+    if (c.eng.pan) c.eng.pan.pan.setTargetAtTime(clamp((dx * rx + dz * rz) / rl / d, -1, 1) * 0.85, t, 0.05); }
+}
+
 /* ================= game state ================= */
 let bestSaved = null; try { const v = parseFloat(localStorage.getItem("fogwood-best-" + MAPN)); if (v > 0) bestSaved = v; } catch (_) {}
 const game = { state: "title", t: 0, lap: 1, lapStart: 0, best: bestSaved, flags: [false, false, false], lastIdx: 0, msg: "", msgT: 0, wrongT: 0, started: false, go: 0 };
@@ -1944,12 +2139,14 @@ placeAt(6);
 function startGame() {
   if (game.state !== "title") return;
   game.state = "drive"; placeAt(NP - 6); game.lap = 1; game.started = false; game.t = 0; game.flags = [false, false, false]; game.lastIdx = NP - 6; game.go = 2.2;
+  if (raceMode) startRace();
   initAudio();
   try { navigator.wakeLock?.request("screen").catch(() => {}); } catch (_) {}
   try { const el = document.documentElement; if (el.requestFullscreen && matchMedia("(pointer: coarse)").matches) el.requestFullscreen({ navigationUI: "hide" }).then(() => screen.orientation?.lock?.("landscape").catch(() => {})).catch(() => {}); } catch (_) {}
 }
 /* back to the stage menu (MENU button, Esc, Android back); the demo car takes over again */
-function toTitle() { if (game.state !== "drive") return false; game.state = "title"; game.go = 0; game.started = false; game.t = 0; game.msgT = 0; game.wrongT = 0;
+function toggleMode() { raceMode = !raceMode; try { localStorage.setItem("fogwood-mode", raceMode ? "race" : "tt"); } catch (_) {} }
+function toTitle() { if (game.state !== "drive") return false; stopRace(); game.state = "title"; game.go = 0; game.started = false; game.t = 0; game.msgT = 0; game.wrongT = 0;
   touches.clear(); keys.clear(); placeAt(6); return true; }
 window.__back = () => toTitle();
 function resetCar() { if (game.state !== "drive") return; placeAt(pathIdx(S.x, S.z)); flashMsg("RESET", 1); }
@@ -2008,7 +2205,7 @@ function initAudio() {
 }
 function oneShot(buf, rate, gain, lp) { if (!A.master || !soundOn) return; const s = ac.createBufferSource(); s.buffer = buf; s.playbackRate.value = rate;
   const g = ac.createGain(); g.gain.value = gain; let n = s; if (lp) { const f = ac.createBiquadFilter(); f.type = lp[0]; f.frequency.value = lp[1]; s.connect(f); n = f; } n.connect(g); g.connect(A.master); s.start(); }
-function shiftEvent() { if (game.state === "drive") buzz("shift", 0.45); if (!A.master) return; const t = ac.currentTime; A.engG.gain.cancelScheduledValues(t); A.engG.gain.setValueAtTime(A.engG.gain.value, t); A.engG.gain.linearRampToValueAtTime(0.2, t + 0.05); A.engG.gain.linearRampToValueAtTime(0.6, t + 0.24); }
+function shiftEvent() { if (SIMAI) return; if (game.state === "drive") buzz("shift", 0.45); if (!A.master) return; const t = ac.currentTime; A.engG.gain.cancelScheduledValues(t); A.engG.gain.setValueAtTime(A.engG.gain.value, t); A.engG.gain.linearRampToValueAtTime(0.2, t + 0.05); A.engG.gain.linearRampToValueAtTime(0.6, t + 0.24); }
 function toggleSound() { soundOn = !soundOn; if (A.master) { ac.resume(); A.master.gain.setTargetAtTime(soundOn ? 0.9 : 0, ac.currentTime, 0.15); } flashMsg(soundOn ? "SOUND ON" : "SOUND OFF", 1); }
 let popCool = 0; const EXPO = { v: 1, dim: 1, applied: 1, tun: 0, mats: null };
 const rf = (a, b) => a + (b - a) * Math.random();
@@ -2058,7 +2255,7 @@ function updateAudio(dt, inp, gust) {
   for (const w of WH) if ((LAK && w.hg < WL - 0.05) || (ICE && height(w.wx, w.wz) < -0.05)) wet += 0.25;
   if (wet > 0 && AU.wet === 0 && sp > 5) SHARED.send(new Float32Array([2, 4, sp, 0]));
   AU.wet = wet;
-  if (S.impact > 1.5) SHARED.send(new Float32Array([2, 1, S.impact, obstacleMat(S.x, S.z)]));
+  if (S.impact > 1.5) SHARED.send(new Float32Array([2, 1, S.impact, S.carHit ? 1 : obstacleMat(S.x, S.z)])); S.carHit = 0;
   camera.getWorldDirection(AU.fwd);
   const thr = S.gear < 0 ? inp.brake : inp.throttle, onRoad = WH.reduce((a, w) => a + (w.road ? 0.25 : 0), 0);
   SHARED.send(new Float32Array([1, S.rpmShown, thr, sp, S.slide, onRoad, SNOW ? 1 : CAN ? 2 : TOU || RIV ? 3 : ICE ? 4 : 0, wet, S.contacts === 0 ? 1 : 0, S.gear,
@@ -2098,7 +2295,10 @@ function drawHUD(inp) {
       { const gp = 4 * U, mw = Math.min(56 * U, Math.floor((LW - 8 * U - 5 * gp) / 6)), mh = 13 * U, my = ty + 17 * sc + 35 * U, mx0 = Math.round(LW / 2 - mw * 3 - gp * 2.5);
         for (const [k, label, on, n] of [["mapF", "1 FOREST", MAPN === "forest", 0], ["mapS", "2 SNOW", SNOW, 1], ["mapC", "3 CANYON", CAN, 2], ["mapL", "4 LAKES", LAK, 3], ["mapT", "5 TOUGE", TOU, 4], ["mapR", "6 RIVIERA", RIV, 5]]) { const x = mx0 + n * (mw + gp);
           UI[k] = { x, y: my, w: mw, h: mh }; box(g, x, my, mw, mh, on ? "rgba(243,207,98,0.3)" : PANEL, on ? AMBER : EDGE);
-          text(g, label, x + (mw - textW(label, U)) / 2, my + 3 * U, U, on ? AMBER : INK); } }
+          text(g, label, x + (mw - textW(label, U)) / 2, my + 3 * U, U, on ? AMBER : INK); }
+        const ml = raceMode ? "MODE: RACE - 5 RIVALS - " + RACE.laps + " LAPS" : "MODE: TIME TRIAL", mw2 = textW(ml, U) + 12 * U, mx2 = Math.round((LW - mw2) / 2), my2 = my + mh + 4 * U;
+        UI.mode = { x: mx2, y: my2, w: mw2, h: mh }; box(g, mx2, my2, mw2, mh, raceMode ? "rgba(216,72,58,0.32)" : PANEL, raceMode ? RED : EDGE);
+        text(g, ml, mx2 + 6 * U, my2 + 3 * U, U, raceMode ? INK : "rgba(233,236,226,0.85)"); }
       const c1 = "SOUNDS CC0: KENNEY, LANDEPLAGE, HARGISSSOUND, THREADBARE, RUBBERDUCK, FELIX BLUME";
       if (textW(c1, U) < LW - 10) text(g, c1, (LW - textW(c1, U)) / 2, LH - pb - 8 * U, U, "rgba(233,236,226,0.5)", null);
     }
@@ -2111,10 +2311,21 @@ function drawHUD(inp) {
     return;
   }
   if (game.state !== "drive") return;
-  const km = (pathIdx(S.x, S.z) / 1000).toFixed(2);
-  const lines = [["RUN", String(game.lap)], ["TIME", fmt(game.started ? game.t - game.lapStart : 0)], ["BEST", fmt(game.best)], ["KM", km + "/" + STAGE_KM]];
+  const km = (pathIdx(S.x, S.z) / 1000).toFixed(2), P = RACE.player;
+  const lines = RACE.on ? [["POS", RACE.pos + "/" + RACE.cars.length], ["LAP", Math.min(RACE.laps, Math.max(1, P.lapsDone + 1)) + "/" + RACE.laps], ["TIME", fmt(RACE.phase === "grid" ? 0 : P.finished ? P.finishT : RACE.t)], ["BEST", fmt(P.best)]]
+    : [["RUN", String(game.lap)], ["TIME", fmt(game.started ? game.t - game.lapStart : 0)], ["BEST", fmt(game.best)], ["KM", km + "/" + STAGE_KM]];
   const pw = 78 * U, ph = (lines.length * 9 + 5) * U; box(g, pl, pt, pw, ph, PANEL, EDGE);
-  lines.forEach(([k, v], n) => { text(g, k, pl + 4 * U, pt + (4 + n * 9) * U, U, "rgba(233,236,226,0.65)"); text(g, v, pl + pw - 4 * U - textW(v, U), pt + (4 + n * 9) * U, U, n === 1 ? AMBER : INK); });
+  lines.forEach(([k, v], n) => { text(g, k, pl + 4 * U, pt + (4 + n * 9) * U, U, "rgba(233,236,226,0.65)"); text(g, v, pl + pw - 4 * U - textW(v, U), pt + (4 + n * 9) * U, U, RACE.on ? (n === 0 ? AMBER : INK) : n === 1 ? AMBER : INK); });
+  const css = (c) => c.isPlayer ? "#ece8dc" : "rgb(" + c.r.col.map(v => Math.round(Math.min(1, v) * 230)).join(",") + ")";
+  if (RACE.on) {   // standings with gaps, and a tag over every rival on screen
+    let y = pt + ph + 3 * U; const rw = 66 * U;
+    (RACE.order || RACE.cars).forEach((c, n) => { const me = c.isPlayer; box(g, pl, y, rw, 9 * U, me ? "rgba(243,207,98,0.3)" : "rgba(8,12,8,0.5)", me ? AMBER : null);
+      g.fillStyle = css(c); g.fillRect(pl + 3 * U, y + 2 * U, 3 * U, 5 * U); text(g, (n + 1) + " " + (me ? "YOU" : c.r.tag), pl + 8 * U, y + U, U, me ? AMBER : INK);
+      if (!me && !(RACE.phase === "grid")) { const gs = (c.prog - P.prog) / Math.max(12, (c.v + P.v) / 2); if (Math.abs(gs) < 99) { const lab = (gs > 0 ? "-" : "+") + Math.abs(gs).toFixed(1); text(g, lab, pl + rw - 3 * U - textW(lab, U), y + U, U, "rgba(233,236,226,0.7)", null); } }
+      y += 10 * U; });
+    for (const c of RACE.cars) { if (c.isPlayer || !c.tagOn) continue; const w = textW(c.r.tag, U) + 4 * U, x = Math.round(c.tagX - w / 2), ty = Math.round(c.tagY - 9 * U);
+      box(g, x, ty, w, 9 * U, "rgba(8,12,8,0.55)", null); g.fillStyle = css(c); g.fillRect(x, ty + 8 * U, w, U); text(g, c.r.tag, x + 2 * U, ty + U, U, INK, null); }
+  }
   const R = 26 * U, cx = Math.round(LW / 2), cy = Math.round(LH - pb - 3 * U);
   g.fillStyle = PANEL; for (let yy = 0; yy <= R + 3 * U; yy += U) { const half = Math.sqrt(Math.max(0, (R + 3 * U) ** 2 - yy * yy)); g.fillRect(Math.round(cx - half), cy - yy - U, Math.round(half * 2), U); }
   for (let rpm = 0; rpm <= 8000; rpm += 125) { const a = Math.PI - rpm / 8000 * Math.PI, red = rpm >= 7000;
@@ -2141,10 +2352,28 @@ function drawHUD(inp) {
     text(g, "H-BRAKE", UI.hb.x + (UI.hb.w - textW("H-BRAKE", U)) / 2, UI.hb.y + UI.hb.h - 10 * U, U, hbOn ? RED : INK);
   }
   let m = "", mc = INK;
-  if (game.go > 0) { m = game.go > 0.9 ? "READY" : "GO!"; mc = game.go > 0.9 ? INK : AMBER; }
+  if (RACE.on && game.go > 0) {   // start lights
+    const n = Math.ceil((game.go - 0.9) / 1.2), lw = 12 * U, gx = Math.round(LW / 2 - lw * 2), gy = Math.round(LH * 0.16);
+    box(g, gx - 3 * U, gy - 3 * U, lw * 4 + 6 * U, lw + 6 * U, "rgba(8,8,8,0.8)", EDGE);
+    for (let q = 0; q < 4; q++) { const on = n <= 0 ? q < 4 : q < 4 - n; g.fillStyle = n <= 0 ? "#4fd862" : on ? RED : "rgba(80,30,26,0.9)"; g.fillRect(gx + q * lw + U, gy + U, lw - 2 * U, lw - 2 * U); }
+    m = n > 0 ? String(n) : "GO!"; mc = n > 0 ? INK : AMBER; }
+  else if (game.go > 0) { m = game.go > 0.9 ? "READY" : "GO!"; mc = game.go > 0.9 ? INK : AMBER; }
   else if (game.wrongT > 1) { m = (performance.now() / 300 | 0) % 2 ? "WRONG WAY" : ""; mc = RED; }
   else if (game.msgT > 0) { m = game.msg; mc = AMBER; }
   if (m) { const sc = 2 * U; text(g, m, (LW - textW(m, sc)) / 2, LH * 0.3, sc, mc); }
+  if (RACE.on && RACE.phase === "done" && RACE.doneT > 1.2) {   // results
+    const res = raceResults(), w0 = res[0].t, rw = Math.min(LW - 16 * U, 196 * U), rh = (res.length * 10 + 46) * U, rx = Math.round((LW - rw) / 2), ry = Math.round((LH - rh) / 2);
+    box(g, rx, ry, rw, rh, "rgba(8,12,8,0.86)", AMBER); text(g, "RACE RESULT", rx + (rw - textW("RACE RESULT", U)) / 2, ry + 4 * U, U, AMBER);
+    text(g, "BEST LAP", rx + rw - 6 * U - textW("BEST LAP", U), ry + 14 * U, U, "rgba(233,236,226,0.55)", null);
+    res.forEach((e, n) => { const c = e.c, y = ry + (24 + n * 10) * U, me = c.isPlayer;
+      if (me) { g.fillStyle = "rgba(243,207,98,0.18)"; g.fillRect(rx + 2 * U, y - U, rw - 4 * U, 9 * U); }
+      g.fillStyle = css(c); g.fillRect(rx + 6 * U, y, 3 * U, 6 * U);
+      text(g, (n + 1) + "  " + (me ? "YOU" : c.r.name[0] + ". " + c.r.name.split(" ")[1]), rx + 12 * U, y, U, me ? AMBER : INK);
+      const tm = n === 0 ? fmt(e.t) : "+" + (e.t - w0).toFixed(2) + (e.done ? "" : "*"); text(g, tm, rx + rw - 62 * U - textW(tm, U), y, U, INK, null);
+      const bl = fmt(c.best); text(g, bl, rx + rw - 6 * U - textW(bl, U), y, U, "rgba(233,236,226,0.75)", null); });
+    if (RACE.note) text(g, RACE.note, rx + (rw - textW(RACE.note, U)) / 2, ry + rh - 20 * U, U, "rgba(233,236,226,0.7)", null);
+    const tc = "TAP TO CONTINUE"; if ((performance.now() / 500 | 0) % 2 === 0) text(g, tc, rx + (rw - textW(tc, U)) / 2, ry + rh - 10 * U, U, INK, null);
+  }
 }
 
 const hapT = { t: 0, cool: 0 };
@@ -2298,9 +2527,9 @@ function frame(now) {
   const dt = Math.min(0.05, (now - last) / 1000); last = now; uTime.value += dt;
   fpsAcc += dt; fpsN++; if (fpsN === 90) { if (!downgraded && fpsAcc / fpsN > 1 / 36 && pixIdx > 0) { pixIdx--; resize(); downgraded = true; } fpsAcc = 0; fpsN = 0; }
   const gust = clamp(0.5 + (fbm(uTime.value * 0.06, 3.3, 3) - 0.5) * 1.8, 0, 1); uWind.value = gust;
-  const inp = game.state === "drive" ? (game.go > 0.9 ? { steer: 0, throttle: 0, brake: 0, hb: true } : readInput()) : aiInput();
+  const inp = game.state === "drive" ? (game.go > 0.9 ? { steer: 0, throttle: 0, brake: 0, hb: true } : RACE.on && RACE.phase === "done" ? aiInput() : readInput()) : aiInput();
   vehicleUpdate(dt, inp); syncCar();
-  if (game.state === "drive") updateLap(dt);
+  if (game.state === "drive") { if (RACE.on) raceStep(dt); else updateLap(dt); }
   updateAudio(dt, inp, gust);
   if (S.landed) { const v = -S.landV; S.landed = false;
     if (v > 1.8 && game.state === "drive") buzz("land", clamp((v - 1.5) / 7, 0.15, 1));
@@ -2357,6 +2586,7 @@ function frame(now) {
   camState.fov += (fovT - camState.fov) * Math.min(1, dt * 3);
   camera.fov = innerWidth > innerHeight ? camState.fov : camState.fov + 20; camera.updateProjectionMatrix();
   for (const c of CULL) c.o.visible = camera.position.distanceTo(c.c) - c.r < c.d;
+  if (RACE.on) { camera.updateMatrixWorld(); rivalGfx(); rivalAudio(); }
   sky.position.copy(camera.position); peaks.position.x = camera.position.x; peaks.position.z = camera.position.z; updateSnowfall(dt); updateSetPieces(dt);
   for (let i = 0; i < GLIT.length; i++) { const m = GLIT[i]; m.position.x = Math.round(camera.position.x / 5) * 5; m.position.z = Math.round(camera.position.z / 5) * 5;
     if (i < 2) m.material.opacity = 0.45 + 0.45 * Math.max(0, Math.sin(uTime.value * (2.3 + i * 0.7) + i * 1.9)); }
@@ -2393,7 +2623,11 @@ window.__sim = (secs, inp, start) => { if (start != null) placeAt(start); const 
 window.__info = () => ({ calls: renderer.info.render.calls, tris: renderer.info.render.triangles }); window.__cam = (m) => { camState.mode = m; camState.init = false; };
 window.__ramp = RAMP; window.__riv = { sec: RIVSEC, tun: TUN, vil: VIL, expo: EXPO, glit: GLIT, post }; window.__scene = scene; window.__peaks = peaks; window.__camState = camState; window.__camera = camera; window.__height = height; window.__farH = farH; window.__fords = FORDS; window.__falls = FALLS; window.__RH = ROADH; window.__native = () => ({ grids: gridsNative, phys: physNative, ms: nativeMs }); window.__packSim = packSim; window.__unpackSim = unpackSim; window.__vehicleUpdateJS = vehicleUpdateJS;
 window.__gridsJS = () => ({ pd: pdG, h: hG, pi: piG, GXH, GZH, PATH, ROADH, obstacles }); window.__setPhysNative = (b) => { physNative = b && gridsNative; };
-window.__ai = () => aiInput(); window.__NP = NP; window.__J = JUMPS; window.placeAt = placeAt; window.vehicleUpdate = vehicleUpdate; window.__pd = () => pathDist(S.x, S.z); window.__idx = () => pathIdx(S.x, S.z);
+window.__ai = () => aiInput(); window.__race = RACE; window.__raceSkill = (v) => { if (v) raceSkill = v; return raceSkill; };
+window.__raceSim = (secs, pk) => { if (!RACE.on) { game.state = "drive"; startRace(); } const dt = 1 / 60, P = RACE.player; let hits = 0, maxHit = 0;
+  for (let t = 0; t < secs; t += dt) { const pi = game.go > 0.9 ? { steer: 0, throttle: 0, brake: 0, hb: true } : aiInput(); if (pk && game.go <= 0.9) { pi.throttle *= pk; }
+    vehicleUpdate(dt, pi); raceStep(dt); if (S.carHit) { hits++; maxHit = Math.max(maxHit, S.carHit); S.carHit = 0; } if (RACE.phase === "done" && RACE.doneT > 25) break; }
+  return { t: +RACE.t.toFixed(1), phase: RACE.phase, pos: RACE.pos, hits, maxHit: +maxHit.toFixed(1), cars: raceResults().map(e => [e.c.isPlayer ? "YOU" : e.c.r.tag, +e.t.toFixed(1), e.done, e.c.best ? +e.c.best.toFixed(1) : null, e.c.resets || 0]) }; }; window.__NP = NP; window.__J = JUMPS; window.placeAt = placeAt; window.vehicleUpdate = vehicleUpdate; window.__pd = () => pathDist(S.x, S.z); window.__idx = () => pathIdx(S.x, S.z);
 
 return () => {
   alive = false; ABORT.abort();
