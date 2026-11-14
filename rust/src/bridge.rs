@@ -44,7 +44,20 @@ pub fn set_obstacles(csv: &str) -> i32 {
 
 /// Input: dt, throttle, brake, hb, steer, params[NPARAM], state[NSTATE + 4*NWHEEL].
 /// Output: state[...], shifted(0/1).
+/// One car per ';'-separated record, so a whole race field costs one trip across the JS bridge.
 pub fn step(csv: &str) -> String {
+    if !csv.contains(';') { return step_one(csv); }
+    let mut out = String::with_capacity(1400 * 6);
+    for (i, rec) in csv.split(';').enumerate() {
+        let r = step_one(rec);
+        if r.starts_with("err") { return r; }
+        if i > 0 { out.push(';'); }
+        out.push_str(&r);
+    }
+    out
+}
+
+fn step_one(csv: &str) -> String {
     let v = parse_csv(csv);
     let need = 5 + NPARAM + NSTATE + 4 * NWHEEL;
     if v.len() < need { return format!("err {}", v.len()); }

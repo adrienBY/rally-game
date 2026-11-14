@@ -28,6 +28,8 @@ enum ObjKind { Mesh, Inst, Points }
 struct Object {
     kind: ObjKind, geo: usize, mat: usize, mw: M4, ro: i32, cull: bool, vis: bool, opacity: f32, car: bool,
     count: i32, ibuf: Option<glow::Buffer>, cbuf: Option<glow::Buffer>, ibs: Option<[f32; 4]>, vao: glow::VertexArray, dr: Option<(i32, i32)>,
+    /// mesh program (index into mesh_list), resolved once at load; usize::MAX for sky/points/dust
+    prog: usize, no_normal: bool, no_uv: bool, no_color: bool,
 }
 struct GpuScene {
     texs: Vec<Texture>, geos: Vec<Geometry>, mats: Vec<Material>, objs: Vec<Object>,
@@ -37,10 +39,22 @@ struct GpuScene {
 pub struct FrameState { pub lw: i32, pub lh: i32, pub view: M4, pub proj: M4, pub cam: [f32; 3], pub time: f32, pub wind: f32, pub sun: [f32; 2],
     pub sun_vis: f32, pub flash: f32, pub speed: f32, pub dust_scale: f32, pub expo: f32, pub dim: f32, pub split_s: [f32; 3], pub split_h: [f32; 3], pub texel: [f32; 2], pub valid: bool }
 
-struct Program { prog: glow::Program, u: HashMap<&'static str, glow::UniformLocation> }
+struct Program { prog: glow::Program, loc: Vec<Option<glow::UniformLocation>> }
+impl Program {
+    #[inline] fn u(&self, i: usize) -> Option<&glow::UniformLocation> { self.loc[i].as_ref() }
+}
+/// Index of a uniform name in UNIFORMS, resolved at compile time.
+const fn ui(n: &str) -> usize {
+    let n = n.as_bytes(); let mut i = 0;
+    while i < UNIFORMS.len() { let u = UNIFORMS[i].as_bytes();
+        if u.len() == n.len() { let mut k = 0; while k < n.len() && u[k] == n[k] { k += 1; } if k == n.len() { return i; } }
+        i += 1; }
+    panic!("unknown uniform")
+}
+macro_rules! U { ($n:literal) => {{ const I: usize = ui($n); I }} }
 
 pub struct Renderer {
-    gl: Gl, scene: Option<GpuScene>, mesh_progs: HashMap<MeshKey, Program>, sky: Program, points: Program, dust: Program, post: Program,
+    gl: Gl, scene: Option<GpuScene>, mesh_progs: HashMap<MeshKey, usize>, mesh_list: Vec<Program>, sky: Program, points: Program, dust: Program, post: Program,
     quad_vao: glow::VertexArray, _quad_buf: glow::Buffer,
     tgt: Option<(i32, i32, glow::Framebuffer, glow::Texture, glow::Renderbuffer, glow::Framebuffer, glow::Texture)>,
     pub frame: FrameState, pub stats: (u32, u32), pub only: Option<Vec<usize>>,
@@ -62,9 +76,8 @@ unsafe fn compile(gl: &Gl, vs: &str, fs: &str) -> Result<Program, String> {
     gl.link_program(p);
     if !gl.get_program_link_status(p) { return Err(format!("link: {}", gl.get_program_info_log(p))); }
     for s in shs { gl.detach_shader(p, s); gl.delete_shader(s); }
-    let mut u = HashMap::new();
-    for n in UNIFORMS { if let Some(l) = gl.get_uniform_location(p, n) { u.insert(n, l); } }
-    Ok(Program { prog: p, u })
+    let loc = UNIFORMS.iter().map(|n| gl.get_uniform_location(p, n)).collect();
+    Ok(Program { prog: p, loc })
 }
 
 fn f(v: &Value) -> f32 { v.as_f64().unwrap_or(0.0) as f32 }
@@ -89,7 +102,7 @@ impl Renderer {
         gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, f32_bytes(&tri), glow::STATIC_DRAW);
         gl.enable_vertex_attrib_array(11); gl.vertex_attrib_pointer_f32(11, 2, glow::FLOAT, false, 8, 0);
         gl.bind_vertex_array(None);
-        Ok(Renderer { gl, scene: None, mesh_progs: HashMap::new(), sky, points, dust, post, quad_vao, _quad_buf: qb, tgt: None, frame: FrameState::default(), stats: (0, 0), only: None })
+        Ok(Renderer { gl, scene: None, mesh_progs: HashMap::new(), mesh_list: Vec::new(), sky, points, dust, post, quad_vao, _quad_buf: qb, tgt: None, frame: FrameState::default(), stats: (0, 0), only: None })
     }
 
     pub fn has_scene(&self) -> bool { self.scene.is_some() }
@@ -180,7 +193,9 @@ impl Renderer {
             }
             gl.bind_vertex_array(None);
             let mi = o["m"].as_u64().unwrap_or(0) as usize;
-            objs.push(Object { kind, geo: gi, mat: mi, mw, ro: o["ro"].as_i64().unwrap_or(0) as i32, cull: o["cull"].as_i64() == Some(1), vis: o["vis"].as_i64() != Some(0), car: o["car"].as_i64() == Some(1),
+            let has = |n: &str| geo.attrs.iter().any(|a| a.name == n);
+            let (no_normal, no_uv, no_color) = (!has("normal"), !has("uv"), !has("color"));
+            objs.push(Object { prog: usize::MAX, no_normal, no_uv, no_color, kind, geo: gi, mat: mi, mw, ro: o["ro"].as_i64().unwrap_or(0) as i32, cull: o["cull"].as_i64() == Some(1), vis: o["vis"].as_i64() != Some(0), car: o["car"].as_i64() == Some(1),
                 opacity: mats.get(mi).map(|m| m.opacity).unwrap_or(1.0), count: o["count"].as_i64().unwrap_or(1) as i32, ibuf, cbuf,
                 ibs: o["ibs"].as_array().map(|a| [f(&a[0]), f(&a[1]), f(&a[2]), f(&a[3])]), vao,
                 dr: o["dr"].as_array().map(|a| (a[0].as_i64().unwrap_or(0) as i32, a[1].as_i64().unwrap_or(0) as i32)) });
@@ -191,8 +206,8 @@ impl Renderer {
         let clear = head["clear"].as_array().map(|a| [f(&a[0]), f(&a[1]), f(&a[2]), f(&a[3])]).unwrap_or([0.5, 0.5, 0.5, 0.0]);
         self.scene = Some(GpuScene { texs, geos, mats, objs, fog_c: v3(&head["fog"]["c"]), fog_d: f(&head["fog"]["d"]), clear, hemi, dir });
         // compile every program the scene needs now, so the first frames don't hitch
-        let keys: Vec<MeshKey> = { let s = self.scene.as_ref().unwrap(); s.objs.iter().filter_map(|o| Self::mesh_key(s, o)).collect() };
-        for k in keys { self.mesh_prog(&k)?; }
+        let keys: Vec<Option<MeshKey>> = { let s = self.scene.as_ref().unwrap(); s.objs.iter().map(|o| Self::mesh_key(s, o)).collect() };
+        for (i, k) in keys.iter().enumerate() { if let Some(k) = k { let pi = self.mesh_prog(k)?; self.scene.as_mut().unwrap().objs[i].prog = pi; } }
         Ok(())
     }
 
@@ -203,9 +218,10 @@ impl Renderer {
         Some(MeshKey { lit, map: m.map >= 0 && (m.map as usize) < s.texs.len() && has("uv"), vcolor: m.vcolor && has("color"), inst: o.kind == ObjKind::Inst, icolor: o.cbuf.is_some(),
             sway: m.sway.map(|(a, u, fne, ffa)| ((a * 1000.0).round() as u32, u, (fne * 10.0).round() as u32, (ffa * 10.0).round() as u32)), alpha_test: m.alpha_test > 0.0, double_side: m.side == 2, fog: m.fog, transparent: m.transparent })
     }
-    unsafe fn mesh_prog(&mut self, k: &MeshKey) -> Result<(), String> {
-        if !self.mesh_progs.contains_key(k) { let p = compile(&self.gl, &mesh_vs(k), &mesh_fs(k))?; self.mesh_progs.insert(k.clone(), p); }
-        Ok(())
+    unsafe fn mesh_prog(&mut self, k: &MeshKey) -> Result<usize, String> {
+        if let Some(&i) = self.mesh_progs.get(k) { return Ok(i); }
+        let p = compile(&self.gl, &mesh_vs(k), &mesh_fs(k))?; self.mesh_list.push(p); let i = self.mesh_list.len() - 1; self.mesh_progs.insert(k.clone(), i);
+        Ok(i)
     }
 
     /// Frame packet (f32 LE): magic 7001, LW, LH, view16, proj16, cam3, time, wind, sunx, suny, sunvis, flash, speed, dustScale, exposure, carDim, splitShadow3, splitHigh3, texel2,
@@ -267,9 +283,6 @@ impl Renderer {
         }
         self.ensure_targets(fr.lw, fr.lh)?;
         let (lw, lh, f1, t1, _, f2, _) = self.tgt.unwrap();
-        // make sure every program exists (new materials can't appear mid-scene, but be safe)
-        let keys: Vec<MeshKey> = { let s = self.scene.as_ref().unwrap(); s.objs.iter().filter_map(|o| Self::mesh_key(s, o)).collect() };
-        for k in &keys { self.mesh_prog(k)?; }
         let gl = &self.gl; let s = self.scene.as_ref().unwrap();
         gl.bind_framebuffer(glow::FRAMEBUFFER, Some(f1)); gl.viewport(0, 0, lw, lh);
         gl.disable(glow::SCISSOR_TEST); gl.depth_mask(true); gl.color_mask(true, true, true, true);
@@ -292,50 +305,69 @@ impl Renderer {
         opaque.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)));
         transp.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)));
         let mut calls = 0u32; let mut tris = 0u32;
+        // GL state is tracked here so each draw only issues the calls that change something
+        let mut st_blend = -1i32; let mut st_dt: i8 = -1; let mut st_dw: i8 = -1; let mut st_cull = -1i32; let mut st_ff = 0u32; let mut st_poly: Option<Option<(f32, f32)>> = None;
+        let mut st_prog = usize::MAX - 1; let mut st_mat = usize::MAX; let mut st_tex: Option<glow::Texture> = None;
+        let mut st_const = [None::<bool>; 4];   // constant normal / uv / colour / instance colour currently set
+        let mut framed = vec![false; self.mesh_list.len() + 3];   // per-frame uniforms already sent to this program
         for list in [&opaque, &transp] { for &(_, _, i) in list.iter() {
             let o = &s.objs[i]; let m = &s.mats[o.mat]; let g = &s.geos[o.geo];
-            // state
-            if m.transparent && m.blend == 2 { gl.enable(glow::BLEND); gl.blend_equation(glow::FUNC_ADD);   // additive (aurora)
-                gl.blend_func_separate(glow::SRC_ALPHA, glow::ONE, glow::ZERO, glow::ONE); }
-            else if m.transparent && m.blend != 0 { gl.enable(glow::BLEND); gl.blend_equation(glow::FUNC_ADD);
-                gl.blend_func_separate(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA, glow::ONE, glow::ONE_MINUS_SRC_ALPHA); } else { gl.disable(glow::BLEND); }
-            if m.depth_test { gl.enable(glow::DEPTH_TEST); } else { gl.disable(glow::DEPTH_TEST); }
-            gl.depth_mask(m.depth_write);
-            match m.side { 2 => gl.disable(glow::CULL_FACE), 1 => { gl.enable(glow::CULL_FACE); gl.cull_face(glow::FRONT); } _ => { gl.enable(glow::CULL_FACE); gl.cull_face(glow::BACK); } }
-            gl.front_face(if det3(&o.mw) < 0.0 { glow::CW } else { glow::CCW });
-            if let Some((fa, un)) = m.poly { gl.enable(glow::POLYGON_OFFSET_FILL); gl.polygon_offset(fa, un); } else { gl.disable(glow::POLYGON_OFFSET_FILL); }
-            let prog = match m.kind { MatKind::Sky => &self.sky, MatKind::Points => &self.points, MatKind::Dust => &self.dust,
-                _ => match Self::mesh_key(s, o).and_then(|k| self.mesh_progs.get(&k)) { Some(p) => p, None => continue } };
-            gl.use_program(Some(prog.prog));
-            let u = |n: &str| prog.u.get(n);
-            gl.uniform_matrix_4_f32_slice(u("uModel"), false, &o.mw); gl.uniform_matrix_4_f32_slice(u("uView"), false, &fr.view); gl.uniform_matrix_4_f32_slice(u("uProj"), false, &fr.proj);
+            let blend = if !m.transparent || m.blend == 0 { 0 } else if m.blend == 2 { 2 } else { 1 };
+            if blend != st_blend { match blend {
+                0 => gl.disable(glow::BLEND),
+                2 => { gl.enable(glow::BLEND); gl.blend_equation(glow::FUNC_ADD); gl.blend_func_separate(glow::SRC_ALPHA, glow::ONE, glow::ZERO, glow::ONE); }   // additive (aurora, sun, clouds)
+                _ => { gl.enable(glow::BLEND); gl.blend_equation(glow::FUNC_ADD); gl.blend_func_separate(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA, glow::ONE, glow::ONE_MINUS_SRC_ALPHA); } }
+                st_blend = blend; }
+            let dt = m.depth_test as i8; if dt != st_dt { if m.depth_test { gl.enable(glow::DEPTH_TEST); } else { gl.disable(glow::DEPTH_TEST); } st_dt = dt; }
+            let dw = m.depth_write as i8; if dw != st_dw { gl.depth_mask(m.depth_write); st_dw = dw; }
+            let cull = match m.side { 2 => 0, 1 => 1, _ => 2 };
+            if cull != st_cull { match cull { 0 => gl.disable(glow::CULL_FACE), 1 => { if st_cull <= 0 { gl.enable(glow::CULL_FACE); } gl.cull_face(glow::FRONT); } _ => { if st_cull <= 0 { gl.enable(glow::CULL_FACE); } gl.cull_face(glow::BACK); } } st_cull = cull; }
+            let ff = if det3(&o.mw) < 0.0 { glow::CW } else { glow::CCW }; if ff != st_ff { gl.front_face(ff); st_ff = ff; }
+            if st_poly != Some(m.poly) { if let Some((fa, un)) = m.poly { gl.enable(glow::POLYGON_OFFSET_FILL); gl.polygon_offset(fa, un); } else { gl.disable(glow::POLYGON_OFFSET_FILL); } st_poly = Some(m.poly); }
+            let (pid, prog) = match m.kind { MatKind::Sky => (self.mesh_list.len(), &self.sky), MatKind::Points => (self.mesh_list.len() + 1, &self.points), MatKind::Dust => (self.mesh_list.len() + 2, &self.dust),
+                _ => match self.mesh_list.get(o.prog) { Some(p) => (o.prog, p), None => continue } };
+            if pid != st_prog { gl.use_program(Some(prog.prog)); st_prog = pid; st_mat = usize::MAX; }
+            let u = |i: usize| prog.u(i);
+            if !framed[pid] { framed[pid] = true;   // uniforms that are the same for every draw this frame
+                gl.uniform_matrix_4_f32_slice(u(U!("uView")), false, &fr.view); gl.uniform_matrix_4_f32_slice(u(U!("uProj")), false, &fr.proj);
+                if pid < self.mesh_list.len() {
+                    gl.uniform_1_f32(u(U!("uTime")), fr.time); gl.uniform_1_f32(u(U!("uWind")), fr.wind);
+                    gl.uniform_3_f32_slice(u(U!("uHemiSky")), &s.hemi.0); gl.uniform_3_f32_slice(u(U!("uHemiGround")), &s.hemi.1); gl.uniform_3_f32_slice(u(U!("uHemiDir")), &s.hemi.2);
+                    gl.uniform_3_f32_slice(u(U!("uDirColor")), &s.dir.0); gl.uniform_3_f32_slice(u(U!("uDirDir")), &s.dir.1);
+                    gl.uniform_3_f32_slice(u(U!("uFogColor")), &s.fog_c); gl.uniform_3_f32_slice(u(U!("uCamPos")), &fr.cam); gl.uniform_1_i32(u(U!("uMap")), 0);
+                } else if m.kind == MatKind::Points { gl.uniform_3_f32_slice(u(U!("uFogColor")), &s.fog_c); }
+                else if m.kind == MatKind::Dust { gl.uniform_1_f32(u(U!("uScale")), fr.dust_scale); }
+            }
+            gl.uniform_matrix_4_f32_slice(u(U!("uModel")), false, &o.mw);
             match m.kind {
-                MatKind::Sky => { let (sun, fog, top, glow_, halo) = m.sky.unwrap();
-                    gl.uniform_3_f32_slice(u("uSun"), &sun); gl.uniform_3_f32_slice(u("uFog"), &fog); gl.uniform_3_f32_slice(u("uTop"), &top); gl.uniform_3_f32_slice(u("uGlow"), &glow_); gl.uniform_1_f32(u("uHalo"), halo); }
-                MatKind::Points => { gl.uniform_1_f32(u("uSize"), m.size); gl.uniform_3_f32_slice(u("uColor"), &m.color); gl.uniform_1_f32(u("uOpacity"), o.opacity);
-                    gl.uniform_3_f32_slice(u("uFogColor"), &s.fog_c); gl.uniform_1_f32(u("uFogDensity"), if m.fog { s.fog_d } else { 0.0 }); }
-                MatKind::Dust => { let (dens, fog, col) = m.dust.unwrap(); gl.uniform_1_f32(u("uScale"), fr.dust_scale); gl.uniform_1_f32(u("uDens"), dens);
-                    gl.uniform_3_f32_slice(u("uFog"), &fog); gl.uniform_3_f32_slice(u("uCol"), &col); }
+                MatKind::Sky => { if st_mat != o.mat { let (sun, fog, top, glow_, halo) = m.sky.unwrap();
+                    gl.uniform_3_f32_slice(u(U!("uSun")), &sun); gl.uniform_3_f32_slice(u(U!("uFog")), &fog); gl.uniform_3_f32_slice(u(U!("uTop")), &top); gl.uniform_3_f32_slice(u(U!("uGlow")), &glow_); gl.uniform_1_f32(u(U!("uHalo")), halo); } }
+                MatKind::Points => { if st_mat != o.mat { gl.uniform_1_f32(u(U!("uSize")), m.size); gl.uniform_3_f32_slice(u(U!("uColor")), &m.color);
+                    gl.uniform_1_f32(u(U!("uFogDensity")), if m.fog { s.fog_d } else { 0.0 }); }
+                    gl.uniform_1_f32(u(U!("uOpacity")), o.opacity); }
+                MatKind::Dust => { if st_mat != o.mat { let (dens, fog, col) = m.dust.unwrap(); gl.uniform_1_f32(u(U!("uDens")), dens);
+                    gl.uniform_3_f32_slice(u(U!("uFog")), &fog); gl.uniform_3_f32_slice(u(U!("uCol")), &col); } }
                 _ => {
-                    gl.uniform_matrix_3_f32_slice(u("uNormalM"), false, &normal_matrix(&o.mw));
-                    let tm = if m.map >= 0 { s.texs.get(m.map as usize).map(|t| t.m).unwrap_or([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]) } else { [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0] };
-                    gl.uniform_matrix_3_f32_slice(u("uMapM"), false, &tm);
-                    gl.uniform_1_f32(u("uTime"), fr.time); gl.uniform_1_f32(u("uWind"), fr.wind);
-                    gl.uniform_3_f32_slice(u("uColor"), &m.color); gl.uniform_1_f32(u("uOpacity"), o.opacity); gl.uniform_1_f32(u("uAlphaTest"), m.alpha_test);
-                    gl.uniform_3_f32_slice(u("uHemiSky"), &s.hemi.0); gl.uniform_3_f32_slice(u("uHemiGround"), &s.hemi.1); gl.uniform_3_f32_slice(u("uHemiDir"), &s.hemi.2);
-                    gl.uniform_3_f32_slice(u("uDirColor"), &s.dir.0); gl.uniform_3_f32_slice(u("uDirDir"), &s.dir.1);
-                    gl.uniform_3_f32_slice(u("uFogColor"), &s.fog_c); gl.uniform_1_f32(u("uFogDensity"), if m.fog { s.fog_d } else { 0.0 }); gl.uniform_3_f32_slice(u("uCamPos"), &fr.cam);
-                    gl.uniform_1_f32(u("uDim"), if o.car { fr.dim.max(0.05) } else { 1.0 }); gl.uniform_3_f32_slice(u("uSpec"), &m.spec); gl.uniform_1_f32(u("uShin"), m.shin.max(1e-4)); gl.uniform_3_f32_slice(u("uEmissive"), &m.emis);
-                    gl.uniform_1_i32(u("uMap"), 0);
-                    if m.map >= 0 { if let Some(t) = s.texs.get(m.map as usize) { gl.active_texture(glow::TEXTURE0); gl.bind_texture(glow::TEXTURE_2D, Some(t.tex)); } }
+                    gl.uniform_matrix_3_f32_slice(u(U!("uNormalM")), false, &normal_matrix(&o.mw));
+                    if st_mat != o.mat {   // material uniforms: only when the material changes
+                        let tm = if m.map >= 0 { s.texs.get(m.map as usize).map(|t| t.m).unwrap_or([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]) } else { [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0] };
+                        gl.uniform_matrix_3_f32_slice(u(U!("uMapM")), false, &tm);
+                        gl.uniform_3_f32_slice(u(U!("uColor")), &m.color); gl.uniform_1_f32(u(U!("uAlphaTest")), m.alpha_test);
+                        gl.uniform_1_f32(u(U!("uFogDensity")), if m.fog { s.fog_d } else { 0.0 });
+                        gl.uniform_3_f32_slice(u(U!("uSpec")), &m.spec); gl.uniform_1_f32(u(U!("uShin")), m.shin.max(1e-4)); gl.uniform_3_f32_slice(u(U!("uEmissive")), &m.emis);
+                        if m.map >= 0 { if let Some(t) = s.texs.get(m.map as usize) { if st_tex != Some(t.tex) { gl.active_texture(glow::TEXTURE0); gl.bind_texture(glow::TEXTURE_2D, Some(t.tex)); st_tex = Some(t.tex); } } }
+                    }
+                    gl.uniform_1_f32(u(U!("uOpacity")), o.opacity);
+                    gl.uniform_1_f32(u(U!("uDim")), if o.car { fr.dim.max(0.05) } else { 1.0 });
                 }
             }
+            st_mat = o.mat;
             gl.bind_vertex_array(Some(o.vao));
-            // constant values for attributes a geometry lacks
-            if !g.attrs.iter().any(|a| a.name == "normal") { gl.vertex_attrib_4_f32(1, 0.0, 0.0, 1.0, 1.0); }
-            if !g.attrs.iter().any(|a| a.name == "uv") { gl.vertex_attrib_4_f32(2, 0.0, 0.0, 0.0, 1.0); }
-            if !g.attrs.iter().any(|a| a.name == "color") { gl.vertex_attrib_4_f32(3, 1.0, 1.0, 1.0, 1.0); }
-            if o.cbuf.is_none() { gl.vertex_attrib_4_f32(8, 1.0, 1.0, 1.0, 1.0); }
+            // constant values for attributes a geometry lacks (generic attribute state is global, so only when it changes)
+            if o.no_normal && st_const[0] != Some(true) { gl.vertex_attrib_4_f32(1, 0.0, 0.0, 1.0, 1.0); } st_const[0] = Some(o.no_normal || st_const[0] == Some(true));
+            if o.no_uv && st_const[1] != Some(true) { gl.vertex_attrib_4_f32(2, 0.0, 0.0, 0.0, 1.0); } st_const[1] = Some(o.no_uv || st_const[1] == Some(true));
+            if o.no_color && st_const[2] != Some(true) { gl.vertex_attrib_4_f32(3, 1.0, 1.0, 1.0, 1.0); } st_const[2] = Some(o.no_color || st_const[2] == Some(true));
+            if o.cbuf.is_none() && st_const[3] != Some(true) { gl.vertex_attrib_4_f32(8, 1.0, 1.0, 1.0, 1.0); } st_const[3] = Some(o.cbuf.is_none() || st_const[3] == Some(true));
             let dr = o.dr.unwrap_or(g.dr); let start = dr.0.max(0); let full = if dr.1 < 0 { g.count - start } else { dr.1.min(g.count - start) };
             match o.kind {
                 ObjKind::Points => gl.draw_arrays(glow::POINTS, start, full),
@@ -349,10 +381,10 @@ impl Renderer {
         // post at render resolution
         gl.bind_framebuffer(glow::FRAMEBUFFER, Some(f2)); gl.viewport(0, 0, lw, lh); gl.disable(glow::DEPTH_TEST);
         let p = &self.post; gl.use_program(Some(p.prog));
-        gl.active_texture(glow::TEXTURE0); gl.bind_texture(glow::TEXTURE_2D, Some(t1)); gl.uniform_1_i32(p.u.get("tScene"), 0);
-        gl.uniform_2_f32(p.u.get("uSun"), fr.sun[0], fr.sun[1]); gl.uniform_1_f32(p.u.get("uSunVis"), fr.sun_vis); gl.uniform_1_f32(p.u.get("uTime"), fr.time);
-        gl.uniform_1_f32(p.u.get("uFlash"), fr.flash); gl.uniform_1_f32(p.u.get("uSpeed"), fr.speed); gl.uniform_1_f32(p.u.get("uExpo"), if fr.expo > 0.0 { fr.expo } else { 1.0 });
-        gl.uniform_3_f32_slice(p.u.get("uSplitS"), &fr.split_s); gl.uniform_3_f32_slice(p.u.get("uSplitH"), &fr.split_h); gl.uniform_2_f32(p.u.get("uTexel"), fr.texel[0], fr.texel[1]);
+        gl.active_texture(glow::TEXTURE0); gl.bind_texture(glow::TEXTURE_2D, Some(t1)); gl.uniform_1_i32(p.u(U!("tScene")), 0);
+        gl.uniform_2_f32(p.u(U!("uSun")), fr.sun[0], fr.sun[1]); gl.uniform_1_f32(p.u(U!("uSunVis")), fr.sun_vis); gl.uniform_1_f32(p.u(U!("uTime")), fr.time);
+        gl.uniform_1_f32(p.u(U!("uFlash")), fr.flash); gl.uniform_1_f32(p.u(U!("uSpeed")), fr.speed); gl.uniform_1_f32(p.u(U!("uExpo")), if fr.expo > 0.0 { fr.expo } else { 1.0 });
+        gl.uniform_3_f32_slice(p.u(U!("uSplitS")), &fr.split_s); gl.uniform_3_f32_slice(p.u(U!("uSplitH")), &fr.split_h); gl.uniform_2_f32(p.u(U!("uTexel")), fr.texel[0], fr.texel[1]);
         gl.bind_vertex_array(Some(self.quad_vao)); gl.draw_arrays(glow::TRIANGLES, 0, 3); gl.bind_vertex_array(None);
         // nearest-neighbour upscale to the screen
         gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(f2)); gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, screen);

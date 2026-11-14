@@ -482,13 +482,22 @@ const F = {
   "<":[2,4,8,16,8,4,2],">":[8,4,2,1,2,4,8]
 };
 const textW = (s, sc) => String(s).length * 6 * sc - sc;
+const FKEYS = Object.keys(F), FIDX = {}; FKEYS.forEach((k, i) => FIDX[k] = i);
+const GLYPHS = new Map(), WORDS = new Map();   // glyph sheets per (scale, colour, shadow); whole labels without digits are cached as one image
+function glyphSheet(sc, col, shadow) { const key = sc + "|" + col + "|" + shadow; let c = GLYPHS.get(key); if (c) return c;
+  c = document.createElement("canvas"); c.width = FKEYS.length * 6 * sc; c.height = 8 * sc; const g = c.getContext("2d");
+  for (const [ox, fill] of shadow ? [[sc, shadow], [0, col]] : [[0, col]]) { g.fillStyle = fill;   // the shadow sits in the glyph's own 6x8 cell, so one copy draws both
+    FKEYS.forEach((k, i) => { const gl = F[k]; for (let r = 0; r < 7; r++) for (let b = 0; b < 5; b++) if (gl[r] & (16 >> b)) g.fillRect((i * 6 + b) * sc + ox, r * sc + ox, sc, sc); }); }
+  if (GLYPHS.size > 64) GLYPHS.clear(); GLYPHS.set(key, c); return c; }
 function text(g, s, x, y, sc, col, shadow = "rgba(0,0,0,0.55)") {
-  s = String(s).toUpperCase(); x = Math.round(x); y = Math.round(y);
-  const pass = (ox, oy, c) => { g.fillStyle = c;
-    for (let n = 0; n < s.length; n++) { const gl = F[s[n]] || F["?"];
-      for (let r = 0; r < 7; r++) { const row = gl[r]; if (!row) continue;
-        for (let b = 0; b < 5; b++) if (row & (16 >> b)) g.fillRect(x + ox + (n * 6 + b) * sc, y + oy + r * sc, sc, sc); } } };
-  if (shadow) pass(sc, sc, shadow); pass(0, 0, col);
+  s = String(s).toUpperCase(); x = Math.round(x); y = Math.round(y); if (!s.length) return;
+  const sh = glyphSheet(sc, col, shadow || ""), w = 6 * sc, h = 8 * sc;
+  if (!/[0-9]/.test(s)) { const key = s + "|" + sc + "|" + col + "|" + shadow; let c = WORDS.get(key);
+    if (!c) { c = document.createElement("canvas"); c.width = s.length * w; c.height = h; const q = c.getContext("2d");
+      for (let n = 0; n < s.length; n++) { const ch = s[n]; if (ch === " ") continue; const i = FIDX[ch] ?? FIDX["?"]; q.drawImage(sh, i * w, 0, w, h, n * w, 0, w, h); }
+      if (WORDS.size > 300) WORDS.clear(); WORDS.set(key, c); }
+    g.drawImage(c, x, y); return; }
+  for (let n = 0; n < s.length; n++) { const ch = s[n]; if (ch === " ") continue; const i = FIDX[ch] ?? FIDX["?"]; g.drawImage(sh, i * w, 0, w, h, x + n * w, y, w, h); }
 }
 function textTex(w, h, draw) { return canvasTex(w, (g) => draw(g), false, h); }
 
@@ -509,10 +518,10 @@ function sway(mat, amp, useUv, fade) {
 }
 const tmpO = new THREE.Object3D(), tmpC = new THREE.Color();
 function pushT(list, colors, o, c) { o.updateMatrix(); list.push(o.matrix.clone()); colors.push(c.clone()); }
-/* instanced props are split into ~200 m chunks with bounding spheres, so the renderer (three.js or the native one) frustum-culls them;
+/* instanced props are split into ~160 m chunks (ground cover smaller) with bounding spheres, so the renderer (three.js or the native one) frustum-culls them;
    each chunk is also hidden past a distance (small props early, everything else where the fog has fully swallowed it) */
-const CULL = [], FOGCUT = 2.05 / scene.fog.density;
-function instanced(geo, mat, mats, cols, maxD = FOGCUT, CH = 320) {
+const CULL = [], FOGCUT = 1.8 / scene.fog.density;   // fog leaves under 4% of anything past this
+function instanced(geo, mat, mats, cols, maxD = FOGCUT, CH = 160) {
   if (!mats.length) return null;
   const groups = new Map(), p = new THREE.Vector3(); let first = null;
   for (let i = 0; i < mats.length; i++) { p.setFromMatrixPosition(mats[i]); const k = Math.floor(p.x / CH) * 4096 + Math.floor(p.z / CH); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(i); }
@@ -935,7 +944,7 @@ const card = new THREE.PlaneGeometry(1, 1);
   const flat = new THREE.IcosahedronGeometry(0.5, 0); flat.scale(1, 0.32, 1); flat.translate(0, 0.86, 0);
   const umbGeo = parts([[trunk(0.8), bark], [flat, (v) => shade(v, [1, 1, 1])]]), cypGeo = parts([[trunk(0.12), bark], [cone(0.13, 0.92, 0.06), (v) => shade(v, [1, 1, 1])]]);
   const mat = new THREE.MeshBasicMaterial({ vertexColors: true });
-  const GID = new Map(), chunks = new Map(), add = (geo, x, z, m4, c) => { if (!GID.has(geo)) GID.set(geo, GID.size); const key = Math.floor(x / 400) * 64 + Math.floor(z / 400) + GID.get(geo) * 10000;
+  const GID = new Map(), chunks = new Map(), add = (geo, x, z, m4, c) => { if (!GID.has(geo)) GID.set(geo, GID.size); const key = Math.floor(x / 200) * 64 + Math.floor(z / 200) + GID.get(geo) * 10000;
     if (!chunks.has(key)) chunks.set(key, { geo, M: [], C: [] }); const ch = chunks.get(key); ch.M.push(m4); ch.C.push(c); };
   const TREE_R = MAPN === "forest" ? 760 : SNOW ? 1050 : CAN ? 900 : TOU ? 780 : 1100, CELL = 9, NEAR_BAND = SNOW ? 46 : 52;
   const hr = (i, j, s) => hash2(i * 7 + s, j * 13 - s * 3);
@@ -974,7 +983,7 @@ const card = new THREE.PlaneGeometry(1, 1);
   }
   for (const ch of chunks.values()) { const im = new THREE.InstancedMesh(ch.geo, mat, ch.M.length);
     ch.M.forEach((m, i) => { im.setMatrixAt(i, m); im.setColorAt(i, ch.C[i]); }); im.instanceMatrix.needsUpdate = true; im.instanceColor.needsUpdate = true;
-    im.computeBoundingSphere(); scene.add(im); }
+    im.computeBoundingSphere(); scene.add(im); CULL.push({ o: im, c: im.boundingSphere.center.clone(), r: im.boundingSphere.radius, d: FOGCUT }); }   // gone once the fog has swallowed the whole chunk
   window.__farTrees = nFar;
 }
 function clumpGeo(n) {
@@ -989,7 +998,7 @@ if (MAPN === "forest" || LAK || TOU) { const M = [], C = [];
     if (pathDist(x, z) < ROAD + 1.3 || (LAK && height(x, z) < WL + 0.3)) continue;
     tmpO.position.set(x, height(x, z) - 0.1, z); tmpO.rotation.set(0, rnd() * 6, 0); const s = rr(1.0, 2.2); tmpO.scale.set(s * 1.3, s, s * 1.3);
     pushT(M, C, tmpO, tmpC.setHSL(rr(0.25, 0.32), rr(0.35, 0.5), rr(0.26, 0.38)).multiplyScalar(1.5)); }
-  instanced(clump3, sway(new THREE.MeshBasicMaterial({ map: fernTex, alphaTest: 0.5, side: THREE.DoubleSide }), 0.12, true), M, C, 170, 200); }
+  instanced(clump3, sway(new THREE.MeshBasicMaterial({ map: fernTex, alphaTest: 0.5, side: THREE.DoubleSide }), 0.12, true), M, C, 170, 96); }
 if (SNOW) {   // snowbanks ploughed along both edges
   const geo = new THREE.IcosahedronGeometry(1, 1), p = geo.attributes.position, v = new THREE.Vector3();
   for (let i = 0; i < p.count; i++) { v.fromBufferAttribute(p, i); v.multiplyScalar(0.8 + vnoise(v.x * 2 + 4, v.z * 2 + v.y) * 0.4); p.setXYZ(i, v.x, Math.max(-0.3, v.y), v.z); }
@@ -1010,7 +1019,7 @@ if (RIV) {   // garrigue: rosemary and lentisk, lavender, yellow broom
     if (pathDist(x, z) < ROAD + 0.9 || fbm(x * 0.06, z * 0.06) < 0.44 || height(x, z) < 2 || tunAt(k) || (inVillage(k) && pathDist(x, z) < 13)) continue;
     tmpO.position.set(x, height(x, z) - 0.05, z); tmpO.rotation.set(0, rnd() * 6, 0); const sc = rr(0.55, 1.25); tmpO.scale.set(sc * 1.6, sc, sc * 1.6); const q = rnd();
     pushT(M, C, tmpO, q < 0.62 ? tmpC.setRGB(rr(0.42, 0.55), rr(0.52, 0.62), rr(0.3, 0.36)) : q < 0.82 ? tmpC.setRGB(0.66, 0.52, 0.95) : tmpC.setRGB(1.05, 0.88, 0.25)); }
-  instanced(clump3, sway(new THREE.MeshBasicMaterial({ map: fernTex, alphaTest: 0.5, side: THREE.DoubleSide }), 0.08, true), M, C, 200, 200);
+  instanced(clump3, sway(new THREE.MeshBasicMaterial({ map: fernTex, alphaTest: 0.5, side: THREE.DoubleSide }), 0.08, true), M, C, 200, 96);
 }
 if (CAN) {   // dry desert scrub and tufts along the sand
   const M = [], C = [];
@@ -1018,7 +1027,7 @@ if (CAN) {   // dry desert scrub and tufts along the sand
     if (pathDist(x, z) < ROAD + 0.8 || fbm(x * 0.06, z * 0.06) < 0.42) continue;
     tmpO.position.set(x, height(x, z) - 0.05, z); tmpO.rotation.set(0, rnd() * 6, 0); const sc = rr(0.5, 1.2); tmpO.scale.set(sc * 1.5, sc, sc * 1.5);
     pushT(M, C, tmpO, tmpC.setRGB(rr(0.85, 1.0), rr(0.68, 0.8), rr(0.42, 0.5))); }
-  instanced(clump3, sway(new THREE.MeshBasicMaterial({ map: fernTex, alphaTest: 0.5, side: THREE.DoubleSide }), 0.08, true), M, C, 200, 200);
+  instanced(clump3, sway(new THREE.MeshBasicMaterial({ map: fernTex, alphaTest: 0.5, side: THREE.DoubleSide }), 0.08, true), M, C, 200, 96);
 }
 if (MAPN === "forest" || LAK) { const M = [], C = [];
   for (let i = 0; i < 6000; i++) { const k = (rnd() * NP) | 0, p = PATH[k], tn = TAN[k], side = rnd() < 0.5 ? -1 : 1, off = rr(ROAD + 0.5, ROAD + 2.8) * side;
@@ -1026,14 +1035,14 @@ if (MAPN === "forest" || LAK) { const M = [], C = [];
     if (fbm(x * 0.09, z * 0.09) < 0.48 || pathDist(x, z) < ROAD + 0.4 || (LAK && height(x, z) < WL + 0.3)) continue;
     tmpO.position.set(x, height(x, z) - 0.05, z); tmpO.rotation.set(0, rnd() * 6, 0); const s = rr(0.45, 0.85); tmpO.scale.set(s * 1.3, s, s * 1.3);
     pushT(M, C, tmpO, LAK ? (rnd() < 0.7 ? tmpC.setRGB(1.05, 0.45, 0.85) : tmpC.setRGB(1.1, 1.1, 1.05)) : rnd() < 0.06 ? tmpC.setRGB(0.85, 0.15, 0.12) : tmpC.setRGB(1.12, 1.02, 0.28)); }
-  instanced(clump2, sway(new THREE.MeshBasicMaterial({ map: flowerTex, alphaTest: 0.5, side: THREE.DoubleSide }), 0.08, true), M, C, 160, 200); }
+  instanced(clump2, sway(new THREE.MeshBasicMaterial({ map: flowerTex, alphaTest: 0.5, side: THREE.DoubleSide }), 0.08, true), M, C, 160, 96); }
 if (ICE) {   // nootka lupine fields: purple and blue spikes in drifts along the road
   const M = [], C = [];
   for (let i = 0; i < 16000; i++) { const k = (rnd() * NP) | 0, p = PATH[k], tn = TAN[k], off = rr(ROAD + 0.8, 46) * (rnd() < 0.5 ? -1 : 1), x = p[0] - tn[1] * off + rr(-2, 2), z = p[1] + tn[0] * off + rr(-2, 2);
     if (pathDist(x, z) < ROAD + 0.6 || fbm(x * 0.035 + 9, z * 0.035) < 0.47 || height(x, z) < 0.5) continue;
     tmpO.position.set(x, height(x, z) - 0.05, z); tmpO.rotation.set(0, rnd() * 6, 0); const sc = rr(0.55, 1.0); tmpO.scale.set(sc * 1.1, sc * 1.25, sc * 1.1);
     pushT(M, C, tmpO, rnd() < 0.75 ? tmpC.setRGB(0.62, 0.34, 1.05).multiplyScalar(rr(0.8, 1.05)) : tmpC.setRGB(0.42, 0.46, 1.1).multiplyScalar(rr(0.8, 1.0))); }
-  instanced(clump2, sway(new THREE.MeshBasicMaterial({ map: flowerTex, alphaTest: 0.5, side: THREE.DoubleSide }), 0.1, true), M, C, 220, 200);
+  instanced(clump2, sway(new THREE.MeshBasicMaterial({ map: flowerTex, alphaTest: 0.5, side: THREE.DoubleSide }), 0.1, true), M, C, 220, 96);
 }
 { const geo = new THREE.IcosahedronGeometry(1, 2), p = geo.attributes.position, v = new THREE.Vector3();
   for (let i = 0; i < p.count; i++) { v.fromBufferAttribute(p, i); v.multiplyScalar(0.75 + fbm(v.x * 1.7 + 3, v.y * 1.7 + v.z) * 0.55); p.setXYZ(i, v.x, v.y * 0.7, v.z); }
@@ -2214,9 +2223,16 @@ function raceStep(dt) {
   rcSave(PSNAP); SIMAI = true;
   const pw0 = TUNE.power;
   const mu0 = TUNE.muRoad, mg0 = TUNE.muGrass, ag0 = TUNE.aGrip, yc0 = TUNE.aYawCap;
-  for (const c of RACE.cars) { if (c.isPlayer) continue; rcLoad(c); const bo = c.boost || 0; TUNE.power = pw0 * (1 + bo); TUNE.muRoad = mu0 * (RTUNE.mu + bo * 0.4); TUNE.muGrass = mg0 * (1 + bo * 0.4);
-    TUNE.aGrip = ag0 * RTUNE.grip; TUNE.aYawCap = yc0 * RTUNE.yaw;   // rivals get steadier handling than you: more side grip and yaw authority, so they can carry speed without spinning
-    vehicleUpdate(dt, rivalInput(c)); rivalRecover(c, dt); rcSave(c); }
+  const tuneFor = (c) => { const bo = c.boost || 0; TUNE.power = pw0 * (1 + bo); TUNE.muRoad = mu0 * (RTUNE.mu + bo * 0.4); TUNE.muGrass = mg0 * (1 + bo * 0.4);
+    TUNE.aGrip = ag0 * RTUNE.grip; TUNE.aYawCap = yc0 * RTUNE.yaw; };   // rivals get steadier handling than you: more side grip and yaw authority, so they can carry speed without spinning
+  let batched = false;
+  if (physNative) {   // one call into the Rust core for the whole field
+    const ins = [], cs = [];
+    for (const c of RACE.cars) { if (c.isPlayer) continue; rcLoad(c); tuneFor(c); ins.push(packSim(dt, rivalInput(c))); cs.push(c); }
+    const out = String(NATIVE.step(ins.join(";"))).split(";");
+    if (out.length === cs.length && !out[0].startsWith("err")) { batched = true; cs.forEach((c, j) => { rcLoad(c); unpackSim(out[j]); rivalRecover(c, dt); rcSave(c); }); }
+  }
+  if (!batched) for (const c of RACE.cars) { if (c.isPlayer) continue; rcLoad(c); tuneFor(c); vehicleUpdateJS(dt, rivalInput(c)); rivalRecover(c, dt); rcSave(c); }
   TUNE.power = pw0; TUNE.muRoad = mu0; TUNE.muGrass = mg0; TUNE.aGrip = ag0; TUNE.aYawCap = yc0; rcLoad(PSNAP); SIMAI = false;
   carContacts(); raceProgress(dt);
   if (RACE.phase === "done") RACE.doneT += dt;
@@ -2414,6 +2430,7 @@ function box(g, x, y, w, h, fill, edge) { x = Math.round(x); y = Math.round(y); 
 function arrow(g, cx, cy, dir, sz, col) { g.fillStyle = col; for (let r = -sz; r <= sz; r += U) { const len = sz - Math.abs(r); if (len <= 0) continue; const x0 = dir < 0 ? cx - sz / 2 + Math.abs(r) : cx - sz / 2; g.fillRect(Math.round(x0), Math.round(cy + r), Math.round(len), U); } }
 function pxLine(g, x0, y0, x1, y1, col, t) { g.fillStyle = col; const n = Math.ceil(Math.hypot(x1 - x0, y1 - y0) / U); for (let i = 0; i <= n; i++) { const k = i / n; g.fillRect(Math.round(x0 + (x1 - x0) * k - t / 2), Math.round(y0 + (y1 - y0) * k - t / 2), t, t); } }
 const STAGE_KM = (NP / 1000).toFixed(2);
+const SPEEDO = new Map();
 function drawHUD(inp) {
   const g = hud; g.clearRect(0, 0, LW, LH);
   const pl = Math.round(inset.l + 5 * U), pr = Math.round(inset.r + 5 * U), pt = Math.round(inset.t + 4 * U), pb = Math.round(inset.b + 5 * U);
@@ -2469,10 +2486,15 @@ function drawHUD(inp) {
       box(g, x, ty, w, 9 * U, "rgba(8,12,8,0.55)", null); g.fillStyle = css(c); g.fillRect(x, ty + 8 * U, w, U); text(g, c.r.tag, x + 2 * U, ty + U, U, INK, null); }
   }
   const R = 26 * U, cx = Math.round(LW / 2), cy = Math.round(LH - pb - 3 * U);
-  g.fillStyle = PANEL; for (let yy = 0; yy <= R + 3 * U; yy += U) { const half = Math.sqrt(Math.max(0, (R + 3 * U) ** 2 - yy * yy)); g.fillRect(Math.round(cx - half), cy - yy - U, Math.round(half * 2), U); }
-  for (let rpm = 0; rpm <= 8000; rpm += 125) { const a = Math.PI - rpm / 8000 * Math.PI, red = rpm >= 7000;
-    const r0 = rpm % 1000 === 0 ? R - 4 * U : R - U; g.fillStyle = red ? RED : (rpm <= S.rpmShown ? AMBER : "rgba(233,236,226,0.5)");
-    for (let r = r0; r <= R; r += U) g.fillRect(Math.round(cx + Math.cos(a) * r), Math.round(cy - Math.sin(a) * r), U, U); }
+  { const lit = Math.max(-1, Math.min(64, Math.floor(S.rpmShown / 125))), key = U + "|" + lit, ox = R + 4 * U, oy = R + 5 * U; let sp = SPEEDO.get(key);
+    if (!sp) {   // the dial for this many lit ticks, drawn once and reused: ~250 rects become one image
+      sp = document.createElement("canvas"); sp.width = ox * 2; sp.height = oy + U; const q = sp.getContext("2d"), X = ox, Y = oy;
+      q.fillStyle = PANEL; for (let yy = 0; yy <= R + 3 * U; yy += U) { const half = Math.sqrt(Math.max(0, (R + 3 * U) ** 2 - yy * yy)); q.fillRect(Math.round(X - half), Y - yy - U, Math.round(half * 2), U); }
+      for (let rpm = 0; rpm <= 8000; rpm += 125) { const a = Math.PI - rpm / 8000 * Math.PI, red = rpm >= 7000;
+        const r0 = rpm % 1000 === 0 ? R - 4 * U : R - U; q.fillStyle = red ? RED : (rpm / 125 <= lit ? AMBER : "rgba(233,236,226,0.5)");
+        for (let r = r0; r <= R; r += U) q.fillRect(Math.round(X + Math.cos(a) * r), Math.round(Y - Math.sin(a) * r), U, U); }
+      if (SPEEDO.size > 140) SPEEDO.clear(); SPEEDO.set(key, sp); }
+    g.drawImage(sp, cx - ox, cy - oy); }
   const na = Math.PI - clamp(S.rpmShown, 0, 8000) / 8000 * Math.PI; pxLine(g, cx, cy - U, cx + Math.cos(na) * (R - 5 * U), cy - U - Math.sin(na) * (R - 5 * U), RED, U);
   const gear = S.gear < 0 ? "R" : String(S.gear); text(g, gear, cx - textW(gear, 2 * U) / 2, cy - 23 * U, 2 * U, INK);
   const kmh = String(Math.round(Math.abs(S.u) * 3.6)).padStart(3, "0"); text(g, kmh, cx - textW(kmh, U) / 2, cy - 8 * U, U, AMBER);
@@ -2619,7 +2641,8 @@ function nglExport() {
     if (gc >= 0) e.dr = [gs, gc];
     if (o.isInstancedMesh) { e.count = o.count; e.max = o.instanceMatrix.count; e.im = addBuf(o.instanceMatrix.array); e.ic = o.instanceColor ? addBuf(o.instanceColor.array) : null;
       if (o.boundingSphere) { const b = o.boundingSphere; e.ibs = [b.center.x, b.center.y, b.center.z, b.radius]; } else e.cull = 0; }
-    objs.push(e); NGL_OBJ[e.id] = { o, mat, mw: new Float32Array(o.matrixWorld.elements), vis: e.vis, op: mat.opacity, imv: o.isInstancedMesh ? o.instanceMatrix.version : 0,
+    let top = o; while (top.parent && top.parent !== scene) top = top.parent;
+    objs.push(e); NGL_OBJ[e.id] = { o, mat, dyn: !top.userData.frozen, mw: new Float32Array(o.matrixWorld.elements), vis: e.vis, op: mat.opacity, imv: o.isInstancedMesh ? o.instanceMatrix.version : 0,
       icv: o.instanceColor ? o.instanceColor.version : 0, count: o.count }; } });
   const lights = { hemi: [], dir: [] };
   scene.traverse((o) => { if (o.isHemisphereLight) lights.hemi.push({ sky: col(o.color).map(v => v * o.intensity), ground: col(o.groundColor).map(v => v * o.intensity), d: o.position.clone().normalize().toArray() });
@@ -2631,48 +2654,66 @@ function nglExport() {
   out.set(json, 8); for (const [off, b] of parts) out.set(b, 8 + jl + off);
   return out.buffer;
 }
-const nglBuf = []; const NGL_MAGIC = 7001;
+let NB = new Float32Array(1 << 15), NN = 0; const NGL_MAGIC = 7001;
+const nRoom = (n) => { if (NN + n > NB.length) { let L = NB.length; while (NN + n > L) L *= 2; const b = new Float32Array(L); b.set(NB.subarray(0, NN)); NB = b; } };
+const nPut = (v) => { if (NN >= NB.length) nRoom(1); NB[NN++] = v; };
+const nArr = (arr, n) => { nRoom(n); NB.set(n === arr.length ? arr : arr.subarray(0, n), NN); NN += n; };
+const nglBuf = { push(...v) { for (const x of v) nPut(x); } };
 function nglFrame() {
   if (!nglSent) { NGL.postMessage(nglExport()); nglSent = true; }
   scene.updateMatrixWorld(); camera.updateMatrixWorld();
-  const a = nglBuf; a.length = 0;
+  NN = 0; const a = nglBuf;
   const pu = post.uniforms;
   a.push(NGL_MAGIC, LW, LH, ...camera.matrixWorldInverse.elements, ...camera.projectionMatrix.elements, camera.position.x, camera.position.y, camera.position.z,
     uTime.value, uWind.value, pu.uSun.value.x, pu.uSun.value.y, pu.uSunVis.value, pu.uFlash.value, pu.uSpeed.value, dMat.uniforms.uScale.value, pu.uExpo.value, EXPO.dim, pu.uSplitS.value.x, pu.uSplitS.value.y, pu.uSplitS.value.z, pu.uSplitH.value.x, pu.uSplitH.value.y, pu.uSplitH.value.z, pu.uTexel.value.x, pu.uTexel.value.y);
-  const nObjAt = a.length; a.push(0); let nObj = 0;
-  for (let id = 0; id < NGL_OBJ.length; id++) { const r = NGL_OBJ[id], o = r.o, e = o.matrixWorld.elements; let vis = 1;
+  const nObjAt = NN; nPut(0); let nObj = 0;
+  for (let id = 0; id < NGL_OBJ.length; id++) { const r = NGL_OBJ[id], o = r.o; let vis = 1;
     for (let p = o; p; p = p.parent) if (!p.visible) { vis = 0; break; }
-    let ch = vis !== r.vis || r.mat.opacity !== r.op; if (!ch) for (let k = 0; k < 16; k++) if (Math.fround(e[k]) !== r.mw[k]) { ch = true; break; }
-    if (!ch) continue; r.vis = vis; r.op = r.mat.opacity; r.mw.set(e); a.push(id, vis, r.op, ...e); nObj++; }
-  a[nObjAt] = nObj;
-  const nBufAt = a.length; a.push(0); let nBuf = 0;
+    let ch = vis !== r.vis || r.mat.opacity !== r.op;
+    if (!ch && r.dyn) { const e = o.matrixWorld.elements; for (let k = 0; k < 16; k++) if (Math.fround(e[k]) !== r.mw[k]) { ch = true; break; } }
+    if (!ch) continue; r.vis = vis; r.op = r.mat.opacity; r.mw.set(o.matrixWorld.elements); nPut(id); nPut(vis); nPut(r.op); nArr(r.mw, 16); nObj++; }
+  NB[nObjAt] = nObj;
+  const nBufAt = NN; nPut(0); let nBuf = 0;
   for (let gid = 0; gid < NGL_GEO.length; gid++) { const r = NGL_GEO[gid];
     for (let k = 0; k < r.names.length; k++) { const at = r.g.attributes[r.names[k]]; if (at.version === r.ver[k]) continue; r.ver[k] = at.version;
-      a.push(1, gid, k, at.array.length); for (let q = 0; q < at.array.length; q++) a.push(at.array[q]); nBuf++; } }
+      nPut(1); nPut(gid); nPut(k); nPut(at.array.length); nArr(at.array, at.array.length); nBuf++; } }
   for (let id = 0; id < NGL_OBJ.length; id++) { const r = NGL_OBJ[id], o = r.o; if (!o.isInstancedMesh || (id > 0 && NGL_OBJ[id - 1].o === o)) continue;
-    const icv = o.instanceColor ? o.instanceColor.version : 0;
-    if (o.instanceMatrix.version === r.imv && icv === r.icv && o.count === r.count) continue; r.imv = o.instanceMatrix.version; r.icv = icv; r.count = o.count;
-    const n = o.count, M = o.instanceMatrix.array, C = o.instanceColor ? o.instanceColor.array : null;
-    a.push(2, id, n, n * 16); for (let q = 0; q < n * 16; q++) a.push(M[q]);
-    a.push(C ? n * 3 : 0); if (C) for (let q = 0; q < n * 3; q++) a.push(C[q]); nBuf++; }
-  a[nBufAt] = nBuf;
-  NGL.postMessage(Float32Array.from(a).buffer);
+    const icv = o.instanceColor ? o.instanceColor.version : 0, colCh = icv !== r.icv;
+    if (o.instanceMatrix.version === r.imv && !colCh && o.count === r.count) continue; r.imv = o.instanceMatrix.version; r.icv = icv; r.count = o.count;
+    const n = o.count, C = colCh && o.instanceColor ? o.instanceColor.array : null;
+    nPut(2); nPut(id); nPut(n); nPut(n * 16); nArr(o.instanceMatrix.array, n * 16);
+    nPut(C ? n * 3 : 0); if (C) nArr(C, n * 3); nBuf++; }
+  NB[nBufAt] = nBuf;
+  NGL.postMessage(NB.slice(0, NN).buffer);
 }
 window.__nglExport = nglExport; window.__nglFrame = () => nglFrame();
 window.__nglResend = () => { nglSent = false; };   // the app lost its GL context (e.g. after a long pause): send the scene again
 
 /* ================= frame loop ================= */
 const fwd = new THREE.Vector3(), v3 = new THREE.Vector3(), lookT = new THREE.Vector3();
-let last = performance.now(), fpsAcc = 0, fpsN = 0, downgraded = false, hudTick = false;
+/* app on a 90/120 Hz screen: it starts at the screen's top rate; if frames keep missing it, drop to a steady 60 rather than judder between the two */
+const RATE = { on: !!(NATIVE && typeof NATIVE.refresh === "function"), iv: new Float32Array(240), n: 0, bad: 0, low: false };
+function rateCheck() { RATE.n = 0; if (RATE.low) { RATE.on = false; return; }
+  const v = Array.from(RATE.iv).sort((a, b) => a - b), med = v[v.length >> 1];
+  if (med > 0.0135) return;   // already ~60 Hz: nothing to decide
+  let miss = 0; for (const x of RATE.iv) if (x > med * 1.6) miss++;
+  RATE.bad = miss > RATE.iv.length * 0.07 ? RATE.bad + 1 : 0;
+  if (RATE.bad >= 2) { try { NATIVE.refresh(60); } catch (_) {} RATE.low = true; } }
+window.__rate = RATE;
+let dustWas = true; let last = performance.now(), fpsAcc = 0, fpsN = 0, downgraded = false, hudTick = false;
+const PROF = { on: false, t: 0, acc: {}, n: 0 }; window.__prof = PROF;
+const PF = (k) => { if (!PROF.on) return; const t = performance.now(); PROF.acc[k] = (PROF.acc[k] || 0) + t - PROF.t; PROF.t = t; };
 function frame(now) {
   if (!alive) return;
+  if (PROF.on) { PROF.t = performance.now(); PROF.n++; }
   const dt = Math.min(0.05, (now - last) / 1000); last = now; uTime.value += dt;
+  if (RATE.on && game.state === "drive" && dt > 0) { RATE.iv[RATE.n++] = dt; if (RATE.n === RATE.iv.length) rateCheck(); }
   fpsAcc += dt; fpsN++; if (fpsN === 90) { if (!downgraded && fpsAcc / fpsN > 1 / 36 && pixIdx > 0) { pixIdx--; resize(); downgraded = true; } fpsAcc = 0; fpsN = 0; }
   const gust = clamp(0.5 + (fbm(uTime.value * 0.06, 3.3, 3) - 0.5) * 1.8, 0, 1); uWind.value = gust;
   const inp = game.state === "drive" ? (game.go > 0.9 ? { steer: 0, throttle: 0, brake: 0, hb: true } : RACE.on && RACE.phase === "done" ? aiInput() : readInput()) : aiInput();
-  vehicleUpdate(dt, inp); syncCar();
-  if (game.state === "drive") { if (RACE.on) raceStep(dt); else updateLap(dt); }
-  updateAudio(dt, inp, gust);
+  vehicleUpdate(dt, inp); syncCar(); PF("player");
+  if (game.state === "drive") { if (RACE.on) raceStep(dt); else updateLap(dt); } PF("race");
+  updateAudio(dt, inp, gust); PF("audio");
   if (S.landed) { const v = -S.landV; S.landed = false;
     if (v > 1.8 && game.state === "drive") buzz("land", clamp((v - 1.5) / 7, 0.15, 1));
     if (v > 1.2) SHARED.send(new Float32Array([2, 2, v, 0]));
@@ -2698,12 +2739,14 @@ function frame(now) {
     if (ICE && height(w.wx, w.wz) < -0.05) e = 0;
     while (e > 0) { if (rnd() < e) emitDust(w.wx, height(w.wx, w.wz) + 0.2, w.wz, -S.vx * 0.1 + rr(-0.8, 0.8), rr(0.3, 1.2), -S.vz * 0.1 + rr(-0.8, 0.8), rr(0.5, 0.9) * (w.road ? 1 : 0.6)); e -= 1; }
   }
-  for (let i = 0; i < DN; i++) { if (dLife[i] <= 0) { dA[i] = 0; continue; } dAge[i] += dt; const k = dAge[i] / dLife[i];
+  let dLive = 0;
+  for (let i = 0; i < DN; i++) { if (dLife[i] <= 0) { dA[i] = 0; continue; } dLive++; dAge[i] += dt; const k = dAge[i] / dLife[i];
     if (k >= 1) { dLife[i] = 0; dA[i] = 0; continue; }
     dPos[i * 3] += dV[i * 3] * dt; dPos[i * 3 + 1] += dV[i * 3 + 1] * dt; dPos[i * 3 + 2] += dV[i * 3 + 2] * dt;
     dV[i * 3] *= 1 - dt * 1.5; dV[i * 3 + 1] *= 1 - dt * 1.2; dV[i * 3 + 2] *= 1 - dt * 1.5; dS[i] += dt * 1.7; dA[i] = (TOU || RIV ? 0.26 : 0.4) * Math.pow(1 - k, 1.6); }
-  dGeo.attributes.position.needsUpdate = true; dGeo.attributes.aA.needsUpdate = true; dGeo.attributes.aS.needsUpdate = true;
+  if (dLive || dustWas) { dGeo.attributes.position.needsUpdate = true; dGeo.attributes.aA.needsUpdate = true; dGeo.attributes.aS.needsUpdate = true; } dustWas = dLive > 0;
 
+  PF("fx");
   // camera: rigid chase that stays locked behind the car
   const spK = clamp((sp - 6) / 40, 0, 1);
   const mode = camState.mode;
@@ -2728,7 +2771,7 @@ function frame(now) {
   camState.fov += (fovT - camState.fov) * Math.min(1, dt * 3);
   camera.fov = innerWidth > innerHeight ? camState.fov : camState.fov + 20; camera.updateProjectionMatrix();
   for (const c of CULL) c.o.visible = camera.position.distanceTo(c.c) - c.r < c.d;
-  if (RACE.on) { camera.updateMatrixWorld(); rivalGfx(); rivalAudio(); }
+  PF("camera"); if (RACE.on) { camera.updateMatrixWorld(); rivalGfx(); rivalAudio(); } PF("rivals");
   sky.position.copy(camera.position); peaks.position.x = camera.position.x; peaks.position.z = camera.position.z; updateSnowfall(dt); updateSetPieces(dt); updateRiviera(dt);
   for (let i = 0; i < GLIT.length; i++) { const m = GLIT[i]; m.position.x = Math.round(camera.position.x / 5) * 5; m.position.z = Math.round(camera.position.z / 5) * 5;
     if (i < 2) m.material.opacity = 0.45 + 0.45 * Math.max(0, Math.sin(uTime.value * (2.3 + i * 0.7) + i * 1.9)); }
@@ -2753,14 +2796,25 @@ function frame(now) {
       for (const e of EXPO.mats) { e.m.color.copy(e.c).multiplyScalar(EXPO.dim); if (e.s) e.m.specular.copy(e.s).multiplyScalar(EXPO.dim); } } }
   post.uniforms.uExpo.value = EXPO.v;
 
-  hudTick = !hudTick; if (hudTick || game.state !== "drive" || touches.size) { drawHUD(inp); hudTex.needsUpdate = true; }
-  if (NGL) nglFrame(); else {
+  PF("world"); hudTick = !hudTick; if (hudTick || game.state !== "drive" || touches.size) { drawHUD(inp); hudTex.needsUpdate = true; } PF("hud");
+  if (NGL) { nglFrame(); PF("ngl"); } else {
   renderer.setRenderTarget(rt); renderer.render(scene, camera); window.__calls = renderer.info.render.calls; window.__tris = renderer.info.render.triangles;
   renderer.setRenderTarget(null); renderer.render(postScene, postCam); }
   requestAnimationFrame(frame);
 }
+/* everything that never moves keeps the matrix it has now: three.js (and the native packet) skip it every frame */
+{ const DYN = new Set([car.root, car.shadow, sky, peaks, starG, aurG, ...waterL, ...GLIT, ...CLOUDS, ...SUNB]); let frozen = 0;
+  scene.updateMatrixWorld(true); scene.matrixAutoUpdate = false;
+  for (const o of scene.children) { if (DYN.has(o) || o.isLight || o.isCamera) continue; o.traverse(d => { d.updateMatrix(); d.matrixAutoUpdate = false; }); o.updateMatrixWorld(true); o.matrixWorldAutoUpdate = false; o.userData.frozen = true; frozen++; }
+  window.__frozen = frozen;
+  window.__frozenCheck = () => { const m = new THREE.Matrix4(), bad = []; scene.traverse(o => { let t = o; while (t.parent && t.parent !== scene) t = t.parent; if (!t.userData.frozen) return;
+    m.compose(o.position, o.quaternion, o.scale); const e = m.elements, f = o.matrix.elements; for (let k = 0; k < 16; k++) if (Math.abs(e[k] - f[k]) > 1e-4) { bad.push((o.name || o.type) + "@" + scene.children.indexOf(t)); break; } }); return bad; }; }
 requestAnimationFrame(frame);
 /*__DEBUG_PANEL__*/
+window.__hudBench = (skip) => { const t0 = text, b0 = box, sp0 = SPEEDO.get, cl = hud.clearRect; const nop = () => {};
+  if (skip === "text") text = nop; if (skip === "box") box = nop; if (skip === "clear") hud.clearRect = nop;
+  if (skip === "speedo") { const c = document.createElement("canvas"); SPEEDO.get = () => c; }
+  try { drawHUD({ steer: 0, throttle: 1, brake: 0, hb: false }); } finally { text = t0; box = b0; SPEEDO.get = sp0; hud.clearRect = cl; } };
 window.__ready = true; window.__S = S; window.__game = game; window.__WH = WH;
 window.__sim = (secs, inp, start) => { if (start != null) placeAt(start); const out = []; for (let t = 0; t < secs; t += 1 / 60) { vehicleUpdate(1 / 60, typeof inp === "function" ? inp(t) : inp); if (Math.round(t * 60) % 30 === 0) out.push([+t.toFixed(1), +(S.u * 3.6).toFixed(0), S.gear, S.rpm | 0, +S.slide.toFixed(1), +S.r.toFixed(2), +S.vl.toFixed(1)]); } return out; };
 window.__info = () => ({ calls: renderer.info.render.calls, tris: renderer.info.render.triangles }); window.__cam = (m) => { camState.mode = m; camState.init = false; };

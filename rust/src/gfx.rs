@@ -11,7 +11,7 @@ thread_local! { static R: RefCell<Option<Renderer>> = const { RefCell::new(None)
 pub fn push_message(bytes: Vec<u8>) {
     let mut ib = INBOX.lock().unwrap();
     if bytes.len() >= 4 && &bytes[0..4] == b"FWS1" { ib.scene = Some(bytes); ib.frames.clear(); ib.had_scene = true; }
-    else { ib.frames.push(bytes); if ib.frames.len() > 240 { ib.frames.drain(0..120); } }
+    else { ib.frames.push(bytes); if ib.frames.len() > 3600 { ib.frames.drain(0..1800); } }   // frames are deltas: keep them all unless the GL thread has been gone for a minute
 }
 
 fn set_status(s: String) { INBOX.lock().unwrap().status = s; }
