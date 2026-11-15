@@ -8,6 +8,8 @@ pub const K_START: u8 = 6; pub const K_CAR: u8 = 7; pub const K_BYE: u8 = 8;
 pub const K_HIT: u8 = 9;
 /// compact car state: 4-byte header (kind, sender's short id, sequence) and 23 bytes of quantised state
 pub const K_CAR2: u8 = 0xC2; pub const CAR2_LEN: usize = 27;
+/// CAR2 plus forward acceleration and vertical speed (so receivers can predict braking and jumps): 29 bytes
+pub const K_CAR3: u8 = 0xC3; pub const CAR3_LEN: usize = 29;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Env { pub kind: u8, pub room: u32, pub from: u32, pub to: u32, pub seq: u32 }
@@ -17,6 +19,8 @@ pub struct Env { pub kind: u8, pub room: u32, pub from: u32, pub to: u32, pub se
 pub struct CarSnap {
     pub t: f64, pub x: f32, pub y: f32, pub z: f32, pub h: f32, pub vx: f32, pub vy: f32, pub vz: f32, pub r: f32, pub pitch: f32, pub roll: f32, pub steer: f32,
     pub u: f32, pub gear: i8, pub rpm: u16, pub d: [f32; 4], pub ang: [f32; 4], pub flags: u8,
+    /// forward acceleration, m/s2 (compact packets only)
+    pub a: f32,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -76,13 +80,19 @@ pub fn car(e: Env, c: &CarSnap) -> Vec<u8> {
 pub fn read_car(r: &mut R) -> Option<CarSnap> {
     let t = r.f64()?; let mut f = [0f32; 12]; for v in f.iter_mut() { *v = r.f32()?; }
     let gear = r.u8()? as i8; let rpm = r.u16()?; let mut d = [0f32; 4]; for v in d.iter_mut() { *v = r.f32()?; } let mut ang = [0f32; 4]; for v in ang.iter_mut() { *v = r.f32()?; }
-    Some(CarSnap { t, x: f[0], y: f[1], z: f[2], h: f[3], vx: f[4], vy: f[5], vz: f[6], r: f[7], pitch: f[8], roll: f[9], steer: f[10], u: f[11], gear, rpm, d, ang, flags: r.u8()? })
+    Some(CarSnap { t, x: f[0], y: f[1], z: f[2], h: f[3], vx: f[4], vy: f[5], vz: f[6], r: f[7], pitch: f[8], roll: f[9], steer: f[10], u: f[11], gear, rpm, d, ang, flags: r.u8()?, a: 0.0 })
 }
 /// Compact car state, 27 bytes. Position 1/128 m (24 bit), height 1 cm, heading 2^-16 turn, forward speed 1 cm/s,
 /// sideways speed 0.2 m/s, yaw rate 0.02 rad/s, pitch/roll/steer 0.005 rad, rpm x40, suspension 16 steps, time = host clock in ms mod 65536.
 /// Velocity travels as forward + sideways speed so the receiver can run the same prediction as the sender.
-pub fn car2(from: u32, seq: u8, c: &CarSnap) -> Vec<u8> {
-    let mut w = W(Vec::with_capacity(CAR2_LEN)); w.u8(K_CAR2); w.u16(from as u16); w.u8(seq);
+pub fn car2(from: u32, seq: u8, c: &CarSnap) -> Vec<u8> { compact(K_CAR2, from, seq, c) }
+/// CAR3 = CAR2 + acceleration (0.2 m/s2) + vertical speed (0.1 m/s), one signed byte each
+pub fn car3(from: u32, seq: u8, c: &CarSnap) -> Vec<u8> {
+    let mut b = compact(K_CAR3, from, seq, c); let q8 = |v: f32, s: f32| (v / s).round().clamp(-127.0, 127.0) as i8 as u8;
+    b.push(q8(c.a, 0.2)); b.push(q8(c.vy, 0.1)); b
+}
+fn compact(kind: u8, from: u32, seq: u8, c: &CarSnap) -> Vec<u8> {
+    let mut w = W(Vec::with_capacity(CAR3_LEN)); w.u8(kind); w.u16(from as u16); w.u8(seq);
     w.u16(((c.t * 1000.0).rem_euclid(65536.0)) as u16);
     let i24 = |w: &mut W, v: f32| { let q = (v as f64 * 128.0).round().clamp(-8388608.0, 8388607.0) as i32; w.0.extend_from_slice(&q.to_le_bytes()[..3]); };
     let q8 = |v: f32, s: f32| (v / s).round().clamp(-127.0, 127.0) as i8 as u8;
@@ -96,8 +106,10 @@ pub fn car2(from: u32, seq: u8, c: &CarSnap) -> Vec<u8> {
     w.0
 }
 /// (sender short id, sequence, ms stamp, state with t left at 0 for the caller to unwrap)
+/// reads CAR2 and CAR3
 pub fn read_car2(b: &[u8]) -> Option<(u16, u8, u16, CarSnap)> {
-    if b.len() < CAR2_LEN || b[0] != K_CAR2 { return None; }
+    if b.len() < CAR2_LEN || !(b[0] == K_CAR2 || (b[0] == K_CAR3 && b.len() >= CAR3_LEN)) { return None; }
+    let (a, vy) = if b[0] == K_CAR3 { (b[27] as i8 as f32 * 0.2, b[28] as i8 as f32 * 0.1) } else { (0.0, 0.0) };
     let mut r = R::new(&b[1..]); let from = r.u16()?; let seq = r.u8()?; let ms = r.u16()?;
     let i24 = |r: &mut R| -> Option<f32> { let t = r.take(3)?; Some(((i32::from_le_bytes([t[0], t[1], t[2], 0]) << 8) >> 8) as f32 / 128.0) };
     let x = i24(&mut r)?; let z = i24(&mut r)?; let y = r.u16()? as i16 as f32 / 100.0; let h = r.u16()? as f32 / 65536.0 * std::f32::consts::TAU;
@@ -105,8 +117,8 @@ pub fn read_car2(b: &[u8]) -> Option<(u16, u8, u16, CarSnap)> {
     let vl = s8(&mut r, 0.2)?; let yr = s8(&mut r, 0.02)?; let pitch = s8(&mut r, 0.005)?; let roll = s8(&mut r, 0.005)?; let steer = s8(&mut r, 0.005)?;
     let rpm = r.u8()? as u16 * 40; let gf = r.u8()?; let d01 = r.u8()?; let d23 = r.u8()?;
     let dd = |n: u8| n as f32 / 15.0 * 0.37 - 0.16; let (sh, ch) = (h.sin(), h.cos());
-    Some((from, seq, ms, CarSnap { t: 0.0, x, y, z, h, vx: u * sh + vl * ch, vy: 0.0, vz: u * ch - vl * sh, r: yr, pitch, roll, steer, u, gear: (gf & 7) as i8, rpm,
-        d: [dd(d01 & 15), dd(d01 >> 4), dd(d23 & 15), dd(d23 >> 4)], ang: [0.0; 4], flags: gf >> 3 }))
+    Some((from, seq, ms, CarSnap { t: 0.0, x, y, z, h, vx: u * sh + vl * ch, vz: u * ch - vl * sh, r: yr, pitch, roll, steer, u, gear: (gf & 7) as i8, rpm,
+        d: [dd(d01 & 15), dd(d01 >> 4), dd(d23 & 15), dd(d23 >> 4)], ang: [0.0; 4], flags: gf >> 3, a, vy: if b[0] == K_CAR3 { vy } else { 0.0 } }))
 }
 pub fn time_pair(e: Env, a: f64, b: f64) -> Vec<u8> { let mut w = W::env(e); w.f64(a); w.f64(b); w.0 }
 pub fn hit(e: Env, d: [f32; 5], imp: f32) -> Vec<u8> { let mut w = W::env(e); for v in d { w.f32(v); } w.f32(imp); w.0 }
@@ -126,12 +138,15 @@ mod tests {
         let c = CarSnap { t: 5.25, x: 1.0, y: 2.0, z: -3.0, h: 0.5, u: 20.0, gear: 3, rpm: 6100, d: [0.07; 4], ang: [1.0, 2.0, 3.0, 4.0], flags: 1, ..Default::default() };
         let b = car(Env { kind: K_CAR, ..e }, &c); let (_, mut r) = read_env(&b).unwrap(); assert_eq!(read_car(&mut r).unwrap(), c);
         assert!(read_env(b"XX1aaaaaaaaaaaaaaaaaaaa").is_none());
-        let c = CarSnap { t: 70.123, x: -812.37, y: 41.5, z: 300.05, h: -2.5, vx: 12.0, vz: -20.0, r: 0.8, pitch: 0.03, roll: -0.11, steer: 0.4, u: 0.0, gear: 4, rpm: 6440, d: [0.05, 0.1, -0.02, 0.2], ang: [0.0; 4], flags: 1, vy: 0.0 };
+        let c = CarSnap { t: 70.123, x: -812.37, y: 41.5, z: 300.05, h: -2.5, vx: 12.0, vz: -20.0, r: 0.8, pitch: 0.03, roll: -0.11, steer: 0.4, u: 0.0, gear: 4, rpm: 6440, d: [0.05, 0.1, -0.02, 0.2], ang: [0.0; 4], flags: 1, vy: 0.0, a: 0.0 };
         let b = car2(0xabcd1234, 77, &c); assert_eq!(b.len(), CAR2_LEN);
         let (f, sq, ms, d) = read_car2(&b).unwrap(); assert_eq!((f, sq, ms), (0x1234, 77, (70123u32 % 65536) as u16));
         assert!((d.x - c.x).abs() < 0.005 && (d.z - c.z).abs() < 0.005 && (d.y - c.y).abs() < 0.006);
         let dh = (d.h - c.h).rem_euclid(std::f32::consts::TAU); assert!(dh < 1e-3 || dh > std::f32::consts::TAU - 1e-3);
         assert!((d.vx - c.vx).abs() < 0.12 && (d.vz - c.vz).abs() < 0.12, "{} {}", d.vx, d.vz); assert_eq!(d.gear, 4); assert_eq!(d.flags, 1);
         assert!((d.rpm as i32 - 6440).abs() <= 20); for k in 0..4 { assert!((d.d[k] - c.d[k]).abs() < 0.013); }
+        let c3 = CarSnap { a: -9.3, vy: 2.47, ..c }; let b = car3(0xabcd1234, 78, &c3); assert_eq!(b.len(), CAR3_LEN);
+        let (_, sq, _, d) = read_car2(&b).unwrap(); assert_eq!(sq, 78); assert!((d.a + 9.3).abs() < 0.11 && (d.vy - 2.47).abs() < 0.051, "{} {}", d.a, d.vy);
+        assert!((d.x - c.x).abs() < 0.005 && d.gear == 4);
     }
 }

@@ -16,7 +16,9 @@ fn stage_name(m: &str) -> &'static str { MAPS.iter().find(|x| x.0 == m).map(|x| 
 fn snap_of(c: &Car) -> CarSnap {
     CarSnap { t: 0.0, x: c.x as f32, y: c.y as f32, z: c.z as f32, h: c.h as f32, vx: c.vx as f32, vy: c.vy as f32, vz: c.vz as f32, r: c.r as f32, pitch: c.pitch as f32, roll: c.roll as f32,
         steer: c.steer as f32, u: c.u as f32, gear: c.gear as i8, rpm: c.rpm.clamp(0.0, 65000.0) as u16, d: [c.wh[0].d as f32, c.wh[1].d as f32, c.wh[2].d as f32, c.wh[3].d as f32],
-        ang: [c.wh[0].ang as f32, c.wh[1].ang as f32, c.wh[2].ang as f32, c.wh[3].ang as f32], flags: 0 }
+        ang: [c.wh[0].ang as f32, c.wh[1].ang as f32, c.wh[2].ang as f32, c.wh[3].ang as f32],
+        // airborne for more than a moment: receivers fly the car on a ballistic arc instead of gluing it to the ground
+        flags: if c.contacts == 0.0 && c.air_t > 0.06 { net::smooth::AIR } else { 0 }, a: 0.0 }
 }
 fn apply(c: &mut Car, s: &CarSnap, w: &World, dt: f64) {
     c.x = s.x as f64; c.y = s.y as f64; c.z = s.z as f64; c.h = s.h as f64; c.vx = s.vx as f64; c.vy = s.vy as f64; c.vz = s.vz as f64; c.r = s.r as f64;
@@ -46,9 +48,11 @@ impl Game {
         if self.race.online && self.state == State::Drive {
             let mine = snap_of(&self.car);
             let ids: Vec<(usize, u32)> = self.race.cars.iter().enumerate().filter_map(|(k, c)| c.remote.map(|id| (k, id))).collect();
-            let snaps = net::with(|s| { s.send_car(mine); ids.iter().map(|(k, id)| (*k, s.remote(*id))).collect::<Vec<_>>() }).unwrap_or_default();
+            // both phones predict cars over the same terrain (the stage grids are identical everywhere)
+            let ground = |x: f32, z: f32| w.height(x as f64, z as f64) as f32; let g: net::smooth::Ground = Some(&ground);
+            let snaps = net::with(|s| { s.send_car(mine, dt, g); s.advance_view(dt); ids.iter().map(|(k, id)| (*k, s.remote(*id, g))).collect::<Vec<_>>() }).unwrap_or_default();
             for (k, sn) in snaps { if let Some(sn) = sn { let mut c = self.race.cars[k].car; apply(&mut c, &sn, w, dt); self.race.cars[k].car = c; } }
-            // dropped out: their car silent for 3 s (cars report at least every 0.4 s; this also covers going back to the menu) or gone from the room
+            // dropped out: their car silent for 3 s (cars report at least every 0.75 s; this also covers going back to the menu) or gone from the room
             let silence: Vec<(usize, Option<f64>)> = net::with(|s| ids.iter().map(|(k, id)| (*k, s.car_silence(*id))).collect()).unwrap_or_default();
             let names: Vec<(u32, String)> = net::with(|s| s.peers.values().map(|p| (p.id, p.name.clone())).collect()).unwrap_or_default();
             for c in self.race.cars.iter_mut() { if let Some(n) = c.remote.and_then(|id| names.iter().find(|n| n.0 == id)) { if n.1 != "?" && n.1 != c.name { c.name = n.1.clone(); } } }
