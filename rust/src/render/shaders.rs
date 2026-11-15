@@ -180,30 +180,41 @@ uniform sampler2D tScene; uniform vec2 uTexel; uniform vec2 uSrc; in vec2 vUv; o
 void main() { vec2 o1 = uSrc * uTexel * 1.3846154, o2 = uSrc * uTexel * 3.2307692;
   fragColor = texture(tScene, vUv) * 0.2270270 + (texture(tScene, vUv + o1) + texture(tScene, vUv - o1)) * 0.3162162 + (texture(tScene, vUv + o2) + texture(tScene, vUv - o2)) * 0.0702703; }
 "#;
-/// Dust, last pass: the blurred layer (plus a little of the sharp one for grain) becomes one continuous cloud over the scene.
-/// Opacity from the optical depth (1 - e^-density): thin edges are haze, the core goes nearly solid. The cloud is shaded as a
-/// whole: dense parts shadow themselves, edges facing the sun (from the density gradient) catch light, thin dust glows when
-/// the sun is behind it. Alpha in steps for the pixel look.
+/// Dust, last pass: the blurred layer becomes one continuous cloud over the scene, drawn in chunky pixels to match the game.
+/// The cloud is sampled once per block of B game pixels (B grows with the resolution), so its edges and curls step in big
+/// square pixels; opacity comes from the optical depth (1 - e^-density), capped so the cloud stays see-through, and is put
+/// on a few levels with a 4x4 ordered dither (the old-console look); shading (self-shadow, sunlit edges, back glow) is
+/// stepped too. Only the cut-off by things in front is per pixel (from the sharp, depth-tested layer), so cars and trees
+/// keep crisp outlines through the dust.
 pub const DCOMP_FS: &str = r#"#version 300 es
 precision highp float;
 uniform sampler2D tDust; uniform sampler2D tSharp; uniform vec2 uTexel; uniform vec2 uSun; uniform float uSunVis; uniform vec3 uDirColor; uniform float uDensScale; uniform vec2 uSrc;
 in vec2 vUv; out vec4 fragColor;
+float bayer(vec2 c) { vec2 q = mod(c, 4.0); int i = int(q.x) + int(q.y) * 4;
+  int m[16] = int[16](0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5); return (float(m[i]) + 0.5) / 16.0; }
 void main() {
-  // never more dust than the sharp, depth-tested layer has here: the blur must not smear dust over a car or tree in front
-  vec4 b = texture(tDust, vUv) / uDensScale, s = texture(tSharp, vUv) / uDensScale;
-  float D = min(mix(b.a, s.a, 0.15), s.a * 2.6); if (D < 0.004) discard;
-  vec3 col = (b.a > 1e-4 ? b.rgb / b.a : s.rgb / max(s.a, 1e-4));
-  float gx = texture(tDust, vUv + vec2(uTexel.x, 0.0)).a - texture(tDust, vUv - vec2(uTexel.x, 0.0)).a;
-  float gy = texture(tDust, vUv + vec2(0.0, uTexel.y)).a - texture(tDust, vUv - vec2(0.0, uTexel.y)).a;
-  vec2 grad = vec2(gx, gy) / uDensScale; vec2 sd = normalize(uSun - vUv + vec2(0.0, 0.6));
-  // edge light only on the cloud's own edges: where something in front cut the dust off, the sharp layer is much thinner
-  float own = clamp(s.a / max(b.a, 1e-3), 0.0, 1.0);
-  float rim = clamp(dot(-grad, sd) * 3.5, -0.5, 0.8) * own * own;
-  float thick = 1.0 - exp(-D * 3.4);
-  col *= mix(1.1, 0.66, smoothstep(0.12, 1.1, D)) * (0.9 + 0.26 * rim);
-  vec2 asp = vec2(uSrc.x / uSrc.y, 1.0); float near = uSunVis * smoothstep(0.75, 0.0, length((vUv - uSun) * asp));
-  col += uDirColor * 0.22 * near * (1.0 - thick);
-  float a = floor(thick * 16.0 + 0.5) / 16.0; if (a <= 0.0) discard;
+  float B = max(2.0, floor(uSrc.y / 100.0));
+  vec2 cell = floor(vUv * uSrc / B); vec2 uv = (cell + 0.5) * B / uSrc; vec2 tb = uTexel * B;
+  vec4 b = texture(tDust, uv) / uDensScale, sc = texture(tSharp, uv) / uDensScale, sh = texture(tSharp, vUv) / uDensScale;
+  float D = mix(b.a, sc.a, 0.15);
+  // something in front of the dust here (per pixel): the sharp layer has nothing, so the cloud stops at its outline
+  D = min(D, sh.a * 4.0 + 0.002); if (D < 0.006) discard;
+  vec3 col = (b.a > 1e-4 ? b.rgb / b.a : sc.rgb / max(sc.a, 1e-4));
+  float gx = texture(tDust, uv + vec2(tb.x, 0.0)).a - texture(tDust, uv - vec2(tb.x, 0.0)).a;
+  float gy = texture(tDust, uv + vec2(0.0, tb.y)).a - texture(tDust, uv - vec2(0.0, tb.y)).a;
+  vec2 grad = vec2(gx, gy) / uDensScale; vec2 sd = normalize(uSun - uv + vec2(0.0, 0.6));
+  float own = clamp(sc.a / max(b.a, 1e-3), 0.0, 1.0);
+  float rim = clamp(dot(-grad, sd) * 2.0, -0.5, 0.8) * own * own;
+  float thick = (1.0 - exp(-D * 2.8)) * 0.84;
+  // stepped shading: three tones from the shadowed core to the lit edge
+  float shade = mix(1.08, 0.72, smoothstep(0.15, 1.3, D)) * (0.92 + 0.22 * rim); shade = floor(shade * 6.0 + 0.5) / 6.0;
+  col *= shade;
+  vec2 asp = vec2(uSrc.x / uSrc.y, 1.0); float near = uSunVis * smoothstep(0.75, 0.0, length((uv - uSun) * asp));
+  col += uDirColor * floor(0.22 * near * (1.0 - thick) * 12.0) / 12.0;
+  // few opacity levels, dithered per block
+  // the faintest haze is dropped instead of dithered into a screen-door pattern; above it the dither only blends neighbouring levels
+  if (thick < 0.1) discard;
+  float a = floor(thick * 6.0 + 0.25 + 0.5 * bayer(cell)) / 6.0; if (a <= 0.0) discard;
   fragColor = vec4(col, a); }
 "#;
 
