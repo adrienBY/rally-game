@@ -29,7 +29,7 @@ fn main() {
         let cattrs = [0x3098, 3, 0x3038]; let ctx = create_ctx(dpy, cfg, std::ptr::null_mut(), cattrs.as_ptr());
         assert!(make_current(dpy, std::ptr::null_mut(), std::ptr::null_mut(), ctx) != 0);
         let gl = glow::Context::from_loader_function(|n| loader.get(n));
-        let mut r = Renderer::new(gl).expect("renderer");
+        let mut r = Renderer::new(gl).expect("renderer"); r.no_hud = std::env::var("NOHUD").is_ok();
         r.load_scene(&std::fs::read(&a[1]).unwrap()).expect("scene");
         let rtb = std::fs::read(&a[2]).unwrap(); let rt = fogwood_core::game::rt::parse(&rtb).expect("rt");
         // the stage's world, as the page would have built it through the bridge
@@ -74,6 +74,8 @@ fn main() {
                     "joincode" => { let c = std::fs::read_to_string("/tmp/fw_code").unwrap(); g.online_tap("online"); g.online_tap("on_join"); for ch in c.trim().chars() { let k: &'static str = ["k0","k1","k2","k3","k4","k5","k6","k7","k8","k9"][ch.to_digit(10).unwrap() as usize]; g.online_tap(k); } g.online_tap("kok"); println!("joined {}", c.trim()); }
                     "settings" => g.open_settings(),
                     "garage" => g.open_garage(), "gnext" => g.garage_go(1), "gprev" => g.garage_go(-1), "gclose" => g.close_garage(),
+                    "dust" => { let d = &g.dust; let mut v: Vec<(f32, f32, f32)> = (0..d.n).filter(|&i| d.a[i] > 0.0).map(|i| (d.a[i], d.s[i], d.col[i * 3])).collect(); v.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+                        println!("dust live {} visible {} top {:?}", d.live, v.len(), &v[..v.len().min(5)]); }
                     "car" => { let k: usize = parts[1].parse().unwrap_or(0); g.choose_car(k); }
                     "sclose" => g.close_settings(),
                     "stap" => { let f: f64 = parts.get(2).and_then(|v| v.parse().ok()).unwrap_or(0.5); let key = parts[1].replace(".", ":"); println!("stap {} {} vol={} hap={} pix={} rays={}", key, g.settings_tap_key(&key, f), g.ps.vol, g.ps.hap, g.ps.pix_idx, g.ps.rays); }

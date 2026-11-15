@@ -64,6 +64,8 @@ pub struct Renderer {
     tgt: Option<(i32, i32, glow::Framebuffer, glow::Texture, glow::Renderbuffer, glow::Framebuffer, glow::Texture)>,
     pub frame: FrameState, pub stats: (u32, u32), pub only: Option<Vec<usize>>,
     hud: Option<(glow::Texture, i32, i32)>,
+    /// test hook: draw the frame without the HUD
+    pub no_hud: bool,
     // benchmark: GPU timer queries (GL_EXT_disjoint_timer_query) for the scene and post passes, read back a few frames later
     pub timing: bool, pub frame_id: u64, pub draw_cpu_ms: f32, pub gpu_results: Vec<(u64, f32, f32)>, pub has_timer: bool,
     tq_free: Vec<(glow::Query, glow::Query)>, tq_pending: std::collections::VecDeque<(glow::Query, glow::Query, u64)>, tq_cur: Option<(glow::Query, glow::Query)>, tq_made: usize, tq_post: bool,
@@ -112,7 +114,7 @@ impl Renderer {
         gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, f32_bytes(&tri), glow::STATIC_DRAW);
         gl.enable_vertex_attrib_array(11); gl.vertex_attrib_pointer_f32(11, 2, glow::FLOAT, false, 8, 0);
         gl.bind_vertex_array(None);
-        Ok(Renderer { gl, scene: None, mesh_progs: HashMap::new(), mesh_list: Vec::new(), sky, points, dust, post, mask, ray, up, rays: None, quad_vao, _quad_buf: qb, tgt: None, frame: FrameState::default(), stats: (0, 0), only: None, hud: None,
+        Ok(Renderer { gl, scene: None, mesh_progs: HashMap::new(), mesh_list: Vec::new(), sky, points, dust, post, mask, ray, up, rays: None, quad_vao, _quad_buf: qb, tgt: None, frame: FrameState::default(), stats: (0, 0), only: None, hud: None, no_hud: false,
             timing: false, frame_id: 0, draw_cpu_ms: 0.0, gpu_results: Vec::new(), has_timer: false, tq_free: Vec::new(), tq_pending: Default::default(), tq_cur: None, tq_made: 0, tq_post: false })
     }
 
@@ -450,7 +452,10 @@ impl Renderer {
                     gl.uniform_3_f32_slice(u(U!("uFogColor")), &s.fog_c); gl.uniform_3_f32_slice(u(U!("uCamPos")), &fr.cam); gl.uniform_1_i32(u(U!("uMap")), 0);
                     gl.uniform_3_f32_slice(u(U!("uSkySun")), &s.sky.0); gl.uniform_3_f32_slice(u(U!("uSkyGlow")), &s.sky.1); gl.uniform_1_f32(u(U!("uSkyHalo")), s.sky.2);
                 } else if m.kind == MatKind::Points { gl.uniform_3_f32_slice(u(U!("uFogColor")), &s.fog_c); }
-                else if m.kind == MatKind::Dust { gl.uniform_1_f32(u(U!("uScale")), fr.dust_scale); }
+                else if m.kind == MatKind::Dust { gl.uniform_1_f32(u(U!("uScale")), fr.dust_scale); gl.uniform_2_f32(u(U!("uSun")), fr.sun[0], fr.sun[1]);
+                    // puffs are lit like the rest of the scene (sky/ground hemisphere and the sun)
+                    gl.uniform_3_f32_slice(u(U!("uHemiSky")), &s.hemi.0); gl.uniform_3_f32_slice(u(U!("uHemiGround")), &s.hemi.1);
+                    gl.uniform_3_f32_slice(u(U!("uDirColor")), &s.dir.0); gl.uniform_3_f32_slice(u(U!("uDirDir")), &s.dir.1); }
             }
             gl.uniform_matrix_4_f32_slice(u(U!("uModel")), false, &o.mw);
             match m.kind {
@@ -513,7 +518,7 @@ impl Renderer {
         gl.active_texture(glow::TEXTURE0); gl.bind_texture(glow::TEXTURE_2D, Some(t1)); gl.uniform_1_i32(p.u(U!("tScene")), 0);
         gl.uniform_2_f32(p.u(U!("uSun")), fr.sun[0], fr.sun[1]); gl.uniform_1_f32(p.u(U!("uSunVis")), fr.sun_vis); gl.uniform_1_f32(p.u(U!("uTime")), fr.time);
         gl.uniform_1_f32(p.u(U!("uFlash")), fr.flash); gl.uniform_1_f32(p.u(U!("uSpeed")), fr.speed); gl.uniform_1_f32(p.u(U!("uExpo")), if fr.expo > 0.0 { fr.expo } else { 1.0 });
-        if let Some((ht, _, _)) = self.hud { gl.active_texture(glow::TEXTURE1); gl.bind_texture(glow::TEXTURE_2D, Some(ht)); gl.uniform_1_i32(p.u(U!("tHud")), 1); gl.uniform_1_f32(p.u(U!("uHudOn")), 1.0); gl.active_texture(glow::TEXTURE0); }
+        if let (false, Some((ht, _, _))) = (self.no_hud, self.hud) { gl.active_texture(glow::TEXTURE1); gl.bind_texture(glow::TEXTURE_2D, Some(ht)); gl.uniform_1_i32(p.u(U!("tHud")), 1); gl.uniform_1_f32(p.u(U!("uHudOn")), 1.0); gl.active_texture(glow::TEXTURE0); }
         else { gl.uniform_1_f32(p.u(U!("uHudOn")), 0.0); }
         gl.uniform_3_f32_slice(p.u(U!("uSplitS")), &fr.split_s); gl.uniform_3_f32_slice(p.u(U!("uSplitH")), &fr.split_h); gl.uniform_2_f32(p.u(U!("uTexel")), fr.texel[0], fr.texel[1]);
         gl.bind_vertex_array(Some(self.quad_vao)); gl.draw_arrays(glow::TRIANGLES, 0, 3); gl.bind_vertex_array(None);
