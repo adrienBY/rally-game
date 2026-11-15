@@ -502,6 +502,14 @@ function text(g, s, x, y, sc, col, shadow = "rgba(0,0,0,0.55)") {
     g.drawImage(c, x, y); return; }
   for (let n = 0; n < s.length; n++) { const ch = s[n]; if (ch === " ") continue; const i = FIDX[ch] ?? FIDX["?"]; g.drawImage(sh, i * w, 0, w, h, x + n * w, y, w, h); }
 }
+/* shrink a canvas k times into another, each pixel taking the most common colour of its k x k block (pixel-art downscale, no new colours) */
+function pixelate(src, dst, k) {
+  const W = src.canvas.width, H = src.canvas.height, w = W / k, h = H / k, a = src.getImageData(0, 0, W, H).data, out = dst.createImageData(w, h), o = out.data, cnt = new Map();
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { cnt.clear(); let best = 0, bk = 0;
+    for (let j = 0; j < k; j++) for (let i = 0; i < k; i++) { const p = ((y * k + j) * W + x * k + i) * 4, key = (a[p] << 16 | a[p + 1] << 8 | a[p + 2]) >>> 0, c = (cnt.get(key) || 0) + 1; cnt.set(key, c); if (c > best) { best = c; bk = key; } }
+    const q = (y * w + x) * 4; o[q] = bk >>> 16 & 255; o[q + 1] = bk >>> 8 & 255; o[q + 2] = bk & 255; o[q + 3] = 255; }
+  dst.putImageData(out, 0, 0);
+}
 function textTex(w, h, draw) { return canvasTex(w, (g) => draw(g), false, h); }
 
 /* ================= wind sway ================= */
@@ -1242,10 +1250,13 @@ const car = { root: new THREE.Group(), body: null, models: [], wheels: [], shado
   // the first car's livery used the shared seeded generator: burn the same draws so the rest of the stage (trees, rocks...) is
   // generated exactly as before; the bodies paint with their own generator
   for (let i = 0; i < 1400; i++) { const z = rr(-2.05, 2.05), nearW = Math.min(Math.abs(z - WB_F), Math.abs(z - WB_R)) < 0.6 ? 1 : 0.4; rnd(); if (rnd() > nearW + 0.2) continue; rnd(); rnd(); rnd(); rnd(); rnd(); }
-  const phong = (o) => new THREE.MeshPhongMaterial({ shininess: 46, specular: 0x484848, ...o });
+  // matte, like the rest of the pixel world: no glossy highlights rolling over the paint (Phong is kept so rivals take their team tint)
+  const phong = (o) => new THREE.MeshPhongMaterial({ shininess: 4, specular: 0x000000, ...o });
   const lam = (c, o = {}) => new THREE.MeshLambertMaterial({ color: c, ...o });
   const black = lam(0x161616), trimGrey = lam(0x3a3c3e), dark = lam(0x202020), seatM = lam(0x7a1d18), suit = lam(0x2b3b6a);
-  const glass = phong({ color: 0x16222b, transparent: true, opacity: 0.62, shininess: 90, specular: 0x8a9aa8 });
+  const glass = phong({ color: 0x1c2a34, transparent: true, opacity: 0.7, shininess: 12, specular: 0x2c3a44 });
+  // a one-pixel dark rim round the body (inverted hull), like the outline of a sprite
+  const OUTLINE = 0.04, outlineM = new THREE.MeshBasicMaterial({ color: 0x0c0d0f, side: THREE.BackSide });
   const lampOn = new THREE.MeshBasicMaterial({ color: 0xf0f2ff }), tailLamp = new THREE.MeshBasicMaterial({ color: 0x9a1c14 }), fogLamp = new THREE.MeshBasicMaterial({ color: 0xd8b860 });
   const mirrorGlass = lam(0x88a0a8, { side: THREE.DoubleSide }), plateM = lam(0xe6e2d6), flapM = lam(0x2a2a2a);
   const smoothstep = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
@@ -1256,15 +1267,15 @@ const car = { root: new THREE.Group(), body: null, models: [], wheels: [], shado
     const g = new THREE.ExtrudeGeometry(s, { depth: depth - bevel * 2, bevelEnabled: bevel > 0, bevelThickness: bevel, bevelSize: bevel, bevelSegments: 1, curveSegments: 6 }); g.translate(0, 0, -(depth - bevel * 2) / 2); g.rotateY(-Math.PI / 2); return new THREE.Mesh(g, mat); };
   const stations = (a, b, n) => { const r = []; for (let i = 0; i <= n; i++) r.push(lerp(a, b, i / n)); return r; };
 
-  /* loft: sections along z -> one closed ring each (right half, then mirrored left half), smooth normals inside smoothing groups,
-     triangles sorted into materials by where they sit, each with its own UV projection */
-  function loft(B, zs, half, classify, capFront, capBack, group = () => 0) {
+  /* loft: sections along z -> one closed ring each (right half, then mirrored left half), flat-shaded facets (each panel catches the
+     light as one tone, the low-poly look of the rest of the world), triangles sorted into materials by where they sit, each with its own
+     UV projection; plus the outline hull, pushed out along the smoothed normals so it stays closed */
+  function loft(B, zs, half, classify, capFront, capBack) {
     const fine = (h) => { const o = [h[0]]; for (let i = 1; i < h.length; i++) o.push([(h[i - 1][0] + h[i][0]) / 2, (h[i - 1][1] + h[i][1]) / 2], h[i]); return o; };
     const rings = zs.map(z => { const h = fine(half(z)), ring = h.map(([x, y]) => [x, y, z]); for (let i = h.length - 2; i >= 1; i--) ring.push([-h[i][0], h[i][1], z]); return ring; });
     const n = rings[0].length, M = (n + 2) / 2, P = [], tris = [];
-    const hseg = (j) => (j < M - 1 ? j : n - 1 - j) >> 1;
     for (const r of rings) for (const v of r) P.push(v);
-    for (let s = 0; s < rings.length - 1; s++) for (let i = 0; i < n; i++) { const a = s * n + i, b = s * n + (i + 1) % n, c = (s + 1) * n + i, d = (s + 1) * n + (i + 1) % n, gr = group(hseg(i)); tris.push([a, b, c, gr], [b, d, c, gr]); }
+    for (let s = 0; s < rings.length - 1; s++) for (let i = 0; i < n; i++) { const a = s * n + i, b = s * n + (i + 1) % n, c = (s + 1) * n + i, d = (s + 1) * n + (i + 1) % n; tris.push([a, b, c, 0], [b, d, c, 0]); }
     for (const [s, back] of [[0, capBack], [rings.length - 1, capFront]]) { if (back === null) continue; const r0 = rings[s], c = [0, 0, 0]; for (const v of r0) { c[0] += v[0] / n; c[1] += v[1] / n; c[2] += v[2] / n; }
       let prev = r0.map((_, i) => s * n + i); const K = 4;
       for (let k = 1; k <= K; k++) { const f = 1 - k / K, cur = [];
@@ -1274,12 +1285,14 @@ const car = { root: new THREE.Group(), body: null, models: [], wheels: [], shado
         prev = cur; } }
     const fn = (t) => { const a = P[t[0]], b = P[t[1]], c = P[t[2]]; const u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
       return [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]]; };
-    const N = new Map(); for (const t of tris) { if (t[3] < 0) continue; const f = fn(t); for (let k = 0; k < 3; k++) { const key = t[k] * 16 + t[3]; const v = N.get(key) || [0, 0, 0]; v[0] += f[0]; v[1] += f[1]; v[2] += f[2]; N.set(key, v); } }
     const nrm = (v) => { const l = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0] / l, v[1] / l, v[2] / l]; };
+    const VN = P.map(() => [0, 0, 0]); for (const t of tris) { const f = fn(t); for (let k = 0; k < 3; k++) { const v = VN[t[k]]; v[0] += f[0]; v[1] += f[1]; v[2] += f[2]; } }
+    { const H = []; for (const t of tris) for (let k = 0; k < 3; k++) { const v = P[t[k]], n = nrm(VN[t[k]]); H.push(v[0] + n[0] * OUTLINE, v[1] + n[1] * OUTLINE, v[2] + n[2] * OUTLINE); }
+      const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute(H, 3)); g.computeVertexNormals(); B.add(new THREE.Mesh(g, outlineM)); }
     const out = new Map();
     for (const t of tris) { const f = nrm(fn(t)); const cen = [0, 1, 2].map(k => (P[t[0]][k] + P[t[1]][k] + P[t[2]][k]) / 3); const r = classify(cen, f); if (!r) continue;
       if (!out.has(r.mat)) out.set(r.mat, { P: [], N: [], UV: [] }); const o = out.get(r.mat);
-      for (let k = 0; k < 3; k++) { const v = P[t[k]], nn = t[3] < 0 ? f : nrm(N.get(t[k] * 16 + t[3])); o.P.push(...v); o.N.push(...nn); const uv = r.uv ? r.uv(v, f) : [0, 0]; o.UV.push(uv[0], uv[1]); } }
+      for (let k = 0; k < 3; k++) { const v = P[t[k]], nn = f; o.P.push(...v); o.N.push(...nn); const uv = r.uv ? r.uv(v, f) : [0, 0]; o.UV.push(uv[0], uv[1]); } }
     for (const [mat, o] of out) { const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute(o.P, 3)); g.setAttribute("normal", new THREE.Float32BufferAttribute(o.N, 3));
       g.setAttribute("uv", new THREE.Float32BufferAttribute(o.UV, 2)); B.add(new THREE.Mesh(g, mat)); }
   }
@@ -1316,7 +1329,11 @@ const car = { root: new THREE.Group(), body: null, models: [], wheels: [], shado
     }
     /* ---- livery atlas: left side, right side (mirrored so text reads), top view, front + rear views ---- */
     const AW = 512, SH = 128, ZL = 4.3, Z0 = -2.15, Y0 = 0.2, YH = 1.3;
-    const atlas = canvasTex(AW, (g) => {
+    // painted at 512 px, then reduced 4x to chunky pixel art: each texel takes the colour that covers most of its 4x4 block, so the livery
+    // keeps its exact palette (no blended in-between shades) and reads like a sprite at the game's low resolution
+    const PX = 4;
+    const atlas = canvasTex(AW / PX, (gs) => {
+      const big = document.createElement("canvas"); big.width = AW; big.height = 4 * SH; const g = big.getContext("2d");
       g.imageSmoothingEnabled = false;
       const W_ = L.base;
       const side = (row, mirror) => {
@@ -1338,9 +1355,10 @@ const car = { root: new THREE.Group(), body: null, models: [], wheels: [], shado
         text(g, L.num, cx - L.num.length * 3 + 1, cy - 3, 1, "#151515", null);
         const sp1 = mirror ? WB_F + 0.39 : WB_F - 0.07; g.fillStyle = L.b; g.fillRect(X(sp1), Y(0.9), 56, 9); text(g, "BRUME OIL", X(sp1) + 2, Y(0.9) + 1, 1, "#ece8dc", null);
         text(g, "PIXEL TYRES", X(mirror ? WB_R + 0.87 : WB_R + 0.33), Y(0.5), 1, "#ece8dc", "rgba(0,0,0,0.4)");
-        for (let i = 0; i < 1500; i++) { const z = crr(-2.15, 2.15), near = Math.min(Math.abs(z - WB_F), Math.abs(z - WB_R)) < 0.6 ? 1 : 0.35; if (crnd() > near + 0.2) continue;
-          const y = 0.26 + Math.pow(crnd(), 1.8) * 0.4 * (0.6 + near);
-          g.fillStyle = `rgba(${112 + crnd() * 30 | 0},${88 + crnd() * 20 | 0},${60 + crnd() * 15 | 0},${crr(0.35, 0.85)})`; g.fillRect(X(z) | 0, Y(y) | 0, crnd() < 0.3 ? 3 : 2, 2); }
+        // mud thrown up behind the wheels: whole texels in two solid tones
+        for (let i = 0; i < 150; i++) { const z = crr(-2.15, 2.15), near = Math.min(Math.abs(z - WB_F), Math.abs(z - WB_R)) < 0.6 ? 1 : 0.15; if (crnd() > near) continue;
+          const y = 0.26 + Math.pow(crnd(), 2.2) * 0.3 * (0.5 + near);
+          g.fillStyle = crnd() < 0.55 ? "#7a6248" : "#5e4a36"; g.fillRect(Math.floor(X(z) / PX) * PX, Math.floor(Y(y) / PX) * PX, PX, PX); }
         void zx;
       };
       side(0, false); side(SH, true);
@@ -1368,8 +1386,9 @@ const car = { root: new THREE.Group(), body: null, models: [], wheels: [], shado
       g.fillStyle = L.pat === "hoop" ? "#16181c" : L.pat === "stripes" ? L.b : L.a; g.fillRect(0, FY(1.75), AW, FY(1.0) - FY(1.75));
       g.fillStyle = L.a; g.fillRect(AW / 2, FY(0.7), AW / 2, FY(0.5) - FY(0.7)); g.fillStyle = L.b; g.fillRect(AW / 2, FY(0.72), AW / 2, 3);
       text(g, "FOGWOOD RALLY", FX(0.62, true), FY(0.93), 1, L.pat === "hoop" ? L.a : "#1d2c5c", null);
-    }, false, 4 * SH);
-    atlas.minFilter = THREE.LinearFilter; atlas.generateMipmaps = false;
+      pixelate(g, gs, PX);
+    }, false, 4 * SH / PX);
+    atlas.minFilter = atlas.magFilter = THREE.NearestFilter; atlas.generateMipmaps = false;
     const paint = phong({ map: atlas });
     const AH = 4 * SH, V = (row) => 1 - row / AH;
     const uvSide = (p) => { const mir = p[0] > 0, u = (mir ? (Z0 + ZL - p[2]) : (p[2] - Z0)) / ZL; return [u, V((mir ? SH : 0) + (1 - (p[1] - Y0) / YH) * SH)]; };
@@ -1402,7 +1421,7 @@ const car = { root: new THREE.Group(), body: null, models: [], wheels: [], shado
       if (S.louvres && n[1] > 0.6 && z < ZH - 0.02 && z > ZT + 0.2 && ax < 0.55 && Math.floor(z / 0.06) % 2 === 0) return BLACK;
       if (y < yBot(z) + 0.1) return BLACK;
       return PAINT;
-    }, false, true, (sg) => sg <= 1 ? 0 : sg <= 4 ? 1 : sg <= 7 ? 2 : 3);
+    }, false, true);
     /* ---- greenhouse ---- */
     const ban = textTex(64, 8, (g) => { g.fillStyle = "#1d2c5c"; g.fillRect(0, 0, 64, 8); text(g, "FOGWOOD", 12, 1, 1, "#e8e4d8", null); });
     const stk = textTex(112, 11, (g) => { g.fillStyle = "#1d2c5c"; g.fillRect(0, 0, 112, 11); text(g, "FOGWOOD RALLY TEAM", 2, 2, 1, "#e8b43a", null); });
@@ -1418,7 +1437,7 @@ const car = { root: new THREE.Group(), body: null, models: [], wheels: [], shado
       if (S.thickC !== null && z < S.thickC) return PAINT;
       if (y > roofY(z) - 0.03) return PAINT;
       return GLASS;
-    }, null, null, (sg) => sg <= 1 ? 0 : sg <= 3 ? 1 : 2);
+    }, null, null);
     /* ---- details ---- */
     const accent = phong({ color: new THREE.Color(L.pat === "hoop" ? L.a : L.b) }), wingPaint = phong({ color: new THREE.Color(L.pat === "swoosh" ? L.a : L.pat === "twotone" ? L.a : L.pat === "hoop" ? "#16181c" : L.base) });
     if (S.wing) { const Wg = S.wing, foil = [];
@@ -1495,7 +1514,7 @@ const car = { root: new THREE.Group(), body: null, models: [], wheels: [], shado
   // wheels (shared by every body): rounded gravel tyres and white rally rims
   const W = new THREE.Group(); car.root.add(W);
   const tProf = [[0.2, -0.11], [0.27, -0.118], [0.3, -0.104], [0.31, -0.06], [0.31, 0.06], [0.3, 0.104], [0.27, 0.118], [0.2, 0.11]].map(p => new THREE.Vector2(p[0], p[1]));
-  const tireG = new THREE.LatheGeometry(tProf, 16); tireG.rotateZ(Math.PI / 2);
+  const tireG = new THREE.LatheGeometry(tProf, 12).toNonIndexed(); tireG.computeVertexNormals(); tireG.rotateZ(Math.PI / 2);
   const rimTex = textTex(32, 32, (g) => { g.fillStyle = "#ebe8de"; g.beginPath(); g.arc(16, 16, 15, 0, 7); g.fill(); g.fillStyle = "#2a2a2a";
     for (let k = 0; k < 8; k++) { const a = k / 8 * Math.PI * 2; g.beginPath(); g.arc(16 + Math.cos(a) * 9.5, 16 + Math.sin(a) * 9.5, 2.7, 0, 7); g.fill(); }
     g.beginPath(); g.arc(16, 16, 3.5, 0, 7); g.fill(); g.fillStyle = "#bbb"; g.fillRect(15, 15, 2, 2); });

@@ -5,7 +5,9 @@
 //!    passing cars, turbulence), settles slowly, and spreads out: its radius grows like the square root of its age (diffusion)
 //!    while it thins out in proportion (the same dust over a bigger volume), so a trail stays visible but never turns into a wall
 //!  * grit: stones flung back by spinning tyres; heavy, ballistic, gone (with a little puff) when they land
-//!  * smoke: sliding on tarmac; rises, grows fast, very faint
+//!  * smoke: rubber vapour on tarmac. A tyre only smokes once its tread surface is hot enough: every wheel keeps a heat level
+//!    that the friction power of sliding (slip speed x load) pumps in and the air takes away (faster at speed). An ordinary slide
+//!    through a bend never gets there; a long drift, a burnout or a locked wheel does, and then it rises, grows fast, stays faint
 //!  * powder / chunks: the snow versions of dust and grit
 //! The air around each car is modelled cheaply but physically (in the car's frame, within 10 m):
 //!  * the body is a solid (a rounded box): air cannot go through it, so it slides along the surface and smoke wraps round the
@@ -83,6 +85,19 @@ fn body_sdf(x: f32, y: f32, z: f32) -> (f32, [f32; 3]) {
 }
 const WHEEL_Y: f32 = 0.24; const TYRE_R: f32 = 0.31;
 
+/// Tread surface heat, 1 = rubber starts to vapourise. Heated by the friction power of sliding (slip speed x load, taking the
+/// tarmac's friction as about 1), cooled towards the carcass (a time constant of about 1.3 s at rest, shorter as the air rushes past).
+/// Steady state = power x time constant / TYRE_E: a 3 m/s slide on a loaded tyre (~9 kW) settles near 0.4 and never smokes;
+/// a drift at ~25 kW crosses 1 after about 2 s, a burnout (~50 kW) after about 0.6 s, a locked wheel at speed in about 0.4 s.
+pub const TYRE_E: f32 = 26_000.0;
+pub fn tyre_heat(h: f32, slip: f32, load: f32, speed: f32, dt: f32) -> f32 {
+    let power = slip.max(0.0) * load.max(0.0); let tau = 1.3 / (1.0 + speed / 60.0);
+    let k = (-dt / tau).exp(); let target = power * tau / TYRE_E;
+    target + (h - target) * k
+}
+/// puffs per second from one wheel this far over the smoke point and sliding this fast
+pub fn smoke_rate(hot: f32, slip: f32) -> f32 { (hot * 34.0 * (slip / 6.0).min(1.5)).min(48.0) }
+
 /// Curl of a vector potential made of two octaves of plane waves A_k = sin(a_k . p + w_k t): a divergence-free swirl field
 /// (no sources or sinks, so dust is stirred, never bunched up or torn apart), about unit strength; the last octave is the
 /// small, quick eddies (1-3 m) that make cloud edges billow. 9 cosines per call.
@@ -110,6 +125,8 @@ pub struct Dust {
     vort: Vec<Vort>, vhead: usize, pub vlive: usize, vstart: Vec<u32>, vitems: Vec<u16>, vcellof: Vec<(i32, i32)>,
     /// where the camera is (far cars shed no blobs)
     pub cam: [f32; 3],
+    /// tread surface heat per car (0 = you, 1.. = race cars) and wheel; 1 = hot enough to smoke
+    heat: Vec<[f32; 4]>,
 }
 
 impl Dust {
@@ -117,7 +134,7 @@ impl Dust {
         let mut d = Dust { n, pos: vec![0.0; n * 3], col: vec![0.0; n * 3], a: vec![0.0; n], s: vec![0.0; n], vel: vec![[0.0; 3]; n], turb: vec![[0.0; 3]; n], age: vec![0.0; n], life: vec![0.0; n],
             s0: vec![0.0; n], a0: vec![0.0; n], kind: vec![0; n], gy: vec![0.0; n], seed: vec![0.0; n], head: 0, live: 0, was: true, rng: seed | 1, frame: 0, wdir: [1.0, 0.0], t: 0.0,
             out_pos: vec![0.0; n * 3], out_col: vec![0.0; n * 3], out_a: vec![0.0; n], out_s: vec![0.0; n],
-            vort: vec![Vort::default(); NV], vhead: 0, vlive: 0, vstart: vec![0; VBUCK + 1], vitems: vec![0; NV], vcellof: vec![(0, 0); NV], cam: [0.0; 3] };
+            vort: vec![Vort::default(); NV], vhead: 0, vlive: 0, vstart: vec![0; VBUCK + 1], vitems: vec![0; NV], vcellof: vec![(0, 0); NV], cam: [0.0; 3], heat: Vec::new() };
         let ang = d.f() * std::f32::consts::TAU; d.wdir = [ang.cos(), ang.sin()]; d
     }
     fn f(&mut self) -> f32 { self.rng ^= self.rng << 13; self.rng ^= self.rng >> 7; self.rng ^= self.rng << 17; (self.rng >> 40) as f32 / (1u64 << 24) as f32 }
@@ -133,10 +150,13 @@ impl Dust {
         let sd = self.f(); self.seed[i] = sd; self.col[i * 3] = bright; self.col[i * 3 + 1] = earth; self.col[i * 3 + 2] = sd.max(0.004);
     }
 
-    /// What a car's four tyres throw this frame. `slips`: per-wheel slip speed (m/s) and load (N; 0 = in the air).
+    /// What a car's four tyres throw this frame. `id`: which car (0 = yours, keeps its tyre heat between frames);
+    /// `slips`: per-wheel slip speed (m/s) and load (N; 0 = in the air).
     #[allow(clippy::too_many_arguments)]
-    pub fn wheels(&mut self, w: &World, env: &Env, c: &Car, slips: [(f32, f32); 4], throttle: f32, cam: [f64; 3], dt: f32) {
+    pub fn wheels(&mut self, id: usize, w: &World, env: &Env, c: &Car, slips: [(f32, f32); 4], throttle: f32, cam: [f64; 3], dt: f32) {
         let sp = (c.vx.hypot(c.vz)) as f32; let d_cam = ((c.x - cam[0]).hypot(c.z - cam[2])) as f32;
+        if self.heat.len() <= id { self.heat.resize(id + 1, [0.0; 4]); }
+        for k in 0..4 { let h = &mut self.heat[id][k]; *h = tyre_heat(*h, slips[k].0, slips[k].1, sp, dt); }
         if d_cam > 160.0 || sp < 0.8 && slips.iter().all(|s| s.0 < 1.0) { return; }
         // level of detail: far cars throw fewer, bigger puffs
         let lod = (1.35 - d_cam / 95.0).clamp(0.22, 1.0); let big = 1.0 + (d_cam / 70.0).min(1.6);
@@ -177,16 +197,22 @@ impl Dust {
                     let (sz, lf) = (self.r(0.09, 0.17), self.r(0.5, 0.9)); self.emit(kind, p, v, sz, lf, 0.95, bright, earth * 0.5 + 0.3 * (1.0 - env.snow as u8 as f32), gy);
                 }
             }
-            // tyre smoke on tarmac
-            if tarmac && slip > 2.2 {
-                let n = self.count(((slip - 2.2) * 12.0 * lk * lod).min(70.0) * dt);
+            // tyre smoke on tarmac: only from a hot tread that is still sliding; a thin wisp at first, thicker the hotter it runs
+            let hot = self.heat[id][k] - 1.0;
+            if tarmac && hot > 0.0 && slip > 1.0 {
+                let n = self.count(smoke_rate(hot, slip) * lk * lod * dt);
+                let al = 0.26 * (0.25 + hot * 1.2).min(1.0);
                 for _ in 0..n {
-                    let v = [c.vx as f32 * 0.25 + self.r(-0.5, 0.5), self.r(0.3, 0.9), c.vz as f32 * 0.25 + self.r(-0.5, 0.5)];
-                    let (sz, lf, br) = (self.r(0.35, 0.6) * big, self.r(1.6, 2.6), self.r(1.15, 1.3)); self.emit(SMOKE, [wx, gy + 0.2, wz], v, sz, lf, 0.36 * (0.5 + (slip - 2.2) / 8.0).min(1.0), br, 0.0, gy);
+                    // vapour leaves the contact patch at the tread's speed relative to the road, then the air takes it
+                    let v = [c.vx as f32 * 0.2 + self.r(-0.4, 0.4), self.r(0.2, 0.6), c.vz as f32 * 0.2 + self.r(-0.4, 0.4)];
+                    let tq = self.r(0.0, 1.0) * dt; let p = [wx - c.vx as f32 * tq, gy + 0.12, wz - c.vz as f32 * tq];
+                    let (sz, lf, br) = (self.r(0.22, 0.38) * big, self.r(1.2, 2.2), self.r(1.12, 1.26)); self.emit(SMOKE, p, v, sz, lf, al, br, 0.0, gy);
                 }
             }
         }
     }
+    /// one wheel's tread heat (`id`, wheel 0..3), for tests and tools
+    pub fn tyre_heat_of(&self, id: usize, k: usize) -> f32 { self.heat.get(id).map_or(0.0, |h| h[k]) }
     /// stochastic rounding: an expected number of particles this frame -> a whole number
     fn count(&mut self, e: f32) -> usize { let base = e.floor(); base as usize + if self.f() < e - base { 1 } else { 0 } }
 
@@ -398,5 +424,18 @@ mod tests {
             let v = d.vel[0]; (live, (v[0] * v[0] + v[1] * v[1]).sqrt()) };
         let (live, with) = run(true); let (_, without) = run(false);
         assert!(live > 10, "blobs alive {live}"); assert!(with > without + 0.4, "swirl {with} vs calm {without}");
+    }
+    #[test]
+    fn tyres_smoke_only_when_hot() {
+        // time (s) for a wheel held at this slip, load and car speed to reach the smoke point (None: never within 10 s)
+        let t_smoke = |slip: f32, load: f32, speed: f32| { let (mut h, mut t) = (0.0f32, 0.0f32);
+            while t < 10.0 { h = tyre_heat(h, slip, load, speed, 1.0 / 60.0); t += 1.0 / 60.0; if h >= 1.0 { return Some(t); } } None };
+        assert_eq!(t_smoke(3.0, 3000.0, 20.0), None, "an ordinary slide through a bend");
+        assert_eq!(t_smoke(5.0, 3000.0, 25.0), None, "a committed slide at speed");
+        let drift = t_smoke(8.0, 3200.0, 12.0).expect("a long drift smokes"); assert!(drift > 1.0 && drift < 3.5, "drift {drift}");
+        let burn = t_smoke(15.0, 3600.0, 0.5).expect("a burnout smokes"); assert!(burn < 0.9, "burnout {burn}");
+        let lock = t_smoke(25.0, 4200.0, 25.0).expect("a locked wheel smokes"); assert!(lock < 0.6, "lock-up {lock}");
+        // and cools back down once it grips again
+        let mut h = 1.5; for _ in 0..120 { h = tyre_heat(h, 0.3, 3000.0, 20.0, 1.0 / 60.0); } assert!(h < 0.3, "cooled to {h}");
     }
 }

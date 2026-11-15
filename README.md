@@ -35,6 +35,9 @@ Cars: five bodies built by the page from `CAR_SPECS` (one lofted shell each, sha
 `rust/src/game/garage.rs` / `cars.rs` (names, stats, handling; same order). `node web/tools/car_preview.mjs out.png [k]`
 renders the bodies alone in headless Chrome.
 
+Tyre smoke check: `cargo run --release --bin smoke_stats <stage.rt>...` drives a lap on each stage (`SMOKE_HB=1` adds handbrake
+slides) and reports how often the tyres would smoke on the tarmac and how many puffs per second (`.rt` = the page's `__rtPacket()`).
+
 Online netcode check (no phones needed): `cargo run --release --bin net_sim` drives a car round each stage, sends it
 through a simulated link and reports how far off and how smooth the other player's car looks, plus data per hour.
 

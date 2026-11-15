@@ -388,13 +388,13 @@ impl Game {
         // dust, gravel and smoke: your car, then every other car in a race; cars' wakes carry it
         { let env = self.dust_env; let cam = self.cam_pos; let c = self.car; let thr = inp.throttle as f32;
           let slips = [0, 1, 2, 3].map(|k| (c.wh[k].slide as f32, if c.wh[k].fz > 0.0 { c.wh[k].fz as f32 } else { 0.0 }));
-          self.dust.wheels(w, &env, &c, slips, thr, cam, dt as f32);
+          self.dust.wheels(0, w, &env, &c, slips, thr, cam, dt as f32);
           let mut bodies = vec![dust::Body::of(&c)];
-          if self.race.on { for rc in self.race.cars.iter() { if rc.is_player() || rc.left { continue; } let o = rc.car;
+          if self.race.on { for (ri, rc) in self.race.cars.iter().enumerate() { if rc.is_player() || rc.left { continue; } let o = rc.car;
               // other players' cars carry no tyre state here: their sideways speed stands in for slip
               let slips = if rc.remote.is_some() { let air = o.y - w.height(o.x, o.z) > 0.35; [0, 1, 2, 3].map(|_| ((o.vl.abs() * 0.8) as f32, if air { 0.0 } else { 2900.0 })) }
                   else { [0, 1, 2, 3].map(|k| (o.wh[k].slide as f32, if o.wh[k].fz > 0.0 { o.wh[k].fz as f32 } else { 0.0 })) };
-              self.dust.wheels(w, &env, &o, slips, 0.7, cam, dt as f32);
+              self.dust.wheels(ri + 1, w, &env, &o, slips, 0.7, cam, dt as f32);
               let mut b = dust::Body::of(&o); if rc.remote.is_some() { for wv in b.wheels.iter_mut() { wv.2 = (o.u / 0.31) as f32; } } bodies.push(b); } }
           self.dust.cam = [cam[0] as f32, cam[1] as f32, cam[2] as f32]; self.dust.step(w, &bodies, gust as f32, dt as f32); }
         let d_live = self.dust.live;
