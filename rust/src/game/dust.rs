@@ -1,14 +1,18 @@
 //! Dust, gravel and tyre smoke: a small CPU particle system that is cheap but behaves like the real thing.
 //!
 //! Kinds (each with its own drag, gravity, growth and look):
-//!  * dust: fine powder lifted at the contact patch; light, so it relaxes quickly to the surrounding air (wind, the wake of
+//!  * dust: fine powder lifted at the contact patch, hanging for seconds (longer on dry, sandy ground); light, so it relaxes quickly to the surrounding air (wind, the wake of
 //!    passing cars, turbulence), settles slowly, and spreads out: its radius grows like the square root of its age (diffusion)
 //!    while it thins out in proportion (the same dust over a bigger volume), so a trail stays visible but never turns into a wall
-//!  * grit: stones flung back by spinning tyres; heavy, ballistic, gone (with a little puff) when they land
+//!  * grit: stones flung by the tread (many more with wheelspin); heavy, ballistic, gone (with a little puff) when they land
 //!  * smoke: rubber vapour on tarmac. A tyre only smokes once its tread surface is hot enough: every wheel keeps a heat level
 //!    that the friction power of sliding (slip speed x load) pumps in and the air takes away (faster at speed). An ordinary slide
 //!    through a bend never gets there; a long drift, a burnout or a locked wheel does, and then it rises, grows fast, stays faint
-//!  * powder / chunks: the snow versions of dust and grit
+//!  * spray / powder / chunks: snow. Loose grains thrown off the tread on arcs (crisp white specks that fall back within a
+//!    second), the fine powder that breaks off them and hangs briefly as mist, and packed clumps on wheelspin
+//! Stones, grains and clumps are drawn as crisp specks of whole pixels; dust, powder and smoke as the cloud.
+//! What the tread throws leaves it along the tread at a share of its speed relative to the hub: with grip it still moves
+//! forward with the car (into the arches); wheelspin sends it back past the car as a rooster tail.
 //! The air around each car is modelled cheaply but physically (in the car's frame, within 10 m):
 //!  * the body is a solid (a rounded box): air cannot go through it, so it slides along the surface and smoke wraps round the
 //!    car; next to the skin it is dragged along with the car (boundary layer); a particle that ends up inside is pushed out
@@ -30,12 +34,14 @@
 use crate::physics::Car;
 use crate::world::{World, ROAD};
 
-pub const DUST: u8 = 0; pub const GRIT: u8 = 1; pub const SMOKE: u8 = 2; pub const POWDER: u8 = 3; pub const CHUNK: u8 = 4;
+pub const DUST: u8 = 0; pub const GRIT: u8 = 1; pub const SMOKE: u8 = 2; pub const POWDER: u8 = 3; pub const CHUNK: u8 = 4; pub const SPRAY: u8 = 5;
+/// drawn as crisp specks (their colour is the actual rgb), not as part of the dust cloud
+#[inline] pub fn is_speck(k: u8) -> bool { k == GRIT || k == CHUNK || k == SPRAY }
 /// per kind: relaxation time to the air (s), gravity (m/s2), growth (m per sqrt s), base alpha, how much the wake moves it
-const TAU: [f32; 5] = [0.32, 3.0, 0.45, 0.28, 2.2];
-const GRAV: [f32; 5] = [-0.22, -9.8, 0.4, -0.35, -9.8];
-const GROW: [f32; 5] = [1.05, 0.0, 1.6, 0.95, 0.0];
-const WAKE: [f32; 5] = [1.0, 0.15, 0.9, 1.0, 0.2];
+const TAU: [f32; 6] = [0.32, 3.0, 0.45, 0.3, 2.2, 0.35];
+const GRAV: [f32; 6] = [-0.22, -9.8, 0.4, -0.6, -9.8, -9.8];
+const GROW: [f32; 6] = [1.25, 0.0, 1.6, 0.6, 0.0, 0.0];
+const WAKE: [f32; 6] = [1.0, 0.15, 0.9, 1.0, 0.2, 0.5];
 
 /// a piece of spinning air left behind by a car: centre, its own drift, unit axis, circulation (m2/s), core radius, length
 #[derive(Clone, Copy, Default)]
@@ -60,7 +66,9 @@ fn vbucket(c: (i32, i32)) -> usize { ((c.0 as u32).wrapping_mul(73_856_093) ^ (c
 
 /// what kind of stage this is (sets the surfaces and colours)
 #[derive(Clone, Copy, Default)]
-pub struct Env { pub tarmac: bool, pub snow: bool, pub sand: bool, pub lush: bool, pub alpha: f32 }
+pub struct Env { pub tarmac: bool, pub snow: bool, pub sand: bool, pub lush: bool, pub alpha: f32,
+    /// how long the dust hangs (1 = an ordinary dirt road; drier and finer lasts longer), and the colour of the stones
+    pub dry: f32, pub grit: [f32; 3] }
 
 /// a car in the air flow: where it is, how it moves, and its wheels (local x, local z, spin in rad/s)
 #[derive(Clone, Copy)]
@@ -150,6 +158,11 @@ impl Dust {
         let sd = self.f(); self.seed[i] = sd; self.col[i * 3] = bright; self.col[i * 3 + 1] = earth; self.col[i * 3 + 2] = sd.max(0.004);
     }
 
+    /// one speck (a stone, a snow grain or clump): its colour is the rgb it is drawn with
+    #[allow(clippy::too_many_arguments)]
+    fn speck(&mut self, kind: u8, p: [f32; 3], v: [f32; 3], size: f32, life: f32, rgb: [f32; 3], ground: f32) {
+        if self.n == 0 { return; } let i = self.head; self.emit(kind, p, v, size, life, 1.0, rgb[0], rgb[1], ground); self.col[i * 3 + 2] = rgb[2];
+    }
     /// What a car's four tyres throw this frame. `id`: which car (0 = yours, keeps its tyre heat between frames);
     /// `slips`: per-wheel slip speed (m/s) and load (N; 0 = in the air).
     #[allow(clippy::too_many_arguments)]
@@ -171,30 +184,50 @@ impl Dust {
             let (loose, earth) = if env.snow { (if road { 1.15 } else { 1.4 }, 0.0) } else if tarmac { (0.0, 0.0) }
                 else if road { (if env.sand { 1.35 } else { 1.0 }, 0.0) } else if env.sand { (1.2, 0.15) } else if env.lush { (0.4, 0.65) } else { (0.8, 0.4) };
             let back = [-sh, -ch];   // behind the car
-            // fine dust: speed and slip lift it, load presses more out
-            let rate = loose * (0.62 * sp + 4.0 * slip) * lk * front * lod;
-            let n = self.count(rate.min(55.0) * dt);
-            for _ in 0..n {
-                let (fine, kind) = if env.snow { (POWDER, POWDER) } else { (DUST, DUST) }; let _ = fine;
-                let up = self.r(0.5, 1.5) + slip * 0.05; let side = self.r(-0.7, 0.7);
-                let v = [c.vx as f32 * 0.32 + back[0] * slip * 0.25 + ch * side, up, c.vz as f32 * 0.32 + back[1] * slip * 0.25 - sh * side];
-                // spread along where the wheel went during this frame, so the stream is continuous, not dotted
-                let tq = self.r(0.0, 1.0) * dt;
-                let p = [wx + back[0] * 0.3 + self.r(-0.15, 0.15) - c.vx as f32 * tq, gy + 0.15, wz + back[1] * 0.3 + self.r(-0.15, 0.15) - c.vz as f32 * tq];
-                let size = self.r(0.32, 0.56) * big * if env.snow { 0.9 } else { 1.0 }; let life = self.r(1.2, 2.4) * if env.sand { 1.3 } else { 1.0 };
-                let bright = self.r(0.88, 1.08) * if env.snow { 1.05 } else { 1.0 };
-                let al = env.alpha * self.r(0.8, 1.1); self.emit(kind, p, v, size, life, al, bright, earth, gy);
-            }
-            // grit / snow chunks: thrown by wheelspin and sliding, mostly from the driven rear
-            if loose > 0.0 && d_cam < 70.0 {
-                let spin = slip * (0.6 + throttle * 0.8);
-                let n = self.count((loose.min(1.2) * 3.2 * (spin - 1.2).max(0.0) * lk * front * lod).min(40.0) * dt);
+            // what the tread throws: material leaving the tyre at angle th behind the contact patch goes off along the tread, at a
+            // share of the tread's speed relative to the hub (rolling speed plus wheelspin): up and back from the wheel, so with grip
+            // it still moves forward with the car (into the arches), and only wheelspin sends it back past the car (a rooster tail)
+            let vt = sp + slip * (0.4 + throttle * 0.6);
+            let fwd = [sh, ch];
+            let tread = |me: &mut Self, share: f32, th0: f32, th1: f32| -> [f32; 3] {
+                let th = me.r(th0, th1); let k = vt * share * me.r(0.6, 1.1); let side = me.r(-1.0, 1.0) * (0.4 + k * 0.12);
+                [c.vx as f32 - fwd[0] * k * th.cos() + ch * side, k * th.sin(), c.vz as f32 - fwd[1] * k * th.cos() - sh * side] };
+            if env.snow {
+                // snow: a spray of loose grains (crisp white specks on arcs that fall back within a second or so) and the fine
+                // powder that breaks off them and hangs a little longer as a thin mist
+                let rate = loose * (1.25 * sp + 7.0 * slip) * lk * front * lod;
+                let n = self.count(rate.min(110.0) * dt);
+                for _ in 0..n { let v = tread(self, 0.5, 0.25, 1.4); let tq = self.r(0.0, 1.0) * dt;
+                    let p = [wx + back[0] * 0.3 - c.vx as f32 * tq, gy + 0.1, wz + back[1] * 0.3 - c.vz as f32 * tq];
+                    let (b, sz, lf) = (self.r(0.92, 1.08), self.r(0.07, 0.13), self.r(1.2, 2.0)); self.speck(SPRAY, p, v, sz, lf, [b, b, b], gy); }
+                let n = self.count((rate * 0.5).min(55.0) * dt);
+                for _ in 0..n { let mut v = tread(self, 0.2, 0.3, 1.1); v[1] += self.r(0.2, 0.9); let tq = self.r(0.0, 1.0) * dt;
+                    let p = [wx + back[0] * 0.5 + self.r(-0.2, 0.2) - c.vx as f32 * tq, gy + 0.25, wz + back[1] * 0.5 + self.r(-0.2, 0.2) - c.vz as f32 * tq];
+                    let (al, sz, lf, br) = (env.alpha * self.r(0.7, 1.0), self.r(0.16, 0.3) * big, self.r(1.2, 2.4), self.r(1.0, 1.1)); self.emit(POWDER, p, v, sz, lf, al, br, 0.0, gy); }
+            } else {
+                // fine dust: lifted at the contact patch and by the wheel's own air, then handed to the wake and the wind; it hangs
+                // for seconds (fine powder settles at a few cm/s), spreading and thinning, longer on dry ground
+                let rate = loose * (0.62 * sp + 4.0 * slip) * lk * front * lod;
+                let n = self.count(rate.min(60.0) * dt);
                 for _ in 0..n {
-                    let kick = (3.0 + spin * 0.45).min(9.0) * self.r(0.6, 1.1); let side = self.r(-1.2, 1.2);
-                    let v = [c.vx as f32 * 0.6 + back[0] * kick + ch * side, self.r(1.8, 4.2), c.vz as f32 * 0.6 + back[1] * kick - sh * side];
+                    let up = self.r(0.5, 1.3) + sp * 0.05 + slip * 0.08; let side = self.r(-0.7, 0.7);
+                    let v = [c.vx as f32 * 0.32 + back[0] * slip * 0.25 + ch * side, up, c.vz as f32 * 0.32 + back[1] * slip * 0.25 - sh * side];
+                    // spread along where the wheel went during this frame, so the stream is continuous, not dotted
+                    let tq = self.r(0.0, 1.0) * dt;
+                    let p = [wx + back[0] * 0.3 + self.r(-0.15, 0.15) - c.vx as f32 * tq, gy + 0.15, wz + back[1] * 0.3 + self.r(-0.15, 0.15) - c.vz as f32 * tq];
+                    let size = self.r(0.28, 0.5) * big; let life = self.r(2.6, 4.6) * env.dry;
+                    let (al, br) = (env.alpha * self.r(0.8, 1.1), self.r(0.88, 1.08)); self.emit(DUST, p, v, size, life, al, br, earth, gy);
+                }
+            }
+            // stones / snow clumps: flung by the tread, many more with wheelspin, mostly from the driven rear; specks on arcs
+            if loose > 0.0 && d_cam < 80.0 {
+                let spin = slip * (0.6 + throttle * 0.8);
+                let n = self.count((loose.min(1.2) * (0.06 * sp + 3.2 * (spin - 0.8).max(0.0)) * lk * front * lod).min(45.0) * dt);
+                for _ in 0..n {
+                    let v = tread(self, 0.32, 0.2, 0.8);
                     let p = [wx + back[0] * 0.25, gy + 0.12, wz + back[1] * 0.25];
-                    let (kind, bright) = if env.snow { (CHUNK, self.r(1.0, 1.15)) } else { (GRIT, self.r(0.45, 0.7)) };
-                    let (sz, lf) = (self.r(0.09, 0.17), self.r(0.5, 0.9)); self.emit(kind, p, v, sz, lf, 0.95, bright, earth * 0.5 + 0.3 * (1.0 - env.snow as u8 as f32), gy);
+                    if env.snow { let (b, sz, lf) = (self.r(0.95, 1.1), self.r(0.1, 0.2), self.r(0.6, 1.1)); self.speck(CHUNK, p, v, sz, lf, [b, b, b], gy); }
+                    else { let g = env.grit; let (b, sz, lf) = (self.r(0.65, 1.15), self.r(0.05, 0.11), self.r(0.5, 0.9)); self.speck(GRIT, p, v, sz, lf, [g[0] * b, g[1] * b, g[2] * b], gy); }
                 }
             }
             // tyre smoke on tarmac: only from a hot tread that is still sliding; a thin wisp at first, thicker the hotter it runs
@@ -211,6 +244,8 @@ impl Dust {
             }
         }
     }
+    /// live particles per kind (dust, grit, smoke, powder, chunk, spray), for tools
+    pub fn kind_counts(&self) -> [usize; 6] { let mut c = [0; 6]; for i in 0..self.n { if self.life[i] > 0.0 { c[self.kind[i] as usize] += 1; } } c }
     /// one wheel's tread heat (`id`, wheel 0..3), for tests and tools
     pub fn tyre_heat_of(&self, id: usize, k: usize) -> f32 { self.heat.get(id).map_or(0.0, |h| h[k]) }
     /// stochastic rounding: an expected number of particles this frame -> a whole number
@@ -219,11 +254,15 @@ impl Dust {
     /// landing from a jump: a ring of dust blown outwards
     pub fn landing(&mut self, w: &World, env: &Env, c: &Car, v: f32) {
         if env.tarmac && w.path_dist(c.x, c.z) < ROAD { return; }
-        let n = ((v - 1.5) * 6.0).clamp(6.0, 34.0) as usize; let gy = w.height(c.x, c.z) as f32;
-        for q in 0..n { let a = q as f32 / n as f32 * std::f32::consts::TAU + self.r(-0.2, 0.2); let sp = self.r(1.5, 2.5) + v * 0.35;
-            let p = [c.x as f32 + a.cos() * 1.1, gy + 0.2, c.z as f32 + a.sin() * 1.9];
-            let kind = if env.snow { POWDER } else { DUST };
-            let (vy, sz, lf, br) = (self.r(0.4, 1.4), self.r(0.7, 1.1), self.r(1.5, 2.6), self.r(0.9, 1.05)); self.emit(kind, p, [a.cos() * sp + c.vx as f32 * 0.4, vy, a.sin() * sp + c.vz as f32 * 0.4], sz, lf, env.alpha * 1.1, br, 0.2, gy); }
+        // the body slams down and the air under it rushes out: a low ring blown outwards, many small puffs (not a few big ones,
+        // which would read as discs), and on snow a burst of grains
+        let n = ((v - 1.5) * 12.0).clamp(12.0, 70.0) as usize; let gy = w.height(c.x, c.z) as f32;
+        for q in 0..n { let a = q as f32 / n as f32 * std::f32::consts::TAU + self.r(-0.15, 0.15); let sp = self.r(1.5, 2.8) + v * 0.4;
+            let p = [c.x as f32 + a.cos() * self.r(0.8, 1.2), gy + 0.15, c.z as f32 + a.sin() * self.r(1.6, 2.1)];
+            let vel = [a.cos() * sp + c.vx as f32 * 0.4, self.r(0.3, 1.1), a.sin() * sp + c.vz as f32 * 0.4];
+            if env.snow { let (sz, lf, br) = (self.r(0.2, 0.34), self.r(0.9, 1.7), self.r(0.95, 1.05)); self.emit(POWDER, p, vel, sz, lf, env.alpha, br, 0.0, gy);
+                let (b, gs, gl) = (self.r(0.92, 1.08), self.r(0.045, 0.09), self.r(0.6, 1.1)); let gv = [vel[0] * 1.2, self.r(1.5, 3.5), vel[2] * 1.2]; self.speck(SPRAY, p, gv, gs, gl, [b, b, b], gy); }
+            else { let (sz, lf, br) = (self.r(0.35, 0.6), self.r(2.0, 3.6) * env.dry, self.r(0.9, 1.05)); self.emit(DUST, p, vel, sz, lf, env.alpha, br, 0.2, gy); } }
     }
 
     /// move everything: air (wind, the cars' flow fields, turbulence), drag, gravity, ground, growth and thinning
@@ -232,13 +271,13 @@ impl Dust {
         let wind = [self.wdir[0] * (0.5 + gust * 2.4), self.wdir[1] * (0.5 + gust * 2.4)];
         for b in bodies { self.shed(b, dt); }
         self.step_vortices(w, wind, dt);
-        let mut live = 0; let mut puffs: Vec<([f32; 3], f32, f32)> = Vec::new();
+        let mut live = 0; let mut puffs: Vec<([f32; 3], bool, f32)> = Vec::new();
         for i in 0..self.n {
             if self.life[i] <= 0.0 { self.a[i] = 0.0; continue; }
             self.age[i] += dt; let k = self.age[i] / self.life[i];
             if k >= 1.0 { self.life[i] = 0.0; self.a[i] = 0.0; continue; }
             live += 1; let kd = self.kind[i] as usize; let (mut x, mut y, mut z) = (self.pos[i * 3], self.pos[i * 3 + 1], self.pos[i * 3 + 2]); let sd = self.seed[i];
-            let heavy = kd == GRIT as usize || kd == CHUNK as usize;
+            let heavy = kd == GRIT as usize || kd == CHUNK as usize; let ballistic = heavy || kd == SPRAY as usize;
             // the air here: wind and turbulence (grows as the puff ages; a few sines, different for every particle)
             let mut air = [wind[0], 0.0, wind[1]];
             // wind grows with height above the ground (shear); eddies from the curl-noise field, a gentle lift so clouds tower
@@ -285,9 +324,9 @@ impl Dust {
             for q in 0..3 { v[q] += (air[q] - v[q]) * rel; } v[1] += GRAV[kd] * dt;
             let (nx, mut ny, nz) = (x + v[0] * dt, y + v[1] * dt, z + v[2] * dt);
             // the ground: stones stop (with a small puff), dust rolls along it; heights refreshed every 4th frame for dust
-            if heavy || (i as u32 + self.frame) % 4 == 0 { self.gy[i] = w.height(nx as f64, nz as f64) as f32; }
-            let floor = self.gy[i] + if heavy { 0.05 } else { self.s[i] * 0.22 };
-            if ny < floor { if heavy { self.life[i] = 0.0; self.a[i] = 0.0; if sd < 0.3 { puffs.push(([nx, floor + 0.1, nz], self.col[i * 3 + 1], self.gy[i])); } continue; }
+            if ballistic || (i as u32 + self.frame) % 4 == 0 { self.gy[i] = w.height(nx as f64, nz as f64) as f32; }
+            let floor = self.gy[i] + if ballistic { 0.04 } else { self.s[i] * 0.22 };
+            if ny < floor { if ballistic { self.life[i] = 0.0; self.a[i] = 0.0; if sd < if kd == SPRAY as usize { 0.06 } else { 0.3 } { puffs.push(([nx, floor + 0.1, nz], kd != GRIT as usize, self.gy[i])); } continue; }
                 // dust hitting the ground spreads out along it instead of stopping dead
                 ny = floor; if v[1] < 0.0 { let lost = -v[1]; let hs = (v[0] * v[0] + v[2] * v[2]).sqrt().max(0.3); v[0] += v[0] / hs * lost * 0.45; v[2] += v[2] / hs * lost * 0.45; v[1] = 0.0; } }
             self.pos[i * 3] = nx; self.pos[i * 3 + 1] = ny; self.pos[i * 3 + 2] = nz;
@@ -296,7 +335,7 @@ impl Dust {
             let thin = if GROW[kd] > 0.0 { (self.s0[i] / s).powf(0.5) } else { 1.0 };
             self.a[i] = self.a0[i] * (self.age[i] / 0.08).min(1.0) * (1.0 - k).powf(1.4) * thin;
         }
-        for (p, earth, gy) in puffs { let snow = earth <= 0.0; self.emit(if snow { POWDER } else { DUST }, p, [0.0, 0.5, 0.0], 0.35, 0.9, 0.3, 0.95, earth, gy); }
+        for (p, snow, gy) in puffs { self.emit(if snow { POWDER } else { DUST }, p, [0.0, 0.5, 0.0], if snow { 0.22 } else { 0.3 }, if snow { 0.8 } else { 1.4 }, 0.28, 0.95, if snow { 0.0 } else { 0.3 }, gy); }
         self.live = live;
     }
     fn add_vort(&mut self, p: [f32; 3], v: [f32; 3], ax: [f32; 3], g: f32, rc0: f32, len: f32, gy: f32) {
@@ -370,15 +409,18 @@ impl Dust {
     /// send the live puffs to the GPU (the dust layer adds them up, so their order does not matter); skipped while nothing is alive
     pub fn upload(&mut self, r: &mut crate::render::Renderer, obj: usize) {
         if self.live > 0 || self.was {
-            let mut j = 0;
+            let (mut j, mut sp, mut sc) = (0, Vec::with_capacity(512), Vec::with_capacity(512));
             for i in 0..self.n { if self.a[i] <= 0.0 { continue; }
+                if is_speck(self.kind[i]) { sp.extend_from_slice(&[self.pos[i * 3], self.pos[i * 3 + 1], self.pos[i * 3 + 2], self.s[i]]); sc.extend_from_slice(&[self.col[i * 3], self.col[i * 3 + 1], self.col[i * 3 + 2], self.a[i]]); continue; }
                 self.out_pos[j * 3..j * 3 + 3].copy_from_slice(&self.pos[i * 3..i * 3 + 3]); self.out_col[j * 3..j * 3 + 3].copy_from_slice(&self.col[i * 3..i * 3 + 3]);
                 self.out_a[j] = self.a[i]; self.out_s[j] = self.s[i]; j += 1; }
             for k in j..self.n { self.out_a[k] = 0.0; self.out_s[k] = 0.0; }
             r.set_attr(obj, "position", &self.out_pos); r.set_attr(obj, "aA", &self.out_a); r.set_attr(obj, "aS", &self.out_s); r.set_attr(obj, "color", &self.out_col);
+            r.set_specks(&sp, &sc);
         }
         self.was = self.live > 0;
     }
+
 }
 
 #[cfg(test)]

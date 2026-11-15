@@ -167,11 +167,37 @@ pub const DUST_FS: &str = r#"#version 300 es
 precision highp float;
 uniform float uDensScale; in float vA; in vec3 vRgb; in float vSeed; out vec4 fragColor;
 float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+float vn(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y); }
 void main() {
   vec2 p = (gl_PointCoord - 0.5) * 2.0; float r2 = dot(p, p); if (r2 > 1.0) discard;
-  float n = vSeed > 0.0 ? hash(floor(gl_PointCoord * 4.0) + vSeed * 97.0) * 0.6 + hash(floor(gl_PointCoord * 8.0) + vSeed * 53.0) * 0.4 : 0.5;
-  float d = pow(1.0 - r2, 1.6) * (0.45 + 0.9 * n) * vA * uDensScale;
+  // a ragged, lumpy puff rather than a disc: two octaves of smooth noise (different for every puff) eat into its rim and
+  // vary its density, so sparse puffs never read as circles and dense ones merge into a billowing cloud
+  float n = vSeed > 0.0 ? vn(gl_PointCoord * 3.0 + vSeed * 97.0) * 0.65 + vn(gl_PointCoord * 6.5 + vSeed * 53.0) * 0.35 : 0.5;
+  float e = clamp(1.0 - r2 - (0.5 - n) * 1.1, 0.0, 1.0);
+  float d = e * e * (0.5 + 0.9 * n) * vA * uDensScale;
   fragColor = vec4(vRgb * d, d); }
+"#;
+/// Specks: gravel, snow grains and clumps thrown by the tyres, too small and solid to be part of the dust cloud. Each is a crisp
+/// square of whole game pixels (1-6, by size and distance), lit like the scene, fogged, opaque; partial cover (a speck smaller
+/// than a pixel, or fading out) is a 4x4 ordered dither, so they stay sharp. aP = position + size (m), aC = colour + alpha.
+pub const SPECK_VS: &str = r#"#version 300 es
+precision highp float;
+layout(location=0) in vec4 aP; layout(location=3) in vec4 aC;
+uniform mat4 uView; uniform mat4 uProj; uniform float uScale; uniform vec3 uHemiSky; uniform vec3 uHemiGround; uniform vec3 uDirColor; uniform vec3 uDirDir;
+uniform vec3 uFogColor; uniform float uFogDensity;
+out vec3 vRgb; out float vA;
+void main() { vec4 mv = uView * vec4(aP.xyz, 1.0); gl_Position = uProj * mv; float d = max(0.3, -mv.z);
+  float px = aP.w * uScale / d; gl_PointSize = clamp(floor(px + 0.5), 1.0, 6.0); vA = aC.a * clamp(px / 0.6, 0.0, 1.0) * smoothstep(0.8, 2.5, d);
+  vec3 lit = aC.rgb * (mix(uHemiGround, uHemiSky, 0.7) * 0.55 + uDirColor * (0.3 + 0.25 * max(uDirDir.y, 0.0)));
+  float f = 1.0 - exp(-uFogDensity * uFogDensity * d * d); vRgb = mix(lit, uFogColor, f); }
+"#;
+pub const SPECK_FS: &str = r#"#version 300 es
+precision highp float;
+in vec3 vRgb; in float vA; out vec4 fragColor;
+float bayer(vec2 c) { vec2 q = mod(floor(c), 4.0); int i = int(q.x) + int(q.y) * 4;
+  int m[16] = int[16](0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5); return (float(m[i]) + 0.5) / 16.0; }
+void main() { if (vA < bayer(gl_FragCoord.xy)) discard; fragColor = vec4(vRgb, 1.0); }
 "#;
 /// separable 9-tap gaussian in 5 bilinear fetches, along uSrc (1,0 or 0,1), uTexel = 1 / source size
 pub const BLUR_FS: &str = r#"#version 300 es

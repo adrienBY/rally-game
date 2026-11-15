@@ -89,6 +89,14 @@ pub struct Obstacles { cells: HashMap<i64, Vec<Obstacle>> }
 const OC: f64 = 8.0;
 #[inline] fn okey(i: f64, j: f64) -> i64 { (i * 4096.0 + j) as i64 }
 impl Obstacles {
+    /// every obstacle whose centre lies within `rad` of (x, z)
+    pub fn near(&self, x: f64, z: f64, rad: f64) -> Vec<Obstacle> {
+        let mut out = Vec::new(); let (i0, i1, j0, j1) = (((x - rad) / OC).floor(), ((x + rad) / OC).floor(), ((z - rad) / OC).floor(), ((z + rad) / OC).floor());
+        let mut i = i0; while i <= i1 { let mut j = j0; while j <= j1 {
+            if let Some(l) = self.cells.get(&okey(i, j)) { for o in l { if (o.x - x).hypot(o.z - z) <= rad { out.push(*o); } } }
+            j += 1.0; } i += 1.0; }
+        out
+    }
     pub fn new(list: &[Obstacle]) -> Obstacles {
         let mut cells: HashMap<i64, Vec<Obstacle>> = HashMap::new();
         for o in list { cells.entry(okey((o.x / OC).floor(), (o.z / OC).floor())).or_default().push(*o); }

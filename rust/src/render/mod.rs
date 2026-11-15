@@ -74,6 +74,8 @@ pub struct Renderer {
     tgt: Option<(i32, i32, glow::Framebuffer, glow::Texture, glow::Renderbuffer, glow::Framebuffer, glow::Texture)>,
     pub frame: FrameState, pub stats: (u32, u32), pub only: Option<Vec<usize>>,
     hud: Option<(glow::Texture, i32, i32)>,
+    /// tyre specks (gravel, snow grains): program, vertex array, position+size and colour+alpha buffers, how many
+    speck: Program, specks: Option<(glow::VertexArray, glow::Buffer, glow::Buffer)>, speck_n: i32,
     /// test hook: draw the frame without the HUD
     pub no_hud: bool,
     /// test hook: skip the dust layer
@@ -119,14 +121,14 @@ impl Renderer {
     pub unsafe fn new(gl: Gl) -> Result<Renderer, String> {
         let sky = compile(&gl, SKY_VS, SKY_FS)?; let points = compile(&gl, POINTS_VS, POINTS_FS)?;
         let dust = compile(&gl, DUST_VS, DUST_FS)?; let dblur = compile(&gl, POST_VS, BLUR_FS)?; let dcomp = compile(&gl, POST_VS, DCOMP_FS)?;
-        let post = compile(&gl, POST_VS, POST_FS)?; let mask = compile(&gl, POST_VS, MASK_FS)?; let ray = compile(&gl, POST_VS, RAY_FS)?; let up = compile(&gl, POST_VS, UPSCALE_FS)?;
+        let post = compile(&gl, POST_VS, POST_FS)?; let speck = compile(&gl, SPECK_VS, SPECK_FS)?; let mask = compile(&gl, POST_VS, MASK_FS)?; let ray = compile(&gl, POST_VS, RAY_FS)?; let up = compile(&gl, POST_VS, UPSCALE_FS)?;
         let quad_vao = gl.create_vertex_array()?; let qb = gl.create_buffer()?;
         gl.bind_vertex_array(Some(quad_vao)); gl.bind_buffer(glow::ARRAY_BUFFER, Some(qb));
         let tri: [f32; 6] = [-1.0, -1.0, 3.0, -1.0, -1.0, 3.0];
         gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, f32_bytes(&tri), glow::STATIC_DRAW);
         gl.enable_vertex_attrib_array(11); gl.vertex_attrib_pointer_f32(11, 2, glow::FLOAT, false, 8, 0);
         gl.bind_vertex_array(None);
-        Ok(Renderer { gl, scene: None, mesh_progs: HashMap::new(), mesh_list: Vec::new(), sky, points, dust, post, mask, ray, up, rays: None, dtg: None, dblur, dcomp, quad_vao, _quad_buf: qb, tgt: None, frame: FrameState::default(), stats: (0, 0), only: None, hud: None, no_hud: false, no_dust: false,
+        Ok(Renderer { speck, specks: None, speck_n: 0, gl, scene: None, mesh_progs: HashMap::new(), mesh_list: Vec::new(), sky, points, dust, post, mask, ray, up, rays: None, dtg: None, dblur, dcomp, quad_vao, _quad_buf: qb, tgt: None, frame: FrameState::default(), stats: (0, 0), only: None, hud: None, no_hud: false, no_dust: false,
             timing: false, frame_id: 0, draw_cpu_ms: 0.0, gpu_results: Vec::new(), has_timer: false, tq_free: Vec::new(), tq_pending: Default::default(), tq_cur: None, tq_made: 0, tq_post: false })
     }
 
@@ -169,6 +171,20 @@ impl Renderer {
             let (pb, nb) = o.own.unwrap();
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(pb)); gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, f32_bytes(pos), glow::DYNAMIC_DRAW);
             if let (Some(nb), Some(n)) = (nb, nrm) { gl.bind_buffer(glow::ARRAY_BUFFER, Some(nb)); gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, f32_bytes(n), glow::DYNAMIC_DRAW); }
+        }
+    }
+    /// this frame's tyre specks: `p` = x, y, z, size (m) and `c` = r, g, b, alpha per speck
+    pub fn set_specks(&mut self, p: &[f32], c: &[f32]) {
+        let gl = &self.gl; let n = (p.len() / 4).min(c.len() / 4) as i32; self.speck_n = n; if n == 0 { return; }
+        unsafe {
+            if self.specks.is_none() { let (Ok(vao), Ok(pb), Ok(cb)) = (gl.create_vertex_array(), gl.create_buffer(), gl.create_buffer()) else { self.speck_n = 0; return };
+                gl.bind_vertex_array(Some(vao));
+                gl.bind_buffer(glow::ARRAY_BUFFER, Some(pb)); gl.enable_vertex_attrib_array(0); gl.vertex_attrib_pointer_f32(0, 4, glow::FLOAT, false, 0, 0);
+                gl.bind_buffer(glow::ARRAY_BUFFER, Some(cb)); gl.enable_vertex_attrib_array(3); gl.vertex_attrib_pointer_f32(3, 4, glow::FLOAT, false, 0, 0);
+                gl.bind_vertex_array(None); self.specks = Some((vao, pb, cb)); }
+            let (_, pb, cb) = self.specks.unwrap();
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(pb)); gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, f32_bytes(&p[..n as usize * 4]), glow::STREAM_DRAW);
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(cb)); gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, f32_bytes(&c[..n as usize * 4]), glow::STREAM_DRAW);
         }
     }
     /// coarse versions of a tw x th vertex grid tile (same winding as the page builds it): every 2nd and every 4th grid line, edges kept
@@ -588,6 +604,12 @@ impl Renderer {
             calls += 1;
         } }
         gl.bind_vertex_array(None); gl.disable(glow::BLEND); gl.disable(glow::POLYGON_OFFSET_FILL); gl.disable(glow::CULL_FACE); gl.depth_mask(true);
+        if let (Some((vao, _, _)), true) = (self.specks, self.speck_n > 0) {   // tyre specks: opaque, depth-tested, before the dust cloud
+            let p = &self.speck; gl.use_program(Some(p.prog)); gl.enable(glow::DEPTH_TEST); gl.depth_mask(true); gl.disable(glow::BLEND);
+            gl.uniform_matrix_4_f32_slice(p.u(U!("uView")), false, &fr.view); gl.uniform_matrix_4_f32_slice(p.u(U!("uProj")), false, &fr.proj); gl.uniform_1_f32(p.u(U!("uScale")), fr.dust_scale);
+            gl.uniform_3_f32_slice(p.u(U!("uHemiSky")), &s.hemi.0); gl.uniform_3_f32_slice(p.u(U!("uHemiGround")), &s.hemi.1); gl.uniform_3_f32_slice(p.u(U!("uDirColor")), &s.dir.0);
+            gl.uniform_3_f32_slice(p.u(U!("uDirDir")), &s.dir.1); gl.uniform_3_f32_slice(p.u(U!("uFogColor")), &s.fog_c); gl.uniform_1_f32(p.u(U!("uFogDensity")), s.fog_d);
+            gl.bind_vertex_array(Some(vao)); gl.draw_arrays(glow::POINTS, 0, self.speck_n); gl.bind_vertex_array(None); calls += 1; }
         if !dusts.is_empty() && !self.no_dust { self.dust_layer(&dusts, lw, lh, f1)?; }
         let gl = &self.gl;
         let post_q = if let Some((_, b)) = tq { gl.end_query(0x88BF); gl.begin_query(0x88BF, b); true } else { false };   // benchmark: scene pass done, post + upscale next

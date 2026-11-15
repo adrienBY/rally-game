@@ -179,7 +179,9 @@ impl Game {
             cam_pos: [0.0; 3], cam_rot: ID, fov_now: 56.0, view: ID, proj: ID, w: 1280.0, h: 720.0, lw: 320, lh: 180, u: 1.0, inset: [0.0; 4], inset_px: [0.0; 4],
             race, ui: HashMap::new(), touches: HashMap::new(), time: 0.0, wind: 0.5, rng: Rng(0x9E3779B97F4A7C15 ^ (mid as u64 + 1)), events: Vec::new(), ps, loading: None,
             node_base, node_world: vec![ID; rt.nodes.len()], obj_last: HashMap::new(), named, cull_vis: vec![true; ncull], glit_op: vec![-1.0; nglit],
-            dust: dust::Dust::new(dn, 0x5EED ^ mid as u64), dust_env: dust::Env { tarmac: mid == 5 || mid == 6, snow: mid == 1, sand: mid == 2, lush: mid == 0, alpha: if mid == 5 || mid == 6 { 0.4 } else if mid == 1 { 0.22 } else if mid == 2 { 0.42 } else { 0.36 } },
+            dust: dust::Dust::new(dn, 0x5EED ^ mid as u64), dust_env: dust::Env { tarmac: mid == 5 || mid == 6, snow: mid == 1, sand: mid == 2, lush: mid == 0, alpha: if mid == 5 || mid == 6 { 0.4 } else if mid == 1 { 0.26 } else if mid == 2 { 0.46 } else { 0.38 },
+                dry: if mid == 2 { 1.6 } else if mid == 0 { 0.9 } else if mid == 5 || mid == 6 { 1.1 } else { 1.0 },
+                grit: if mid == 2 { [0.62, 0.36, 0.22] } else if mid == 0 { [0.34, 0.28, 0.21] } else if mid == 5 || mid == 6 { [0.46, 0.42, 0.37] } else { [0.5, 0.43, 0.33] } },
             sf_pos, sf_init: false, boats,
             sun_vis: 0.0, expo: 1.0, dim: 1.0, expo_tun: false, sun_uv: [0.5, 0.8],
             hap_t: 0.0, hap_cool: 0.0, aud_wet: 0.0, car_audio_on: false, race_was: false, pop_cool: 0.0, fps_acc: 0.0, fps_n: 0, hud_tick: false, hud: hud::Canvas::new(320, 180),
@@ -373,7 +375,8 @@ impl Game {
         if self.state == State::Drive && !paused { if self.race.on { race::step(self, w, obs, dt); } else { self.update_lap(w, dt); } } lap!(1);
         // crash damage: a hit (a tree, a rock, a wall, another car) dents the bodywork where it landed; a landing does not
         if !paused && self.car.impact > 2.0 {
-            if let Some((p, d)) = crash::locate(self.car.vx - pre.0, self.car.vz - pre.1, self.car.r - pre.2, self.car.h, crate::physics::M, self.tune.iz) { self.crash.hit(p, d, self.car.impact as f32); } }
+            if let Some((p, d)) = crash::locate(self.car.vx - pre.0, self.car.vz - pre.1, self.car.r - pre.2, self.car.h, crate::physics::M, self.tune.iz) {
+                let shape = self.what_hit(w, obs, p, d); self.crash.hit(shape, d, self.car.impact as f32); } }
         if self.crash.model != Some(want) { if let Some(objs) = self.rt.car_models.get(want) { let objs = objs.clone(); self.crash.bind(r, want, &objs); } }
         if !paused { self.crash.step(dt as f32); } self.crash.upload(r);
         if self.tel.is_some() && !paused { let ti = path_idx(w, self.car.x, self.car.z); self.tel_frame(&inp, dt, ti); }
@@ -422,6 +425,24 @@ impl Game {
         let slow = self.state == State::Title || self.ps.saver;   // the menu's film crew runs at 30 fps, the driving at 60 (30 with the battery saver)
         if self.fps30 != Some(slow) { self.fps30 = Some(slow); self.events.push(if slow { "fps 30".into() } else { "fps 60".into() }); }
         self.ps.saves.flush();
+    }
+
+    /// the thing your car just hit, as a shape in its frame: the other car in a race (it was a car contact this frame), else the
+    /// tree, post or rock nearest the contact, else a wall across the push (the edge of the map)
+    fn what_hit(&self, w: &World, obs: &crate::physics::Obstacles, p: [f32; 3], d: [f32; 3]) -> crash::Shape {
+        let c = &self.car; let h = c.h;
+        if self.car_hit > 0.3 && self.race.on {
+            let best = self.race.cars.iter().filter(|rc| !rc.is_player() && !rc.left).min_by(|a, b| (a.car.x - c.x).hypot(a.car.z - c.z).total_cmp(&(b.car.x - c.x).hypot(b.car.z - c.z)));
+            if let Some(o) = best { let o = o.car; let lc = crash::to_car(o.x - c.x, o.z - c.z, h); let ax = crash::to_car(o.h.sin(), o.h.cos(), h);
+                return crash::Shape::Box { c: lc, ax, hl: 2.05, hw: 0.9, top: 1.3 }; }
+        }
+        let wp = crash::to_world(p[0], p[2], h); let (px, pz) = (c.x + wp[0], c.z + wp[1]);
+        let best = obs.near(px, pz, 3.5).into_iter().min_by(|a, b| ((a.x - px).hypot(a.z - pz) - a.r).total_cmp(&((b.x - px).hypot(b.z - pz) - b.r)));
+        if let Some(o) = best { let lc = crash::to_car(o.x - c.x, o.z - c.z, h); let top = if o.r > 0.9 { (o.r as f32).min(1.3) } else { 10.0 };
+            return crash::Shape::Circle { c: lc, r: o.r as f32, top }; }
+        let _ = w;
+        // a wall: a huge cylinder whose face lies across the push at the contact
+        crash::Shape::Circle { c: [p[0] - d[0] * 60.0, p[2] - d[2] * 60.0], r: 60.0, top: 10.0 }
     }
 
     fn camera(&mut self, w: &World, dt: f64) {
