@@ -10,7 +10,8 @@
 //!    through a bend never gets there; a long drift, a burnout or a locked wheel does, and then it rises, grows fast, stays faint
 //!  * spray / powder / chunks: snow. Loose grains thrown off the tread on arcs (crisp white specks that fall back within a
 //!    second), the fine powder that breaks off them and hangs briefly as mist, and packed clumps on wheelspin
-//! Stones, grains and clumps are drawn as crisp specks of whole pixels; dust, powder and smoke as the cloud.
+//! Stones are drawn as crisp specks of whole pixels; dust, powder and smoke as the cloud. (Snow throws only powder now:
+//! the grain and clump kinds are kept but no longer emitted.)
 //! What the tread throws leaves it along the tread at a share of its speed relative to the hub: with grip it still moves
 //! forward with the car (into the arches); wheelspin sends it back past the car as a rooster tail.
 //! The air around each car is modelled cheaply but physically (in the car's frame, within 10 m):
@@ -198,13 +199,8 @@ impl Dust {
                 let ls = share * me.r(0.6, 1.3);
                 [c.vx as f32 - fwd[0] * k * th.cos() + ch * side + lat[0] * ls, k * th.sin(), c.vz as f32 - fwd[1] * k * th.cos() - sh * side + lat[1] * ls] };
             if env.snow {
-                // snow: a spray of loose grains (crisp white specks on arcs that fall back within a second or so) and the fine
-                // powder that breaks off them and hangs a little longer as a thin mist
+                // snow: only a thin mist of fine powder (no white grain specks)
                 let rate = loose * (0.45 * sp + 3.0 * slip + 1.5 * vl.abs()) * lk * front * lod;
-                let n = self.count(rate.min(110.0) * dt);
-                for _ in 0..n { let v = tread(self, 0.5, 0.25, 1.4); let tq = self.r(0.0, 1.0) * dt;
-                    let p = [wx + back[0] * 0.3 - c.vx as f32 * tq, gy + 0.1, wz + back[1] * 0.3 - c.vz as f32 * tq];
-                    let (b, sz, lf) = (self.r(0.92, 1.08), self.r(0.04, 0.08), self.r(0.8, 1.4)); self.speck(SPRAY, p, v, sz, lf, [b, b, b], gy); }
                 // the plume: fine powder lifted off the grains and by the wheel's air, hanging for a few seconds in a sunlit fan
                 let n = self.count((rate * 0.4).min(25.0) * dt);
                 for _ in 0..n { let mut v = tread(self, 0.2, 0.3, 1.1); v[1] += self.r(0.8, 2.2); let tq = self.r(0.0, 1.0) * dt;
@@ -227,14 +223,13 @@ impl Dust {
                 }
             }
             // stones / snow clumps: flung by the tread, many more with wheelspin, mostly from the driven rear; specks on arcs
-            if loose > 0.0 && d_cam < 80.0 {
+            if loose > 0.0 && !env.snow && d_cam < 80.0 {
                 let spin = slip * (0.6 + throttle * 0.8);
                 let n = self.count((loose.min(1.2) * (0.06 * sp + 1.5 * (spin - 0.8).max(0.0)) * lk * front * lod).min(45.0) * dt);
                 for _ in 0..n {
                     let v = tread(self, 0.32, 0.2, 0.8);
                     let p = [wx + back[0] * 0.25, gy + 0.12, wz + back[1] * 0.25];
-                    if env.snow { let (b, sz, lf) = (self.r(0.95, 1.1), self.r(0.1, 0.2), self.r(0.6, 1.1)); self.speck(CHUNK, p, v, sz, lf, [b, b, b], gy); }
-                    else { let g = env.grit; let (b, sz, lf) = (self.r(0.65, 1.15), self.r(0.05, 0.11), self.r(0.5, 0.9)); self.speck(GRIT, p, v, sz, lf, [g[0] * b, g[1] * b, g[2] * b], gy); }
+                    { let g = env.grit; let (b, sz, lf) = (self.r(0.65, 1.15), self.r(0.05, 0.11), self.r(0.5, 0.9)); self.speck(GRIT, p, v, sz, lf, [g[0] * b, g[1] * b, g[2] * b], gy); }
                 }
             }
             // tyre smoke on tarmac: only from a hot tread that is still sliding; a thin wisp at first, thicker the hotter it runs
@@ -267,8 +262,7 @@ impl Dust {
         for q in 0..n { let a = q as f32 / n as f32 * std::f32::consts::TAU + self.r(-0.15, 0.15); let sp = self.r(1.5, 2.8) + v * 0.4;
             let p = [c.x as f32 + a.cos() * self.r(0.8, 1.2), gy + 0.15, c.z as f32 + a.sin() * self.r(1.6, 2.1)];
             let vel = [a.cos() * sp + c.vx as f32 * 0.4, self.r(0.3, 1.1), a.sin() * sp + c.vz as f32 * 0.4];
-            if env.snow { let (sz, lf, br) = (self.r(0.2, 0.34), self.r(0.9, 1.7), self.r(0.95, 1.05)); self.emit(POWDER, p, vel, sz, lf, env.alpha, br, 0.0, gy);
-                let (b, gs, gl) = (self.r(0.92, 1.08), self.r(0.045, 0.09), self.r(0.6, 1.1)); let gv = [vel[0] * 1.2, self.r(1.5, 3.5), vel[2] * 1.2]; self.speck(SPRAY, p, gv, gs, gl, [b, b, b], gy); }
+            if env.snow { let (sz, lf, br) = (self.r(0.2, 0.34), self.r(0.9, 1.7), self.r(0.95, 1.05)); self.emit(POWDER, p, vel, sz, lf, env.alpha, br, 0.0, gy); }
             else { let (sz, lf, br) = (self.r(0.35, 0.6), self.r(2.0, 3.6) * env.dry, self.r(0.9, 1.05)); self.emit(DUST, p, vel, sz, lf, env.alpha, br, 0.2, gy); } }
     }
 
