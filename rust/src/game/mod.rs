@@ -323,7 +323,7 @@ impl Game {
     pub fn wants_back(&self) -> bool { self.state == State::Drive || self.set.open || self.gar.open || self.ps.online_ui != online::OnlineUi::Closed || self.menu.view != menu::View::Main || self.menu.wipe.is_some() || self.loading.is_some() }
 
     pub fn switch_map(&mut self, name: &str) { if self.loading.is_none() { self.loading = Some(name.to_string()); self.events.push(format!("map {}", name)); self.ps.saves.set("fogwood-map", name.to_string()); } }
-    fn toggle_mode(&mut self) { self.ps.race_mode = !self.ps.race_mode; self.ps.saves.set("fogwood-mode", if self.ps.race_mode { "race".into() } else { "tt".into() }); }
+    pub fn toggle_mode(&mut self) { self.ps.race_mode = !self.ps.race_mode; self.ps.saves.set("fogwood-mode", if self.ps.race_mode { "race".into() } else { "tt".into() }); }
     pub fn toggle_sound(&mut self) { self.ps.sound_on = !self.ps.sound_on; let m = if self.ps.sound_on { "SOUND ON" } else { "SOUND OFF" }; self.flash_msg(m, 1.0); }
     fn cycle_cam(&mut self) { self.cam.mode = (self.cam.mode + 1) % 3; self.cam.init = false; self.ps.cam_mode = self.cam.mode as u8; self.ps.store(); self.flash_msg(["CHASE CAM", "CLOSE CAM", "BONNET CAM"][self.cam.mode as usize], 1.2); }
     fn reset_car(&mut self) { if self.state != State::Drive { return; } let g = bridge::lock(); if let Some(e) = g.as_ref() { let i = path_idx(&e.world, self.car.x, self.car.z); self.place_at(&e.world, i); } drop(g); self.flash_msg("RESET", 1.0); if self.tel.is_some() { self.tel_note.push_str("reset;"); } }

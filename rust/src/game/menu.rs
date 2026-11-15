@@ -14,13 +14,14 @@ pub const STAGES: [(&str, &str, &str, &str); 6] = [
 pub fn stage_of(map: &str) -> usize { STAGES.iter().position(|s| s.0 == map).unwrap_or(0) }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
-pub enum Item { Drive, Stage, Race, Online, Garage, Options }
-pub const ITEMS: [(Item, &str, &str); 6] = [
-    (Item::Drive, "DRIVE", "m_drive"), (Item::Stage, "STAGE", "m_stage"), (Item::Race, "RACE", "m_race"),
+pub enum Item { Drive, Stage, Online, Garage, Options }
+pub const ITEMS: [(Item, &str, &str); 5] = [
+    (Item::Drive, "DRIVE", "m_drive"), (Item::Stage, "STAGE", "m_stage"),
     (Item::Online, "ONLINE", "m_online"), (Item::Garage, "GARAGE", "m_garage"), (Item::Options, "OPTIONS", "m_opts"),
 ];
-/// every hit key the menu draws (entries, the stage arrows, the stage list and its BACK)
-pub const KEYS: [&str; 15] = ["m_drive", "m_stage", "m_race", "m_online", "m_garage", "m_opts", "m_sprev", "m_snext", "m_s0", "m_s1", "m_s2", "m_s3", "m_s4", "m_s5", "m_back"];
+/// every hit key the menu draws, in hit order: the arrows of a setting box first (they sit beside an entry), then the
+/// entries, the stage list and its BACK
+pub const KEYS: [&str; 16] = ["m_mprev", "m_mnext", "m_sprev", "m_snext", "m_drive", "m_stage", "m_online", "m_garage", "m_opts", "m_s0", "m_s1", "m_s2", "m_s3", "m_s4", "m_s5", "m_back"];
 const SKEYS: [&str; 7] = ["m_s0", "m_s1", "m_s2", "m_s3", "m_s4", "m_s5", "m_back"];
 
 /// where a chequered wipe leads, at the moment the screen is covered
@@ -80,7 +81,7 @@ impl Game {
             else if w.t >= a + h + b { self.menu.wipe = None; } else { self.menu.wipe = Some(w); } }
     }
     /// DRIVE from elsewhere (the garage): the stage starts under the wipe
-    pub fn menu_drive(&mut self) { self.start_wipe(Go::Drive); }
+    pub fn menu_drive(&mut self) { self.start_wipe(if self.ps.race_mode { Go::Race } else { Go::Drive }); }
     fn start_wipe(&mut self, go: Go) { if self.menu.wipe.is_none() { self.menu.wipe = Some(Wipe { t: 0.0, go, done: false }); } }
     /// the screen is covered: change what is under it
     fn wipe_go(&mut self, go: Go) {
@@ -102,8 +103,7 @@ impl Game {
     }
     fn menu_act(&mut self, it: Item) {
         match it {
-            Item::Drive => { self.start_wipe(Go::Drive); self.buzz("shift", 0.6); }
-            Item::Race => { self.start_wipe(Go::Race); self.buzz("shift", 0.6); }
+            Item::Drive => { self.start_wipe(if self.ps.race_mode { Go::Race } else { Go::Drive }); self.buzz("shift", 0.6); }
             Item::Stage => { self.menu.view = View::Stages; self.menu.view_t = 0.0; self.menu.scur = stage_of(&self.rt.map); self.menu.scur_y = 0.0; }
             Item::Online => self.start_wipe(Go::Online),
             Item::Garage => self.start_wipe(Go::Garage),
@@ -122,14 +122,20 @@ impl Game {
         let n = STAGES.len() as i32; let k = ((stage_of(&self.rt.map) as i32 + d) % n + n) % n; let want = STAGES[k as usize].0;
         if want != self.rt.map { self.switch_map(want); }
     }
-    /// a tap on a menu key; true when it was one
+    /// a tap on a menu key; true when it was one. Lists with a cursor work in two taps: the first tap moves the
+    /// cursor to an entry, a tap on the entry under the cursor opens it.
     pub fn menu_tap(&mut self, key: &str) -> bool {
         if self.menu.wipe.is_some() || self.menu.confirm.is_some() || self.loading.is_some() { return true; }
-        if let Some(r) = SKEYS.iter().position(|k| *k == key) { self.menu.scur = r; self.menu.confirm = Some((100 + r, 0.0)); self.buzz("tap", 0.45); return true; }
+        if let Some(r) = SKEYS.iter().position(|k| *k == key) {
+            if self.menu.scur != r { self.menu.scur = r; self.buzz("tap", 0.25); } else { self.menu.confirm = Some((100 + r, 0.0)); self.buzz("tap", 0.45); }
+            return true; }
         match key {
             "m_sprev" => { self.menu.cur = 1; self.menu_stage(-1); true }
             "m_snext" => { self.menu.cur = 1; self.menu_stage(1); true }
-            k => match ITEMS.iter().position(|i| i.2 == k) { Some(i) => { self.menu.cur = i; self.menu.confirm = Some((i, 0.0)); true } None => false },
+            "m_mprev" | "m_mnext" => { self.menu.cur = 0; self.toggle_mode(); self.ps.store(); self.buzz("tap", 0.3); true }
+            k => match ITEMS.iter().position(|i| i.2 == k) {
+                Some(i) => { if self.menu.cur != i { self.menu.cur = i; self.buzz("tap", 0.25); } else { self.menu.confirm = Some((i, 0.0)); self.buzz("tap", 0.45); } true }
+                None => false },
         }
     }
 }
@@ -209,12 +215,15 @@ pub fn draw(gm: &mut Game, g: &mut Canvas, ui: &mut Vec<(&'static str, Rect)>, l
             let on = k == m.cur; let confirming = m.confirm.map(|c| c.0 == k).unwrap_or(false);
             let col = if confirming { if ((m.confirm.unwrap().1 / 0.06) as i64) % 2 == 0 { AMBER } else { INK } } else if on { INK } else { DIM_ITEM };
             let lab_w = text_w(label, isc);
-            ui.push((*key, Rect { x: x0, y: y - 3.0 * u, w: (lab_w + 16.0 * u).max(60.0 * u), h: pitch.max(14.0 * u) }));
+            // the entry's tap area stops short of its setting box (the box's arrows have their own)
+            let wide = if on && !matches!(it, Item::Options) { ix + lab_w + 8.0 * u - x0 } else { (lab_w + 16.0 * u).max(60.0 * u) };
+            ui.push((*key, Rect { x: x0, y: y - 3.0 * u, w: wide, h: pitch.max(14.0 * u) }));
             g.text(label, ix, y, isc, col, Some(rgba(0, 0, 0, 0.8)));
             if on {
-                let val = match it { Item::Drive => "TIME TRIAL".to_string(), Item::Stage => format!("{} {}", st.1, st.2), Item::Race => format!("5 RIVALS - {} LAPS", gm.ps.race_laps),
+                let val = match it { Item::Drive => if gm.ps.race_mode { format!("RACE - {} LAPS", gm.ps.race_laps) } else { "TIME TRIAL".to_string() }, Item::Stage => format!("{} {}", st.1, st.2),
                     Item::Online => match room { Some(c) => format!("ROOM {:06}", c), None => "HOST OR JOIN".into() }, Item::Garage => car.to_string(), Item::Options => String::new() };
-                if !val.is_empty() { value_box(g, ui, &val, ix + lab_w + 10.0 * u, y, isc, u, *it == Item::Stage); }
+                let arrows = match it { Item::Drive => Some(("m_mprev", "m_mnext")), Item::Stage => Some(("m_sprev", "m_snext")), _ => None };
+                if !val.is_empty() { value_box(g, ui, &val, ix + lab_w + 10.0 * u, y, isc, u, arrows); }
             }
         }
         if t > 0.18 && blink_on { g.text(">", x0 - back_in, js_round(m.cur_y), isc, AMBER, Some(rgba(0, 0, 0, 0.8))); }
@@ -228,13 +237,13 @@ pub fn draw(gm: &mut Game, g: &mut Canvas, ui: &mut Vec<(&'static str, Rect)>, l
             let col = if confirming { if ((m.confirm.unwrap().1 / 0.06) as i64) % 2 == 0 { AMBER } else { INK } } else if on { INK } else { DIM_ITEM };
             let label = if r < STAGES.len() { format!("{} {}", STAGES[r].1, STAGES[r].2) } else { "BACK".to_string() };
             let lab_w = text_w(&label, isc);
-            ui.push((SKEYS[r], Rect { x: x0, y: y - 2.0 * u, w: (lab_w + 16.0 * u).max(60.0 * u), h: pitch.max(12.0 * u) }));
+            ui.push((SKEYS[r], Rect { x: x0, y: y - 2.0 * u, w: if on { ix + lab_w + 8.0 * u - x0 } else { (lab_w + 16.0 * u).max(60.0 * u) }, h: pitch.max(12.0 * u) }));
             g.text(&label, ix, y, isc, col, Some(rgba(0, 0, 0, 0.8)));
-            if here { g.rect_c(ix - 4.0 * u, y + u, 2.0 * u, 5.0 * u, AMBER); }
+            if here && !on { g.rect_c(ix - 4.0 * u, y + u, 2.0 * u, 5.0 * u, AMBER); }   // the current stage (the cursor takes its place on its row)
             if on && r < STAGES.len() {
                 let rec = gm.ps.saves.get(&format!("fogwood-best-{}", STAGES[r].0)).and_then(|v| v.parse::<f64>().ok());
                 let val = match rec { Some(t) => format!("{} - {}", STAGES[r].3, fmt(Some(t))), None => STAGES[r].3.to_string() };
-                value_box(g, ui, &val, ix + lab_w + 10.0 * u, y, isc, u, false);
+                value_box(g, ui, &val, ix + lab_w + 10.0 * u, y, isc, u, None);
             }
         }
         if blink_on { g.text(">", x0, js_round(m.scur_y), isc, AMBER, Some(rgba(0, 0, 0, 0.8))); }
@@ -247,15 +256,16 @@ pub fn draw(gm: &mut Game, g: &mut Canvas, ui: &mut Vec<(&'static str, Rect)>, l
     }
 }
 
-/// the yellow-framed setting next to the selected entry (with arrows to step through stages)
-fn value_box(g: &mut Canvas, ui: &mut Vec<(&'static str, Rect)>, val: &str, x: f64, y: f64, isc: f64, u: f64, arrows: bool) {
-    let bx = js_round(x); let aw = if arrows { 10.0 * u } else { 0.0 };
+/// the yellow-framed setting next to the selected entry (with arrows to step through it: the stages, the mode)
+fn value_box(g: &mut Canvas, ui: &mut Vec<(&'static str, Rect)>, val: &str, x: f64, y: f64, isc: f64, u: f64, keys: Option<(&'static str, &'static str)>) {
+    let arrows = keys.is_some(); let bx = js_round(x); let aw = if arrows { 10.0 * u } else { 0.0 };
     let bw = text_w(val, u) + 8.0 * u + 2.0 * aw; let bh = 11.0 * u; let by = js_round(y + 7.0 * isc / 2.0 - bh / 2.0);
     g.rect_c(bx + u, by + u, bw, bh, rgba(0, 0, 0, 0.5)); g.panel(bx, by, bw, bh, u, rgba(0, 0, 0, 0.55), Some(AMBER));
     g.text(val, bx + 4.0 * u + aw, by + 2.0 * u, u, AMBER, None);
     if arrows { g.arrow(bx + 5.0 * u, by + bh / 2.0, -1.0, 3.0 * u, u, AMBER); g.arrow(bx + bw - 5.0 * u, by + bh / 2.0, 1.0, 3.0 * u, u, AMBER);
-        ui.push(("m_sprev", Rect { x: bx - 4.0 * u, y: by - 4.0 * u, w: aw + 6.0 * u, h: bh + 8.0 * u }));
-        ui.push(("m_snext", Rect { x: bx + bw - aw - 2.0 * u, y: by - 4.0 * u, w: aw + 6.0 * u, h: bh + 8.0 * u })); }
+        let (kp, kn) = keys.unwrap_or(("m_sprev", "m_snext"));
+        ui.push((kp, Rect { x: bx - 2.0 * u, y: by - 4.0 * u, w: aw + 4.0 * u, h: bh + 8.0 * u }));
+        ui.push((kn, Rect { x: bx + bw - aw - 2.0 * u, y: by - 4.0 * u, w: aw + 6.0 * u, h: bh + 8.0 * u })); }
 }
 
 /// wipe overlays outside the menu itself: the second half of a stage-start wipe while driving, and a fresh stage's reveal
