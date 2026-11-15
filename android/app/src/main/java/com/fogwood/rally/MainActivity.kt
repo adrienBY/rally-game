@@ -25,6 +25,7 @@ import android.view.SurfaceHolder
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.JavascriptInterface
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
@@ -49,6 +50,14 @@ import javax.microedition.khronos.opengles.GL10
  */
 class MainActivity : Activity() {
     private lateinit var web: WebView
+    private lateinit var root: FrameLayout
+    private lateinit var assetLoader: WebViewAssetLoader
+    /** the stage the page was last asked to build (to rebuild it if the page's process dies) */
+    private var curMap = "forest"
+    /** a stage build is under way (cleared by its runtime handoff) */
+    @Volatile private var building = false
+    /** the page's process died while idle: a fresh WebView loads the page when a stage is next wanted */
+    private var webFresh = false
     private lateinit var haptics: Haptics
     private var glView: GLSurfaceView? = null
     private val main = Handler(Looper.getMainLooper())
@@ -105,14 +114,14 @@ class MainActivity : Activity() {
             val resend = NativeCore.glInit()
             Log.i(TAG, "GL ready: ${NativeCore.glStatus()}")
             checkFailure()
-            if (resend) main.post { web.resumeTimers(); web.evaluateJavascript("window.__nglResend && window.__nglResend()") { if (rtMode) web.pauseTimers() } }
+            if (resend) main.post { if (webFresh) { webFresh = false; building = true; loadRtPage(curMap) } else { web.resumeTimers(); web.evaluateJavascript("window.__nglResend && window.__nglResend()") { if (rtMode) web.pauseTimers() } } }
         }
         override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) = NativeCore.glResize(width, height)
         override fun onDrawFrame(gl: GL10?) {
             if (rtMode) {
                 val v = vsyncNs; val dt = if (lastNs == 0L || v <= lastNs) 16_666_667L else v - lastNs; if (v > lastNs) lastNs = v
                 val ev = NativeCore.rtFrame(dt)
-                if (ev.isNotEmpty()) handleEvents(ev)
+                if (ev.isNotEmpty()) try { handleEvents(ev) } catch (e: Throwable) { Log.e(TAG, "events", e) }
             } else NativeCore.glDraw()
             frames++
             if (frames < 240 || frames % 600 == 0) checkFailure()
@@ -137,9 +146,38 @@ class MainActivity : Activity() {
             if (line == "fps 30") vsync.gap = 29_000_000L else if (line == "fps 60") vsync.gap = 12_500_000L
             else if (line.startsWith("h ")) { val p = line.split(' '); if (p.size == 3) haptics.play(p[1], p[2].toFloatOrNull() ?: 0.5f) }
             else if (line.startsWith("bench ")) { val path = line.substring(6); main.post { exportBench(path) } }
+            else if (line.startsWith("crash ")) { val path = line.substring(6); main.post { exportCrash(path) } }
             else if (line.startsWith("map ")) { val name = line.substring(4).filter { it.isLetter() }
-                main.post { main.removeCallbacks(sleepPage); web.resumeTimers(); web.evaluateJavascript("window.__rtBoot && window.__rtBoot('$name')", null) } }
+                main.post { main.removeCallbacks(sleepPage); curMap = name; building = true
+                    if (webFresh) { webFresh = false; loadRtPage(name) }
+                    else { web.resumeTimers(); web.evaluateJavascript("window.__rtBoot && window.__rtBoot('$name')", null) } } }
         }
+    }
+
+    private var crashShown = false
+    /** the game caught an error and carried on: keep its note in Downloads/Fogwood (once per run) so it can be sent along */
+    private fun exportCrash(path: String) {
+        if (crashShown) return; crashShown = true
+        val f = java.io.File(path); if (!f.exists()) return
+        try {
+            if (Build.VERSION.SDK_INT >= 29) {
+                val v = ContentValues().apply { put(MediaStore.Downloads.DISPLAY_NAME, "fogwood-crash-${System.currentTimeMillis() / 1000}.txt"); put(MediaStore.Downloads.MIME_TYPE, "text/plain"); put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Fogwood") }
+                val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v) ?: return
+                contentResolver.openOutputStream(uri)?.use { it.write(f.readBytes()) }
+            }
+        } catch (e: Throwable) { Log.e(TAG, "crash note export", e) }
+    }
+    private fun loadRtPage(map: String) { web.resumeTimers(); web.loadUrl("https://appassets.androidplatform.net/assets/index.html?rt=1#$map") }
+
+    /** The hidden page's process died (low memory, or the system reclaimed it): without this the whole app would be killed.
+     *  Swap in a fresh WebView; reload the page now if a stage was being built, else when one is next wanted. */
+    private fun pageGone() {
+        val old = web
+        try { root.removeView(old); old.destroy() } catch (_: Throwable) {}
+        web = makeWeb(rtMode); root.addView(web, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        if (!rtMode) { web.loadUrl("https://appassets.androidplatform.net/assets/index.html"); return }
+        web.visibility = View.INVISIBLE
+        if (building) loadRtPage(curMap) else webFresh = true
     }
 
     /** temporary benchmark: copy the log the game wrote into Downloads/Fogwood so it can be shared */
@@ -179,7 +217,7 @@ class MainActivity : Activity() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         haptics = Haptics(this)
 
-        val loader = WebViewAssetLoader.Builder()
+        assetLoader = WebViewAssetLoader.Builder()
             .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
             .addPathHandler("/native/") { path ->
                 if (path == "grids.bin") {
@@ -189,7 +227,7 @@ class MainActivity : Activity() {
             }
             .build()
 
-        val root = FrameLayout(this)
+        root = FrameLayout(this)
         root.setBackgroundColor(Color.rgb(11, 16, 11))
 
         // native renderer only when the Rust library loaded and this WebView can post binary messages
@@ -234,7 +272,24 @@ class MainActivity : Activity() {
                 NativeCore.rtInsets(c.top.toFloat(), c.right.toFloat(), c.bottom.toFloat(), c.left.toFloat()); ViewCompat.onApplyWindowInsets(v, ins) }
         }
 
-        web = WebView(this).apply {
+        web = makeWeb(nativeGl)
+        if (NativeCore.loaded) audio.start()
+        root.addView(web, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        if (rtMode) web.visibility = View.INVISIBLE   // builds stages only; never drawn, never touched
+        setContentView(root)
+        hideBars()
+        pickMode(60f)?.let { applyMode(it.modeId); Log.i(TAG, "display ${it.refreshRate} Hz") }
+        curMap = startMap
+        if (rtMode) { building = true; web.loadUrl("https://appassets.androidplatform.net/assets/index.html?rt=1#$startMap") }
+        else if (savedInstanceState == null) web.loadUrl("https://appassets.androidplatform.net/assets/index.html")
+        else web.restoreState(savedInstanceState)
+        startLoop()
+    }
+
+    /** the page: in runtime mode a hidden stage builder posting scenes over FogwoodGL and sound over FogwoodAudio */
+    @SuppressLint("SetJavaScriptEnabled", "RequiresFeature")
+    private fun makeWeb(nativeGl: Boolean): WebView {
+        val web = WebView(this).apply {
             setBackgroundColor(if (nativeGl) Color.TRANSPARENT else Color.rgb(11, 16, 11))
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
@@ -249,8 +304,13 @@ class MainActivity : Activity() {
             setOnLongClickListener { true }
             isHapticFeedbackEnabled = false
             webViewClient = object : WebViewClient() {
+                override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                    Log.e(TAG, "page process gone (crashed: ${detail.didCrash()})")
+                    if (view === this@MainActivity.web) main.post { pageGone() }
+                    return true
+                }
                 override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
-                    loader.shouldInterceptRequest(request.url)
+                    assetLoader.shouldInterceptRequest(request.url)
             }
             if (NativeCore.loaded) addJavascriptInterface(Bridge(), "FogwoodNative")
         }
@@ -262,7 +322,7 @@ class MainActivity : Activity() {
                     NativeCore.glMessage(b)
                     if (!rtMode) glView?.requestRender()
                     // the stage handoff is the page's last word: let it sleep until the next stage is wanted
-                    else if (b.size >= 4 && b[0] == 'F'.code.toByte() && b[1] == 'R'.code.toByte() && b[2] == 'T'.code.toByte()) { main.removeCallbacks(sleepPage); main.postDelayed(sleepPage, 8000) }
+                    else if (b.size >= 4 && b[0] == 'F'.code.toByte() && b[1] == 'R'.code.toByte() && b[2] == 'T'.code.toByte()) { building = false; main.removeCallbacks(sleepPage); main.postDelayed(sleepPage, 8000) }
                 }
             }
         }
@@ -271,17 +331,8 @@ class MainActivity : Activity() {
             WebViewCompat.addWebMessageListener(web, "FogwoodAudio", setOf("https://appassets.androidplatform.net")) { _, message, _, _, _ ->
                 if (message.type == WebMessageCompat.TYPE_ARRAY_BUFFER) NativeCore.audioMessage(message.arrayBuffer)
             }
-            audio.start()
         }
-        root.addView(web, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        if (rtMode) web.visibility = View.INVISIBLE   // builds stages only; never drawn, never touched
-        setContentView(root)
-        hideBars()
-        pickMode(60f)?.let { applyMode(it.modeId); Log.i(TAG, "display ${it.refreshRate} Hz") }
-        if (rtMode) web.loadUrl("https://appassets.androidplatform.net/assets/index.html?rt=1#$startMap")
-        else if (savedInstanceState == null) web.loadUrl("https://appassets.androidplatform.net/assets/index.html")
-        else web.restoreState(savedInstanceState)
-        startLoop()
+        return web
     }
 
     private fun hideBars() {

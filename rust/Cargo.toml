@@ -23,3 +23,12 @@ strip = true
 [features]
 # compiles the JNI layer on a desktop host too (used by CI to type-check it)
 jni-host = []
+
+# release speed with overflow and debug checks on: for soak tests that hunt panics (cargo build --profile stress)
+[profile.stress]
+inherits = "release"
+overflow-checks = true
+debug-assertions = true
+lto = false
+codegen-units = 16
+strip = false

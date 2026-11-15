@@ -9,7 +9,7 @@ import android.util.Log
 /** Streams the Rust sound engine to the speakers: a low-latency float AudioTrack fed from its own thread. */
 class AudioOut {
     @Volatile private var running = false
-    private var thread: Thread? = null
+    @Volatile private var thread: Thread? = null
     private var track: AudioTrack? = null
     val sampleRate: Int = try { AudioTrack.getNativeOutputSampleRate(AudioManager.STREAM_MUSIC).coerceIn(22050, 96000) } catch (_: Throwable) { 48000 }
 
@@ -27,19 +27,26 @@ class AudioOut {
                 .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
                 .build()
             track = t; t.play(); running = true
-            thread = Thread({
+            val th = Thread({
                 android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO)
                 val buf = FloatArray(frames * 2)
-                while (running) { NativeCore.audioRender(buf, frames); t.write(buf, 0, buf.size, AudioTrack.WRITE_BLOCKING) }
-            }, "fogwood-audio").also { it.start() }
+                // a track torn down under it (stop() timing out, an audio route change) ends the loop instead of the app
+                val me = Thread.currentThread()
+                try { while (running && thread === me) { NativeCore.audioRender(buf, frames); if (t.write(buf, 0, buf.size, AudioTrack.WRITE_BLOCKING) < 0) break } }
+                catch (e: Throwable) { Log.w("Fogwood", "audio loop ended", e) }
+                finally { if (thread !== me) try { t.release() } catch (_: Throwable) {} }
+            }, "fogwood-audio")
+            thread = th; th.start()
         } catch (e: Throwable) { Log.w("Fogwood", "audio out failed", e); running = false }
     }
 
     fun stop() {
         running = false
-        try { thread?.join(300) } catch (_: Throwable) {}
-        thread = null
-        try { track?.pause(); track?.flush(); track?.release() } catch (_: Throwable) {}
+        // pausing wakes a write that is blocked on the track; the thread then ends (and releases the track if it outlives the wait)
+        try { track?.pause() } catch (_: Throwable) {}
+        val th = thread; thread = null
+        try { th?.join(500) } catch (_: Throwable) {}
+        if (th == null || !th.isAlive) try { track?.flush(); track?.release() } catch (_: Throwable) {}
         track = null
     }
 }

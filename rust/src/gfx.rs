@@ -15,6 +15,10 @@ thread_local! {
     static B: RefCell<Option<Bench>> = const { RefCell::new(None) };
     static R: RefCell<Option<Renderer>> = const { RefCell::new(None) };
     static G: RefCell<(Option<Game>, Option<Persist>)> = const { RefCell::new((None, None)) };
+    /// the stage's runtime handoff, kept to rebuild the game after repeated panics
+    static LAST_RT: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
+    /// frames in a row that panicked
+    static BAD: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 fn inbox() -> std::sync::MutexGuard<'static, Inbox> { INBOX.lock().unwrap_or_else(|e| e.into_inner()) }
 
@@ -116,6 +120,31 @@ impl Bench {
 
 /// One frame in runtime mode: take in new stages and input, run the game, draw. Returns events for the app, one per line
 /// ("h <kind> <strength>" haptics, "map <name>" build that stage).
+/// one frame that can't take the app down: a panic skips the frame; several in a row rebuild the game from the
+/// stage handoff (back to the menu, settings and records kept); the app is told where the crash note is
+pub fn rt_frame_guarded(dt: f64) -> String {
+    if let Some(e) = crate::guard::run_noted("rtFrame", || rt_frame(dt)) { BAD.with(|b| b.set(0)); return e; }
+    let bad = BAD.with(|b| { b.set(b.get() + 1); b.get() });
+    let mut ev = String::new();
+    if bad == 1 { if let Some(p) = crate::guard::note_path() { ev = format!("crash {p}\n"); } }
+    if bad >= 3 {
+        BAD.with(|b| b.set(0));
+        let ok = crate::guard::run_noted("recover", || {
+            let (size, insets, save_path) = { let ib = inbox(); (ib.size, ib.insets, ib.save_path.clone()) };
+            R.with(|c| { let mut b = c.borrow_mut(); let Some(r) = b.as_mut() else { return };
+                G.with(|gc| { let mut gs = gc.borrow_mut(); let (game, persist) = &mut *gs;
+                    let ps = match game.take() { Some(g) => g.into_persist(), None => persist.take().unwrap_or_else(|| Persist::new(&save_path)) };
+                    let rt = LAST_RT.with(|l| l.borrow().as_ref().and_then(|b| crate::game::rt::parse(b).ok()));
+                    match rt { Some(rt) => { let mut g = Game::new(rt, ps); g.resize(size.0 as f64, size.1 as f64, [insets[0] as f64, insets[1] as f64, insets[2] as f64, insets[3] as f64]); g.attach(r); *game = Some(g); }
+                        None => *persist = Some(ps) }
+                });
+            });
+        });
+        if ok.is_none() { G.with(|gc| { if let Ok(mut gs) = gc.try_borrow_mut() { let save_path = inbox().save_path.clone(); *gs = (None, Some(Persist::new(&save_path))); } }); }
+    }
+    ev
+}
+
 pub fn rt_frame(dt: f64) -> String {
     let t_frame = std::time::Instant::now();
     let (scene, rtp, size, touches, back, insets, save_path, thermal, device) = { let mut ib = inbox();
@@ -128,6 +157,7 @@ pub fn rt_frame(dt: f64) -> String {
             let had_scene = scene.is_some();
             if let Some(s) = scene { match unsafe { r.load_scene(&s) } { Ok(()) => set_status("scene loaded".into()), Err(e) => set_status(format!("scene failed: {e}")) } }
             if let Some(p) = rtp {
+                LAST_RT.with(|l| *l.borrow_mut() = Some(p.clone()));
                 match crate::game::rt::parse(&p) {
                     Ok(rt) => { let ps = match game.take() { Some(g) => g.into_persist(), None => persist.take().unwrap_or_else(|| Persist::new(&save_path)) };
                         let mut g = Game::new(rt, ps); g.resize(size.0 as f64, size.1 as f64, [insets[0] as f64, insets[1] as f64, insets[2] as f64, insets[3] as f64]); g.attach(r);
@@ -143,7 +173,7 @@ pub fn rt_frame(dt: f64) -> String {
                 let t_tick = std::time::Instant::now();
                 g.tick(r, dt.clamp(0.0, 0.05));
                 let tick_ms = t_tick.elapsed().as_secs_f32() * 1000.0;
-                DRIVING.store(g.state == crate::game::State::Drive, Ordering::Relaxed);
+                DRIVING.store(g.wants_back(), Ordering::Relaxed);
                 // benchmark on / off (the REC button), at most a minute
                 let toggle = std::mem::replace(&mut g.bench_req, false) || bench_tap;
                 B.with(|bc| { let mut b = bc.borrow_mut();

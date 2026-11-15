@@ -36,7 +36,7 @@ pub fn stun_parse(b: &[u8], tid: &[u8; 12]) -> Option<SocketAddrV4> {
 /// Blocks up to ~2.5 s; run it off the game thread with a cloned socket.
 pub fn stun_query(sock: &UdpSocket) -> Option<SocketAddrV4> {
     let mut tid = [0u8; 12]; let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(1);
-    for (k, b) in tid.iter_mut().enumerate() { *b = ((seed >> (k * 5)) as u8) ^ (k as u8 * 37); }
+    for (k, b) in tid.iter_mut().enumerate() { *b = ((seed >> (k * 5)) as u8) ^ (k as u8).wrapping_mul(37); }
     let req = stun_request(&tid); let addrs: Vec<SocketAddr> = STUN_SERVERS.iter().filter_map(|h| h.to_socket_addrs().ok()?.find(|a| a.is_ipv4())).collect();
     if addrs.is_empty() { return None; }
     let mut buf = [0u8; 576];

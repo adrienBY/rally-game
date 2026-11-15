@@ -21,8 +21,8 @@ struct Material {
     sky: Option<([f32; 3], [f32; 3], [f32; 3], [f32; 3], f32)>, dust: Option<(f32, [f32; 3], [f32; 3])>,
 }
 struct Texture { tex: glow::Texture, m: [f32; 9] }
-struct Attr { name: String, size: i32, buf: glow::Buffer }
-struct Geometry { attrs: Vec<Attr>, index: Option<glow::Buffer>, count: i32, dr: (i32, i32), bs: [f32; 4] }
+struct Attr { name: String, size: i32, buf: glow::Buffer, /** vertices in the buffer */ n: i32 }
+struct Geometry { attrs: Vec<Attr>, index: Option<glow::Buffer>, count: i32, dr: (i32, i32), bs: [f32; 4], /** largest index + 1 (0: not indexed) */ imax: i32 }
 #[derive(PartialEq)]
 enum ObjKind { Mesh, Inst, Points }
 struct Object {
@@ -34,6 +34,9 @@ struct Object {
     lods: Vec<(glow::Buffer, i32)>, lod: usize,
     /// its own position / normal buffers once the game reshapes it (a dented car body), so meshes sharing the geometry keep theirs
     own: Option<(glow::Buffer, Option<glow::Buffer>)>,
+    /// instances in the matrix / colour buffers and vertices in the own buffers: draws never read past them (a GPU read
+    /// out of bounds can take the whole app down on some drivers)
+    icap: i32, ccap: i32, own_n: i32,
     /// a texture drawn instead of its material's (a livery picked in the garage)
     map: Option<i32>,
 }
@@ -109,6 +112,16 @@ unsafe fn compile(gl: &Gl, vs: &str, fs: &str) -> Result<Program, String> {
 
 fn f(v: &Value) -> f32 { v.as_f64().unwrap_or(0.0) as f32 }
 fn v3(v: &Value) -> [f32; 3] { [f(&v[0]), f(&v[1]), f(&v[2])] }
+/// vertices an object can safely draw: the shortest attribute buffer it reads (its own reshaped buffers in place of the geometry's)
+fn vlim(o: &Object, g: &Geometry) -> i32 {
+    let mut n = i32::MAX;
+    for a in &g.attrs {
+        let own = match (a.name.as_str(), o.own) { ("position", Some(_)) => Some(o.own_n), ("normal", Some((_, Some(_)))) => Some(o.own_n), _ => None };
+        if !matches!(a.name.as_str(), "position" | "normal" | "uv" | "color" | "aA" | "aS") { continue; }
+        n = n.min(own.unwrap_or(a.n));
+    }
+    if n == i32::MAX { 0 } else { n }
+}
 fn bytes_of(v: &Value, blob: &[u8]) -> &'static [u8] {
     let off = v[0].as_u64().unwrap_or(0) as usize; let len = v[1].as_u64().unwrap_or(0) as usize;
     let s = &blob[off.min(blob.len())..(off + len).min(blob.len())];
@@ -143,22 +156,23 @@ impl Renderer {
     /// instance matrices (count instances; the buffer keeps the size it was created with)
     pub fn set_instances(&mut self, id: usize, count: i32, mats: &[f32]) {
         let gl = &self.gl; let Some(o) = self.scene.as_mut().and_then(|s| s.objs.get_mut(id)) else { return };
-        o.count = count;
         // fresh storage each time (orphaning), so the driver never waits for the GPU to finish with last frame's matrices
-        if let Some(b) = o.ibuf { if !mats.is_empty() { unsafe { gl.bind_buffer(glow::ARRAY_BUFFER, Some(b)); gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, f32_bytes(mats), glow::STREAM_DRAW); } } }
+        if let Some(b) = o.ibuf { if !mats.is_empty() { unsafe { gl.bind_buffer(glow::ARRAY_BUFFER, Some(b)); gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, f32_bytes(mats), glow::STREAM_DRAW); } o.icap = (mats.len() / 16) as i32; } }
+        o.count = count.clamp(0, o.icap);
     }
     /// per-instance colours (rgb), resized to fit
     pub fn set_instance_colors(&mut self, id: usize, cols: &[f32]) {
         let gl = &self.gl; let Some(o) = self.scene.as_mut().and_then(|s| s.objs.get_mut(id)) else { return };
-        if let Some(b) = o.cbuf { if !cols.is_empty() { unsafe { gl.bind_buffer(glow::ARRAY_BUFFER, Some(b)); gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, f32_bytes(cols), glow::DYNAMIC_DRAW); } } }
+        if let Some(b) = o.cbuf { if !cols.is_empty() { unsafe { gl.bind_buffer(glow::ARRAY_BUFFER, Some(b)); gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, f32_bytes(cols), glow::DYNAMIC_DRAW); } o.ccap = (cols.len() / 3) as i32; } }
     }
     /// replace a vertex attribute of the geometry an object draws (dust, falling snow)
     pub fn set_attr(&mut self, id: usize, name: &str, data: &[f32]) {
         let gl = &self.gl; let Some(s) = self.scene.as_mut() else { return }; let Some(o) = s.objs.get(id) else { return };
         let (gi, pts) = (o.geo, o.kind == ObjKind::Points);
-        if let Some(a) = s.geos[gi].attrs.iter().find(|a| a.name == name) { unsafe { gl.bind_buffer(glow::ARRAY_BUFFER, Some(a.buf)); gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, f32_bytes(data), glow::DYNAMIC_DRAW); }
+        let Some(geo) = s.geos.get_mut(gi) else { return };
+        if let Some(a) = geo.attrs.iter_mut().find(|a| a.name == name) { unsafe { gl.bind_buffer(glow::ARRAY_BUFFER, Some(a.buf)); gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, f32_bytes(data), glow::DYNAMIC_DRAW); } a.n = data.len() as i32 / 4 / a.size;
             // a particle buffer the game sized itself: draw all of it
-            if pts && name == "position" { s.geos[gi].count = (data.len() / 3) as i32; } }
+            if pts && name == "position" { geo.count = (data.len() / 3) as i32; } }
     }
     /// the texture an object's material draws with (-1: none)
     pub fn obj_map(&self, id: usize) -> i32 { self.scene.as_ref().and_then(|s| s.objs.get(id).map(|o| s.mats[o.mat].map)).unwrap_or(-1) }
@@ -175,9 +189,9 @@ impl Renderer {
                 gl.bind_vertex_array(Some(o.vao));
                 gl.bind_buffer(glow::ARRAY_BUFFER, Some(pb)); gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, f32_bytes(pos), glow::DYNAMIC_DRAW); gl.vertex_attrib_pointer_f32(0, 3, glow::FLOAT, false, 0, 0);
                 if let (Some(nb), Some(n)) = (nb, nrm) { gl.bind_buffer(glow::ARRAY_BUFFER, Some(nb)); gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, f32_bytes(n), glow::DYNAMIC_DRAW); gl.vertex_attrib_pointer_f32(1, 3, glow::FLOAT, false, 0, 0); }
-                gl.bind_vertex_array(None); o.own = Some((pb, nb)); return;
+                gl.bind_vertex_array(None); o.own = Some((pb, nb)); o.own_n = (pos.len() / 3) as i32; return;
             }
-            let (pb, nb) = o.own.unwrap();
+            let Some((pb, nb)) = o.own else { return }; o.own_n = (pos.len() / 3) as i32;
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(pb)); gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, f32_bytes(pos), glow::DYNAMIC_DRAW);
             if let (Some(nb), Some(n)) = (nb, nrm) { gl.bind_buffer(glow::ARRAY_BUFFER, Some(nb)); gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, f32_bytes(n), glow::DYNAMIC_DRAW); }
         }
@@ -198,8 +212,9 @@ impl Renderer {
     }
     /// coarse versions of a tw x th vertex grid tile (same winding as the page builds it): every 2nd and every 4th grid line, edges kept
     pub fn add_grid_lods(&mut self, id: usize, tw: usize, th: usize) {
-        let gl = &self.gl; let Some(o) = self.scene.as_mut().and_then(|s| s.objs.get_mut(id)) else { return };
-        if !o.lods.is_empty() || tw < 3 || th < 3 { return; }
+        let gl = &self.gl; let Some(s) = self.scene.as_mut() else { return }; let Some(o) = s.objs.get_mut(id) else { return };
+        // a grid that doesn't match the tile's vertices would index past them
+        if !o.lods.is_empty() || tw < 3 || th < 3 || s.geos.get(o.geo).map(|g| (tw * th) as i64 > vlim(o, g) as i64).unwrap_or(true) { return; }
         for step in [2usize, 4] {
             let lines = |n: usize| { let mut v: Vec<usize> = (0..n).step_by(step).collect(); if *v.last().unwrap() != n - 1 { v.push(n - 1); } v };
             let (xs, ys) = (lines(tw), lines(th)); let mut idx: Vec<u32> = Vec::with_capacity(xs.len() * ys.len() * 6);
@@ -285,13 +300,16 @@ impl Renderer {
             for a in g["attrs"].as_array().cloned().unwrap_or_default() {
                 let b = gl.create_buffer()?; gl.bind_buffer(glow::ARRAY_BUFFER, Some(b));
                 let dynamic = matches!(a["name"].as_str(), Some("aA") | Some("aS")) ;
-                gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes_of(&a["data"], blob), if dynamic { glow::DYNAMIC_DRAW } else { glow::STATIC_DRAW });
-                attrs.push(Attr { name: a["name"].as_str().unwrap_or("").to_string(), size: a["size"].as_i64().unwrap_or(3) as i32, buf: b });
+                let data = bytes_of(&a["data"], blob); let size = (a["size"].as_i64().unwrap_or(3) as i32).max(1);
+                gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, data, if dynamic { glow::DYNAMIC_DRAW } else { glow::STATIC_DRAW });
+                attrs.push(Attr { name: a["name"].as_str().unwrap_or("").to_string(), size, buf: b, n: (data.len() / 4) as i32 / size });
             }
+            let mut imax = 0i32;
             let index = if g["index"].is_array() { let b = gl.create_buffer()?; gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(b));
-                gl.buffer_data_u8_slice(glow::ELEMENT_ARRAY_BUFFER, bytes_of(&g["index"], blob), glow::STATIC_DRAW); Some(b) } else { None };
+                let ib = bytes_of(&g["index"], blob); imax = ib.chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).max().map(|m| m.min(i32::MAX as u32 - 1) as i32 + 1).unwrap_or(0);
+                gl.buffer_data_u8_slice(glow::ELEMENT_ARRAY_BUFFER, ib, glow::STATIC_DRAW); Some(b) } else { None };
             let bs = g["bs"].as_array().map(|a| [f(&a[0]), f(&a[1]), f(&a[2]), f(&a[3])]).unwrap_or([0.0, 0.0, 0.0, 1e9]);
-            geos.push(Geometry { attrs, index, count: g["count"].as_i64().unwrap_or(0) as i32, dr: (g["dr"][0].as_i64().unwrap_or(0) as i32, g["dr"][1].as_i64().unwrap_or(-1) as i32), bs });
+            geos.push(Geometry { attrs, index, count: g["count"].as_i64().unwrap_or(0) as i32, dr: (g["dr"][0].as_i64().unwrap_or(0) as i32, g["dr"][1].as_i64().unwrap_or(-1) as i32), bs, imax });
         }
         let mut mats = vec![];
         for m in head["mats"].as_array().cloned().unwrap_or_default() {
@@ -307,7 +325,8 @@ impl Renderer {
         let mut objs = vec![]; let mut car_rest = HashMap::new();
         for o in head["objs"].as_array().cloned().unwrap_or_default() {
             let kind = match o["type"].as_str().unwrap_or("mesh") { "inst" => ObjKind::Inst, "points" => ObjKind::Points, _ => ObjKind::Mesh };
-            let gi = o["g"].as_u64().unwrap_or(0) as usize; let geo = &geos[gi.min(geos.len() - 1)];
+            if geos.is_empty() { break; }
+            let gi = (o["g"].as_u64().unwrap_or(0) as usize).min(geos.len() - 1); let geo = &geos[gi];
             if kind == ObjKind::Mesh && o["car"].as_i64() == Some(1) {
                 let ga = &head["geos"][gi]["attrs"]; let pick = |n: &str| ga.as_array().and_then(|l| l.iter().find(|a| a["name"].as_str() == Some(n))).map(|a| as_f32(bytes_of(&a["data"], blob)));
                 if let Some(pos) = pick("position") { car_rest.insert(objs.len(), (pos, pick("normal").unwrap_or_default())); } }
@@ -318,22 +337,25 @@ impl Renderer {
                 gl.bind_buffer(glow::ARRAY_BUFFER, Some(a.buf)); gl.enable_vertex_attrib_array(loc); gl.vertex_attrib_pointer_f32(loc, a.size, glow::FLOAT, false, 0, 0);
             }
             if let Some(ib) = geo.index { gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(ib)); }
-            let (mut ibuf, mut cbuf) = (None, None);
+            let (mut ibuf, mut cbuf, mut icap, mut ccap) = (None, None, 0i32, 0i32);
             if kind == ObjKind::Inst {
                 let b = gl.create_buffer()?; gl.bind_buffer(glow::ARRAY_BUFFER, Some(b));
-                gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes_of(&o["im"], blob), glow::DYNAMIC_DRAW);
+                let im = bytes_of(&o["im"], blob); icap = (im.len() / 64) as i32;
+                gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, im, glow::DYNAMIC_DRAW);
                 for c in 0..4 { gl.enable_vertex_attrib_array(4 + c); gl.vertex_attrib_pointer_f32(4 + c, 4, glow::FLOAT, false, 64, (c * 16) as i32); gl.vertex_attrib_divisor(4 + c, 1); }
                 ibuf = Some(b);
                 if o["ic"].is_array() { let b = gl.create_buffer()?; gl.bind_buffer(glow::ARRAY_BUFFER, Some(b));
-                    gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes_of(&o["ic"], blob), glow::DYNAMIC_DRAW);
+                    let ic = bytes_of(&o["ic"], blob); ccap = (ic.len() / 12) as i32;
+                    gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, ic, glow::DYNAMIC_DRAW);
                     gl.enable_vertex_attrib_array(8); gl.vertex_attrib_pointer_f32(8, 3, glow::FLOAT, false, 12, 0); gl.vertex_attrib_divisor(8, 1); cbuf = Some(b); }
             }
             gl.bind_vertex_array(None);
-            let mi = o["m"].as_u64().unwrap_or(0) as usize;
+            if mats.is_empty() { break; }
+            let mi = (o["m"].as_u64().unwrap_or(0) as usize).min(mats.len() - 1);
             let has = |n: &str| geo.attrs.iter().any(|a| a.name == n);
             let (no_normal, no_uv, no_color) = (!has("normal"), !has("uv"), !has("color"));
             objs.push(Object { map: None, own: None, lods: Vec::new(), lod: 0, prog: usize::MAX, no_normal, no_uv, no_color, kind, geo: gi, mat: mi, mw, ro: o["ro"].as_i64().unwrap_or(0) as i32, cull: o["cull"].as_i64() == Some(1), vis: o["vis"].as_i64() != Some(0), car: o["car"].as_i64() == Some(1),
-                opacity: mats.get(mi).map(|m| m.opacity).unwrap_or(1.0), count: o["count"].as_i64().unwrap_or(1) as i32, ibuf, cbuf,
+                opacity: mats.get(mi).map(|m| m.opacity).unwrap_or(1.0), count: o["count"].as_i64().unwrap_or(1) as i32, ibuf, cbuf, icap, ccap, own_n: 0,
                 ibs: o["ibs"].as_array().map(|a| [f(&a[0]), f(&a[1]), f(&a[2]), f(&a[3])]), vao,
                 dr: o["dr"].as_array().map(|a| (a[0].as_i64().unwrap_or(0) as i32, a[1].as_i64().unwrap_or(0) as i32)) });
         }
@@ -380,11 +402,11 @@ impl Renderer {
             if p + 4 > v.len() { return Err("short buf".into()); }
             let kind = v[p] as i32;
             if kind == 1 { let (gid, k, len) = (v[p + 1] as usize, v[p + 2] as usize, v[p + 3] as usize); p += 4; if p + len > v.len() { return Err("short attr".into()); }
-                if let Some(a) = s.geos.get(gid).and_then(|g| g.attrs.get(k)) { gl.bind_buffer(glow::ARRAY_BUFFER, Some(a.buf)); gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, f32_bytes(&v[p..p + len]), glow::DYNAMIC_DRAW); }
+                if let Some(a) = s.geos.get_mut(gid).and_then(|g| g.attrs.get_mut(k)) { gl.bind_buffer(glow::ARRAY_BUFFER, Some(a.buf)); gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, f32_bytes(&v[p..p + len]), glow::DYNAMIC_DRAW); a.n = len as i32 / a.size; }
                 p += len;
             } else if kind == 2 { let (id, cnt, len) = (v[p + 1] as usize, v[p + 2] as i32, v[p + 3] as usize); p += 4; if p + len >= v.len() { return Err("short inst".into()); }
                 let mats = &v[p..p + len]; p += len; let lc = v[p] as usize; p += 1; let cols = &v[p..(p + lc).min(v.len())]; p += lc;
-                if let Some(o) = s.objs.get_mut(id) { o.count = cnt;
+                if let Some(o) = s.objs.get_mut(id) { o.count = cnt.clamp(0, o.icap);
                     if let Some(b) = o.ibuf { if len > 0 { gl.bind_buffer(glow::ARRAY_BUFFER, Some(b)); gl.buffer_sub_data_u8_slice(glow::ARRAY_BUFFER, 0, f32_bytes(mats)); } }
                     if let Some(b) = o.cbuf { if lc > 0 { gl.bind_buffer(glow::ARRAY_BUFFER, Some(b)); gl.buffer_sub_data_u8_slice(glow::ARRAY_BUFFER, 0, f32_bytes(cols)); } } }
             } else { return Err(format!("buf kind {kind}")); }
@@ -465,7 +487,7 @@ impl Renderer {
             gl.uniform_matrix_4_f32_slice(p.u(U!("uModel")), false, &o.mw); gl.uniform_1_f32(p.u(U!("uDens")), dens);
             gl.uniform_3_f32_slice(p.u(U!("uFog")), &fog); gl.uniform_3_f32_slice(p.u(U!("uCol")), &col);
             gl.bind_vertex_array(Some(o.vao)); if o.no_color { gl.vertex_attrib_4_f32(3, 0.0, 0.0, 0.0, 1.0); }
-            gl.draw_arrays(glow::POINTS, 0, g.count); }
+            gl.draw_arrays(glow::POINTS, 0, g.count.min(vlim(o, g))); }
         gl.bind_vertex_array(None); gl.depth_mask(true); gl.disable(glow::DEPTH_TEST); gl.disable(glow::BLEND);
         gl.vertex_attrib_4_f32(3, 1.0, 1.0, 1.0, 1.0);
         // 2. blur at half resolution: H then V, twice (the puffs are small enough that the curls survive it)
@@ -602,11 +624,16 @@ impl Renderer {
             if o.no_uv && st_const[1] != Some(true) { gl.vertex_attrib_4_f32(2, 0.0, 0.0, 0.0, 1.0); } st_const[1] = Some(o.no_uv || st_const[1] == Some(true));
             if o.no_color && st_const[2] != Some(true) { gl.vertex_attrib_4_f32(3, 1.0, 1.0, 1.0, 1.0); } st_const[2] = Some(o.no_color || st_const[2] == Some(true));
             if o.cbuf.is_none() && st_const[3] != Some(true) { gl.vertex_attrib_4_f32(8, 1.0, 1.0, 1.0, 1.0); } st_const[3] = Some(o.cbuf.is_none() || st_const[3] == Some(true));
-            let dr = o.dr.unwrap_or(g.dr); let start = dr.0.max(0); let full = if dr.1 < 0 { g.count - start } else { dr.1.min(g.count - start) };
+            let dr = o.dr.unwrap_or(g.dr); let start = dr.0.max(0); let mut full = if dr.1 < 0 { g.count - start } else { dr.1.min(g.count - start) };
+            // never read past a buffer: indexed draws need every index inside the vertex buffers, plain draws stop at their end
+            let vl = vlim(o, g); if g.index.is_some() { if g.imax > vl { continue; } } else { full = full.min(vl - start); }
+            if full <= 0 && !(o.kind == ObjKind::Mesh && o.lod > 0) { continue; }
+            let inst_n = if o.cbuf.is_some() { o.count.min(o.icap).min(o.ccap) } else { o.count.min(o.icap) };
+            if o.kind == ObjKind::Inst && inst_n <= 0 { continue; }
             match o.kind {
                 ObjKind::Points => gl.draw_arrays(glow::POINTS, start, full),
-                ObjKind::Inst => { if g.index.is_some() { gl.draw_elements_instanced(glow::TRIANGLES, full, glow::UNSIGNED_INT, start * 4, o.count); }
-                    else { gl.draw_arrays_instanced(glow::TRIANGLES, start, full, o.count); } tris += (full as u32 / 3) * o.count as u32; }
+                ObjKind::Inst => { if g.index.is_some() { gl.draw_elements_instanced(glow::TRIANGLES, full, glow::UNSIGNED_INT, start * 4, inst_n); }
+                    else { gl.draw_arrays_instanced(glow::TRIANGLES, start, full, inst_n); } tris += (full as u32 / 3) * inst_n as u32; }
                 ObjKind::Mesh if o.lod > 0 && o.lod <= o.lods.len() => { let (b, n) = o.lods[o.lod - 1];   // a far ground tile: the coarse grid, then the VAO's own indices back
                     gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(b)); gl.draw_elements(glow::TRIANGLES, n, glow::UNSIGNED_INT, 0); gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, g.index); tris += n as u32 / 3; }
                 ObjKind::Mesh => { if g.index.is_some() { gl.draw_elements(glow::TRIANGLES, full, glow::UNSIGNED_INT, start * 4); } else { gl.draw_arrays(glow::TRIANGLES, start, full); } tris += full as u32 / 3; }

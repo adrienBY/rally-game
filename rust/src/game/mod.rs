@@ -316,7 +316,11 @@ impl Game {
         }
     }
     /// Android back: to the menu while driving; false lets the app close from the menu
-    pub fn back(&mut self) -> bool { if self.set.open { self.close_settings(); return true; } if self.gar.open { self.close_garage(); return true; } if self.state == State::Title && self.menu_back() { return true; } self.to_title() }
+    pub fn back(&mut self) -> bool { if self.set.open { self.close_settings(); return true; } if self.gar.open { self.close_garage(); return true; }
+        if self.ps.online_ui != online::OnlineUi::Closed { self.online_tap("on_back"); return true; }
+        if self.state == State::Title && self.menu_back() { return true; } self.to_title() }
+    /// would the system back gesture do something here (else it leaves the app): driving, or a panel / sub-list is open
+    pub fn wants_back(&self) -> bool { self.state == State::Drive || self.set.open || self.gar.open || self.ps.online_ui != online::OnlineUi::Closed || self.menu.view != menu::View::Main || self.menu.wipe.is_some() || self.loading.is_some() }
 
     pub fn switch_map(&mut self, name: &str) { if self.loading.is_none() { self.loading = Some(name.to_string()); self.events.push(format!("map {}", name)); self.ps.saves.set("fogwood-map", name.to_string()); } }
     fn toggle_mode(&mut self) { self.ps.race_mode = !self.ps.race_mode; self.ps.saves.set("fogwood-mode", if self.ps.race_mode { "race".into() } else { "tt".into() }); }

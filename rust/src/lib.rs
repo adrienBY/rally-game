@@ -8,6 +8,7 @@ pub mod physics;
 pub mod bridge;
 pub mod render;
 pub mod gfx;
+pub mod guard;
 pub mod net;
 #[cfg(any(target_os = "android", feature = "jni-host"))]
 mod jni_api;
