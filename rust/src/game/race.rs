@@ -77,7 +77,7 @@ pub(crate) fn rc_place(c: &mut Car, rt: &Rt, w: &World, i: usize, lat: f64, spee
 /// grid slot s: (path index, metres right of the centre line)
 pub(crate) fn slot(np: usize, s: usize) -> (usize, f64) { let row = s >> 1; let col = s & 1; ((np * 4 - 9 - row * 11 - col * 5) % np, if col == 1 { 1.55 } else { -1.55 }) }
 pub fn start(g: &mut Game, w: &World) {
-    let np = g.np; g.race.on = true; g.race.phase = Phase::Grid; g.race.t = 0.0; g.race.done_t = 0.0; g.race.note.clear(); g.race.cars.clear(); g.go = 4.5;
+    let np = g.np; g.race.on = true; g.race.phase = Phase::Grid; g.race.t = 0.0; g.race.done_t = 0.0; g.race.note.clear(); g.race.cars.clear(); g.go = 4.5; g.race.laps = g.ps.race_laps.clamp(1, 5) as i64;
     let slot = |s: usize| -> (usize, f64) { let row = s >> 1; let col = s & 1; ((np * 4 - 9 - row * 11 - col * 5) % np, if col == 1 { 1.55 } else { -1.55 }) };
     let mut order: Vec<usize> = (0..5).collect(); order.sort_by(|a, b| RIVALS[*b].pace.partial_cmp(&RIVALS[*a].pace).unwrap());
     const PS: usize = 3;
@@ -98,7 +98,7 @@ fn plan(g: &mut Game, w: &World, dt: f64) {
     let n = g.race.cars.len(); let np = g.np;
     for k in 0..n { let st = *state(g, k); let i = path_idx(w, st.x, st.z); let p = g.rt.path[i]; let tn = g.rt.tan[i];
         let c = &mut g.race.cars[k]; c.i = i; c.lat = (st.x - p[0]) * -tn[1] + (st.z - p[1]) * tn[0]; c.v = (st.vx * tn[0] + st.vz * tn[1]).max(0.0); }
-    let pprog = g.race.cars[g.race.player].prog; let skill = g.ps.race_skill; let br = 6.5 * g.tune.mu_road;
+    let pprog = g.race.cars[g.race.player].prog; let skill = match g.ps.rivals { 0 => 0.87, 2 => 1.07, _ => g.ps.race_skill }; let br = 6.5 * g.tune.mu_road;
     for k in 0..n {
         if !g.race.cars[k].is_ai() { continue; }
         let (cprog, clat, cv, ci, clane, aggr) = { let c = &g.race.cars[k]; (c.prog, c.lat, c.v, c.i, c.lane, RIVALS[c.r.unwrap()].aggr) };
@@ -239,7 +239,7 @@ fn finish(g: &mut Game) {
         let mut best = 1e9; for c in &g.race.cars { if !c.is_player() { best = f64::min(best, (laps * np - c.prog) / c.v.max(15.0)); } } best } else { 0.0 };
     let d = if pos == 1 { if next > 10.0 { 0.05 } else if next > 4.0 { 0.03 } else { 0.015 } } else if pos <= 3 { 0.0 } else if pos <= 5 { -0.015 } else { -0.03 };
     let d = if g.race.online { 0.0 } else { d };
-    if !g.race.online && !g.race.demo { g.ps.race_skill = clamp(g.ps.race_skill + d, 0.84, 1.1); let v = format!("{:.3}", g.ps.race_skill); g.ps.saves.set("fogwood-skill", v); }
+    if !g.race.online && !g.race.demo && g.ps.rivals == 1 { g.ps.race_skill = clamp(g.ps.race_skill + d, 0.84, 1.1); let v = format!("{:.3}", g.ps.race_skill); g.ps.saves.set("fogwood-skill", v); }
     g.race.note = if d > 0.0 { "RIVALS WILL PUSH HARDER".into() } else if d < 0.0 { "RIVALS WILL EASE OFF".into() } else { String::new() }; g.race.finish_pos = pos;
     let m = if pos == 1 { "YOU WIN!".to_string() } else { format!("FINISHED P{}", pos) }; g.flash_msg(&m, 3.0);
 }

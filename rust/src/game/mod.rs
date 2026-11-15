@@ -77,12 +77,14 @@ pub struct Persist { pub saves: Saves, pub sound_on: bool, pub vib_on: bool, pub
     /// settings screen: volumes 0..10, haptics 0..3, sun rays, mph, camera view, camera shake, 30 fps battery saver, debug buttons
     pub vol: i32, pub rvol: i32, pub hap: i32, pub rays: bool, pub mph: bool, pub cam_mode: u8, pub shake: bool, pub saver: bool, pub debug: bool,
     /// your car (garage), and the livery picked for each car (0 = its own)
-    pub car: usize, pub paint: Vec<usize> }
+    pub car: usize, pub paint: Vec<usize>,
+    /// dust and smoke 0 off .. 2 full, visual crash damage, rivals 0 easy / 1 adaptive / 2 hard, laps of an offline race, the menu's attract race
+    pub particles: i32, pub damage: bool, pub rivals: i32, pub race_laps: i32, pub menu_race: bool }
 impl Persist {
     pub fn new(save_path: &str) -> Persist {
         let saves = Saves::load(save_path);
         let mut p = Persist { saves, sound_on: true, vib_on: true, pix_idx: 2, touch_used: false, downgraded: false, race_mode: false, race_skill: 0.95, online_ui: online::OnlineUi::Closed, name: String::new(), online_laps: 2,
-            vol: 10, rvol: 8, hap: 2, rays: true, mph: false, cam_mode: 0, shake: true, saver: false, debug: true, car: 0, paint: vec![0; cars::CARS.len()] };
+            vol: 10, rvol: 8, hap: 2, rays: true, mph: false, cam_mode: 0, shake: true, saver: false, debug: true, car: 0, paint: vec![0; cars::CARS.len()], particles: 2, damage: true, rivals: 1, race_laps: 3, menu_race: true };
         p.reload(); p
     }
     pub fn reload(&mut self) {
@@ -99,9 +101,12 @@ impl Persist {
         self.hap = gi(&self.saves, "fogwood-hap").map(|v| v.clamp(0, 3)).unwrap_or(if self.vib_on { 2 } else { 0 }); self.vib_on = self.hap > 0;
         if let Some(v) = gi(&self.saves, "fogwood-cam") { self.cam_mode = v.clamp(0, 2) as u8; }
         if let Some(v) = gi(&self.saves, "fogwood-olaps") { self.online_laps = v.clamp(1, 5) as u8; }
+        if let Some(v) = gi(&self.saves, "fogwood-parts") { self.particles = v.clamp(0, 2); }
+        if let Some(v) = gi(&self.saves, "fogwood-rivals") { self.rivals = v.clamp(0, 2); }
+        if let Some(v) = gi(&self.saves, "fogwood-rlaps") { self.race_laps = v.clamp(1, 5); }
         if let Some(v) = gi(&self.saves, "fogwood-car") { self.car = (v.max(0) as usize).min(cars::CARS.len() - 1); }
         if let Some(v) = self.saves.get("fogwood-paint") { for (k, x) in v.split(',').enumerate() { if let (Some(slot), Ok(n)) = (self.paint.get_mut(k), x.parse::<usize>()) { *slot = n.min(cars::LIVERIES.len() - 1); } } }
-        for (k, f) in [("fogwood-rays", &mut self.rays), ("fogwood-mph", &mut self.mph), ("fogwood-shake", &mut self.shake), ("fogwood-saver", &mut self.saver), ("fogwood-debug", &mut self.debug)] {
+        for (k, f) in [("fogwood-rays", &mut self.rays), ("fogwood-mph", &mut self.mph), ("fogwood-shake", &mut self.shake), ("fogwood-saver", &mut self.saver), ("fogwood-debug", &mut self.debug), ("fogwood-damage", &mut self.damage), ("fogwood-mrace", &mut self.menu_race)] {
             if let Some(v) = self.saves.get(k) { *f = v == "1"; } }
         if self.saves.get("fogwood-dg") == Some("1") { self.downgraded = true; }
     }
@@ -110,7 +115,8 @@ impl Persist {
         let b = |v: bool| if v { "1".to_string() } else { "0".to_string() };
         let kv = [("fogwood-vol", self.vol.to_string()), ("fogwood-rvol", self.rvol.to_string()), ("fogwood-hap", self.hap.to_string()), ("fogwood-vib", b(self.vib_on)),
             ("fogwood-pix", self.pix_idx.to_string()), ("fogwood-cam", self.cam_mode.to_string()), ("fogwood-olaps", self.online_laps.to_string()), ("fogwood-rays", b(self.rays)),
-            ("fogwood-mph", b(self.mph)), ("fogwood-shake", b(self.shake)), ("fogwood-saver", b(self.saver)), ("fogwood-debug", b(self.debug)), ("fogwood-dg", b(self.downgraded))];
+            ("fogwood-mph", b(self.mph)), ("fogwood-shake", b(self.shake)), ("fogwood-saver", b(self.saver)), ("fogwood-debug", b(self.debug)), ("fogwood-dg", b(self.downgraded)),
+            ("fogwood-parts", self.particles.to_string()), ("fogwood-damage", b(self.damage)), ("fogwood-rivals", self.rivals.to_string()), ("fogwood-rlaps", self.race_laps.to_string()), ("fogwood-mrace", b(self.menu_race))];
         for (k, v) in kv { self.saves.set(k, v); }
     }
 }
@@ -310,7 +316,7 @@ impl Game {
         }
     }
     /// Android back: to the menu while driving; false lets the app close from the menu
-    pub fn back(&mut self) -> bool { if self.set.open { self.close_settings(); return true; } if self.gar.open { self.close_garage(); return true; } self.to_title() }
+    pub fn back(&mut self) -> bool { if self.set.open { self.close_settings(); return true; } if self.gar.open { self.close_garage(); return true; } if self.state == State::Title && self.menu_back() { return true; } self.to_title() }
 
     pub fn switch_map(&mut self, name: &str) { if self.loading.is_none() { self.loading = Some(name.to_string()); self.events.push(format!("map {}", name)); self.ps.saves.set("fogwood-map", name.to_string()); } }
     fn toggle_mode(&mut self) { self.ps.race_mode = !self.ps.race_mode; self.ps.saves.set("fogwood-mode", if self.ps.race_mode { "race".into() } else { "tt".into() }); }
@@ -374,7 +380,7 @@ impl Game {
         self.online_tick(w, dt);
         self.garage_step(w, dt);
         // the menu's attract race: you and five rivals, AI at every wheel, round and round behind the menu
-        let demo_ok = self.state == State::Title && !self.gar.open && self.ps.online_ui == online::OnlineUi::Closed && !crate::net::active();
+        let demo_ok = self.ps.menu_race && self.state == State::Title && !self.gar.open && self.ps.online_ui == online::OnlineUi::Closed && !crate::net::active();
         if demo_ok && !self.race.on { race::start(self, w); self.race.demo = true; }
         else if self.race.demo && (!demo_ok || (self.race.phase == race::Phase::Done && self.race.done_t > 4.0)) { race::stop(self); }
         // the body on show: yours, or the one the garage is looking at
@@ -391,7 +397,9 @@ impl Game {
         if self.state == State::Drive && !paused { if self.race.on { race::step(self, w, obs, dt); } else { self.update_lap(w, dt); } }
         else if self.state == State::Title && self.race.demo { race::step(self, w, obs, dt); } lap!(1);
         // crash damage: a hit (a tree, a rock, a wall, another car) dents the bodywork where it landed; a landing does not
-        if !paused && self.car.impact > 2.0 {
+        if !self.ps.damage && self.crash.damaged { self.crash.repair(); }
+        self.dust.density = [0.0, 0.45, 1.0][self.ps.particles.clamp(0, 2) as usize];
+        if !paused && self.ps.damage && self.car.impact > 2.0 {
             if let Some((p, d)) = crash::locate(self.car.vx - pre.0, self.car.vz - pre.1, self.car.r - pre.2, self.car.h, crate::physics::M, self.tune.iz) {
                 let shape = self.what_hit(w, obs, p, d); self.crash.hit(shape, d, self.car.impact as f32); } }
         if self.crash.model != Some(want) { if let Some(objs) = self.rt.car_models.get(want) { let objs = objs.clone(); self.crash.bind(r, want, &objs); } }

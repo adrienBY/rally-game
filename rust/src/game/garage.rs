@@ -43,7 +43,8 @@ impl Game {
         g.bars = [0.0; 4]; g.from = [0.0; 4]; g.change_t = 0.0; g.park = true; g.hop = false; g.drag = None; g.stamp_t = 9.0;
         self.ps.online_ui = super::online::OnlineUi::Closed; self.cam.shot = -1;
     }
-    pub fn close_garage(&mut self) { self.gar.open = false; self.gar.drag = None; self.cam.shot = -1; self.cam.init = false; self.touches.clear(); }
+    pub fn close_garage(&mut self) { if self.gar.open && self.wipe_close(super::menu::Go::CloseGarage) { return; } self.close_garage_now(); }
+    pub fn close_garage_now(&mut self) { self.gar.open = false; self.gar.drag = None; self.cam.shot = -1; self.cam.init = false; self.touches.clear(); }
     /// make car k yours: saved, and the handling follows
     pub fn choose_car(&mut self, k: usize) {
         let k = k.min(CARS.len() - 1); self.ps.car = k; self.ps.saves.set("fogwood-car", k.to_string()); self.tune = tune_for(&self.base_tune, k);
@@ -77,7 +78,7 @@ impl Game {
                         "g_back" => { self.buzz("tap", 0.5); self.close_garage(); return true; }
                         "g_sel" => { let s = self.gar.sel;
                             if s != self.ps.car { self.choose_car(s); self.gar.stamp_t = 0.0; self.buzz("shift", 0.8); }
-                            else { self.buzz("shift", 0.6); self.close_garage(); self.start_game(); }
+                            else { self.buzz("shift", 0.6); self.menu_drive(); }
                             return true; }
                         d if d.starts_with("g_dot") => { if let Ok(n) = d[5..].parse::<usize>() { if n != self.gar.sel { let dd = n as i32 - self.gar.sel as i32; self.garage_go(0); let g = &mut self.gar; g.sel = n; g.dir = dd.signum() as f64; g.yaw_v = g.dir * 1.0; } } return true; }
                         _ => {}

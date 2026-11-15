@@ -138,6 +138,8 @@ pub struct Dust {
     dgrow: f32,
     /// tread surface heat per car (0 = you, 1.. = race cars) and wheel; 1 = hot enough to smoke
     heat: Vec<[f32; 4]>,
+    /// how much is emitted (settings: 0 off .. 1 full)
+    pub density: f32,
 }
 
 impl Dust {
@@ -145,7 +147,7 @@ impl Dust {
         let mut d = Dust { n, pos: vec![0.0; n * 3], col: vec![0.0; n * 3], a: vec![0.0; n], s: vec![0.0; n], vel: vec![[0.0; 3]; n], turb: vec![[0.0; 3]; n], age: vec![0.0; n], life: vec![0.0; n],
             s0: vec![0.0; n], a0: vec![0.0; n], kind: vec![0; n], gy: vec![0.0; n], seed: vec![0.0; n], head: 0, live: 0, was: true, rng: seed | 1, frame: 0, wdir: [1.0, 0.0], t: 0.0,
             out_pos: vec![0.0; n * 3], out_col: vec![0.0; n * 3], out_a: vec![0.0; n], out_s: vec![0.0; n],
-            vort: vec![Vort::default(); NV], vhead: 0, vlive: 0, vstart: vec![0; VBUCK + 1], vitems: vec![0; NV], vcellof: vec![(0, 0); NV], cam: [0.0; 3], heat: Vec::new(), dgrow: 1.0 };
+            vort: vec![Vort::default(); NV], vhead: 0, vlive: 0, vstart: vec![0; VBUCK + 1], vitems: vec![0; NV], vcellof: vec![(0, 0); NV], cam: [0.0; 3], heat: Vec::new(), dgrow: 1.0, density: 1.0 };
         let ang = d.f() * std::f32::consts::TAU; d.wdir = [ang.cos(), ang.sin()]; d
     }
     fn f(&mut self) -> f32 { self.rng ^= self.rng << 13; self.rng ^= self.rng >> 7; self.rng ^= self.rng << 17; (self.rng >> 40) as f32 / (1u64 << 24) as f32 }
@@ -253,7 +255,7 @@ impl Dust {
     /// one wheel's tread heat (`id`, wheel 0..3), for tests and tools
     pub fn tyre_heat_of(&self, id: usize, k: usize) -> f32 { self.heat.get(id).map_or(0.0, |h| h[k]) }
     /// stochastic rounding: an expected number of particles this frame -> a whole number
-    fn count(&mut self, e: f32) -> usize { let base = e.floor(); base as usize + if self.f() < e - base { 1 } else { 0 } }
+    fn count(&mut self, e: f32) -> usize { let e = e * self.density; let base = e.floor(); base as usize + if self.f() < e - base { 1 } else { 0 } }
 
     /// landing from a jump: a ring of dust blown outwards
     pub fn landing(&mut self, w: &World, env: &Env, c: &Car, v: f32) {

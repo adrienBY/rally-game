@@ -13,12 +13,14 @@ const HAPTICS: &[&str] = &["OFF", "LIGHT", "MEDIUM", "STRONG"];
 const PIXELS: &[&str] = &["CHUNKY", "CLASSIC", "FINE"];
 const UNITS: &[&str] = &["KM/H", "MPH"];
 const VIEWS: &[&str] = &["CHASE", "CLOSE", "BONNET"];
+const PARTICLES: &[&str] = &["OFF", "LOW", "FULL"];
+const RIVALS: &[&str] = &["EASY", "ADAPTIVE", "HARD"];
 const TABS: [(&str, &[Item]); 5] = [
     ("SOUND", &[Item { key: "vol", label: "MASTER VOLUME", kind: Kind::Slider(10) }, Item { key: "rvol", label: "RIVAL ENGINES", kind: Kind::Slider(10) }, Item { key: "hap", label: "HAPTICS", kind: Kind::Choice(HAPTICS) }]),
-    ("DISPLAY", &[Item { key: "pix", label: "PIXEL SIZE", kind: Kind::Choice(PIXELS) }, Item { key: "rays", label: "SUN RAYS", kind: Kind::Toggle }, Item { key: "units", label: "SPEED IN", kind: Kind::Choice(UNITS) }]),
-    ("CAMERA", &[Item { key: "cam", label: "VIEW", kind: Kind::Choice(VIEWS) }, Item { key: "shake", label: "CAMERA SHAKE", kind: Kind::Toggle }]),
-    ("PLAYER", &[Item { key: "name", label: "ONLINE NAME", kind: Kind::Name }, Item { key: "olaps", label: "LAPS WHEN HOSTING", kind: Kind::Slider(5) }]),
-    ("SYSTEM", &[Item { key: "saver", label: "BATTERY SAVER 30 FPS", kind: Kind::Toggle }, Item { key: "debug", label: "TEL AND REC BUTTONS", kind: Kind::Toggle }]),
+    ("DISPLAY", &[Item { key: "pix", label: "PIXEL SIZE", kind: Kind::Choice(PIXELS) }, Item { key: "rays", label: "SUN RAYS", kind: Kind::Toggle }, Item { key: "parts", label: "DUST AND SMOKE", kind: Kind::Choice(PARTICLES) }, Item { key: "units", label: "SPEED IN", kind: Kind::Choice(UNITS) }]),
+    ("DRIVING", &[Item { key: "cam", label: "VIEW", kind: Kind::Choice(VIEWS) }, Item { key: "shake", label: "CAMERA SHAKE", kind: Kind::Toggle }, Item { key: "damage", label: "CRASH DAMAGE", kind: Kind::Toggle }]),
+    ("RACE", &[Item { key: "rivals", label: "RIVALS", kind: Kind::Choice(RIVALS) }, Item { key: "rlaps", label: "RACE LAPS", kind: Kind::Slider(5) }, Item { key: "name", label: "ONLINE NAME", kind: Kind::Name }, Item { key: "olaps", label: "LAPS WHEN HOSTING", kind: Kind::Slider(5) }]),
+    ("SYSTEM", &[Item { key: "saver", label: "BATTERY SAVER 30 FPS", kind: Kind::Toggle }, Item { key: "mrace", label: "RACE BEHIND THE MENU", kind: Kind::Toggle }, Item { key: "debug", label: "TEL AND REC BUTTONS", kind: Kind::Toggle }]),
 ];
 const KB: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 const NAME_MAX: usize = 10;
@@ -45,16 +47,18 @@ const DIM: Col = rgba(233, 236, 226, 0.55);
 /// current value of a setting (slider steps, choice index, toggle 0/1)
 fn value(ps: &Persist, cam: u8, key: &str) -> i32 {
     match key { "vol" => ps.vol, "rvol" => ps.rvol, "hap" => ps.hap, "pix" => ps.pix_idx as i32, "rays" => ps.rays as i32, "units" => ps.mph as i32,
-        "cam" => cam as i32, "shake" => ps.shake as i32, "olaps" => ps.online_laps as i32, "saver" => ps.saver as i32, "debug" => ps.debug as i32, _ => 0 }
+        "cam" => cam as i32, "shake" => ps.shake as i32, "olaps" => ps.online_laps as i32, "saver" => ps.saver as i32, "debug" => ps.debug as i32,
+        "parts" => ps.particles, "damage" => ps.damage as i32, "rivals" => ps.rivals, "rlaps" => ps.race_laps, "mrace" => ps.menu_race as i32, _ => 0 }
 }
 
 impl Game {
     pub fn settings_paused(&self) -> bool { self.set.open && self.state == State::Drive && !self.race.online }
     pub fn open_settings(&mut self) { self.set.open = true; self.set.kb = None; self.set.drag = None; self.set.kb_only = false; self.set.tab_y = self.set.tab as f64; }
-    pub fn close_settings(&mut self) { self.set.open = false; self.set.kb = None; self.set.drag = None; self.set.kb_only = false; self.touches.clear(); }
+    pub fn close_settings(&mut self) { if self.set.open && self.wipe_close(super::menu::Go::CloseSettings) { return; } self.close_settings_now(); }
+    pub fn close_settings_now(&mut self) { self.set.open = false; self.set.kb = None; self.set.drag = None; self.set.kb_only = false; self.touches.clear(); }
     /// the name keyboard on its own (online screen): the settings screen opens on PLAYER with the keyboard up
     pub fn edit_name(&mut self) {
-        self.open_settings(); let t = TABS.iter().position(|t| t.0 == "PLAYER").unwrap_or(0);
+        self.open_settings(); let t = TABS.iter().position(|t| t.0 == "RACE").unwrap_or(0);
         self.set.tab = t; self.set.tab_y = t as f64; self.set.content_t = 1.0; self.set.kb = Some(self.ps.name.clone()); self.set.kb_only = true;
     }
 
@@ -67,6 +71,7 @@ impl Game {
             "pix" => { ps.pix_idx = v.clamp(0, PIX.len() as i32 - 1) as usize; ps.downgraded = true; let (w, h, i) = (self.w, self.h, self.inset_px); self.resize(w, h, i); }
             "rays" => ps.rays = v != 0, "units" => ps.mph = v != 0, "shake" => ps.shake = v != 0, "saver" => ps.saver = v != 0, "debug" => ps.debug = v != 0,
             "olaps" => ps.online_laps = v.clamp(1, 5) as u8,
+            "parts" => ps.particles = v.clamp(0, 2), "damage" => ps.damage = v != 0, "rivals" => ps.rivals = v.clamp(0, 2), "rlaps" => ps.race_laps = v.clamp(1, 5), "mrace" => ps.menu_race = v != 0,
             "cam" => { self.cam.mode = v.rem_euclid(3); self.cam.init = false; }
             _ => {}
         }
@@ -203,7 +208,7 @@ pub fn draw(set: &mut Settings, ps: &Persist, cam: u8, paused: bool, g: &mut Can
         match it.kind {
             Kind::Slider(max) => {
                 let sp = set.springs.get(it.key).map(|s| s.0).unwrap_or(0.0); let drag = set.drag.map(|d| d.1 == it.key).unwrap_or(false);
-                let lab = if it.key == "olaps" { format!("{} LAPS", cur) } else if cur == 0 { "MUTED".to_string() } else { format!("{}/10", cur) }; g.text(&lab, cx, y + 14.0 * u, u, fade(AMBER, al), None);
+                let lab = if it.key == "olaps" || it.key == "rlaps" { format!("{} {}", cur, if cur == 1 { "LAP" } else { "LAPS" }) } else if cur == 0 { "MUTED".to_string() } else { format!("{}/10", cur) }; g.text(&lab, cx, y + 14.0 * u, u, fade(AMBER, al), None);
                 let gp = u; let bwd = ((ww - (max as f64 - 1.0) * gp) / max as f64).floor(); let bh = if drag { 11.0 * u } else { 8.0 * u }; let by = wy + (wh - bh) / 2.0;
                 set.rects.push((format!("{}:s", it.key), Rect { x: wx, y: wy - 3.0 * u, w: (bwd + gp) * max as f64, h: wh + 6.0 * u }));
                 for b in 0..max { let bx = wx + b as f64 * (bwd + gp); let fill = (sp * max as f64 - b as f64).clamp(0.0, 1.0);
