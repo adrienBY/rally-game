@@ -1,5 +1,5 @@
-//! The garage: pick your car. The car stands on the stage with the camera orbiting it (drag to spin it, it keeps turning
-//! slowly when left alone); a panel on the left shows its name, class and four stat bars that fill block by block; arrows
+//! The garage: pick your car. The car stands on the stage with the camera slowly orbiting it (not draggable: a swipe
+//! anywhere changes car); a panel on the left shows its name, class and four stat bars that fill block by block; arrows
 //! and dots change car (the new body drops onto its springs), and SELECT makes it yours (then DRIVE starts the stage).
 use super::cars::{tune_for, CARS};
 use super::hud::*;
@@ -48,7 +48,7 @@ impl Game {
     }
     pub fn garage_go(&mut self, d: i32) {
         let n = CARS.len() as i32; let g = &mut self.gar; let next = ((g.sel as i32 + d) % n + n) % n;
-        g.from = g.bars; g.sel = next as usize; g.change_t = 0.0; g.dir = if d >= 0 { 1.0 } else { -1.0 }; g.hop = true; g.yaw_v += g.dir * 1.6; g.idle = 0.0;
+        g.from = g.bars; g.sel = next as usize; g.change_t = 0.0; g.dir = if d >= 0 { 1.0 } else { -1.0 }; g.hop = true; g.yaw_v = g.dir * 1.2; g.idle = 0.0;
         self.buzz("tap", 0.5);
     }
 
@@ -69,7 +69,7 @@ impl Game {
                             if s != self.ps.car { self.choose_car(s); self.gar.stamp_t = 0.0; self.buzz("shift", 0.8); }
                             else { self.buzz("shift", 0.6); self.close_garage(); self.start_game(); }
                             return true; }
-                        d if d.starts_with("g_dot") => { if let Ok(n) = d[5..].parse::<usize>() { if n != self.gar.sel { let dd = n as i32 - self.gar.sel as i32; self.garage_go(0); let g = &mut self.gar; g.sel = n; g.dir = dd.signum() as f64; g.yaw_v += g.dir * 1.0; } } return true; }
+                        d if d.starts_with("g_dot") => { if let Ok(n) = d[5..].parse::<usize>() { if n != self.gar.sel { let dd = n as i32 - self.gar.sel as i32; self.garage_go(0); let g = &mut self.gar; g.sel = n; g.dir = dd.signum() as f64; g.yaw_v = g.dir * 1.0; } } return true; }
                         _ => {}
                     } }
                 let on_panel = k.as_deref() == Some("g_panel");
@@ -77,11 +77,11 @@ impl Game {
             }
             1 => { if let Some((did, x0, lx, t0, panel)) = self.gar.drag { if did == id {
                 let dx = x - lx; self.gar.moved = self.gar.moved.max((x - x0).abs());
-                if !panel { self.gar.yaw -= dx * 0.024 / self.u; let dt = (now - self.gar.last_t).max(1.0 / 120.0); self.gar.yaw_v = -dx * 0.024 / self.u / dt * 0.6; self.gar.hint = 1.0; }
+                let _ = (dx, panel);
                 self.gar.drag = Some((did, x0, x, t0, panel)); self.gar.idle = 0.0; } } true }
             _ => { if let Some((did, x0, _, t0, panel)) = self.gar.drag { if did == id { self.gar.drag = None;
-                // a quick swipe on the panel changes car
-                if panel && (x - x0).abs() > 24.0 * self.u && now - t0 < 0.6 { self.garage_go(if x < x0 { 1 } else { -1 }); } } } true }
+                // a quick swipe (anywhere) changes car; the camera is not draggable
+                let _ = panel; if (x - x0).abs() > 24.0 * self.u && now - t0 < 0.6 { self.garage_go(if x < x0 { 1 } else { -1 }); self.gar.hint = 1.0; } } } true }
         }
     }
 
@@ -89,12 +89,12 @@ impl Game {
     pub(crate) fn garage_step(&mut self, w: &World, dt: f64) {
         if !self.gar.open { return; }
         if self.gar.park { self.gar.park = false; self.place_at(w, 6); self.car.y += 0.4; }
-        if self.gar.hop { self.gar.hop = false; self.car.y += 0.32; self.car.vy = 1.2; self.car.pr += 0.5 * self.gar.dir; }
+        // the new body drops from a fixed height onto its springs: back to the parked pose first, so switching quickly
+        // restarts the drop instead of adding to it (it used to stack up and launch the car)
+        if self.gar.hop { self.gar.hop = false; self.place_at(w, 6); self.car.y += 0.3; self.car.vy = 0.0; self.car.pr = 0.35 * self.gar.dir; }
         let g = &mut self.gar; g.idle += dt; g.change_t += dt; g.stamp_t += dt; g.hint = (g.hint - dt * 0.4).max(0.0);
-        if g.drag.map(|d| !d.4).unwrap_or(false) { } else {
-            g.yaw += g.yaw_v * dt; g.yaw_v *= (-dt * 2.6).exp();
-            if g.idle > 2.5 { g.yaw_v += (0.22 - g.yaw_v) * (dt * 0.8).min(1.0); }
-        }
+        // the turntable: a short swing after a change, settling back into a slow drift
+        g.yaw += g.yaw_v * dt; g.yaw_v += (0.22 - g.yaw_v) * (dt * 1.6).min(1.0);
     }
     /// the orbiting showroom camera (the car sits right of the panel); returns the field of view
     pub(crate) fn garage_cam(&mut self, w: &World) -> f64 {
@@ -175,7 +175,7 @@ pub fn draw(gar: &mut Garage, ps: &super::Persist, time: f64, g: &mut Canvas, lw
     for k in 0..n { let on = k == gar.sel; let x = dx0 + k as f64 * dwid; let s = if on { 5.0 * u } else { 3.0 * u };
         gar.rects.push((format!("g_dot{}", k), Rect { x: x - 2.0 * u, y: dyy - 4.0 * u, w: dwid, h: 12.0 * u }));
         g.rect_c(x + (5.0 * u - s) / 2.0, dyy + (5.0 * u - s) / 2.0, s, s, if on { AMBER } else if k == ps.car { rgba(170, 240, 150, 0.8) } else { DIM }); }
-    if gar.hint < 0.99 && gar.anim >= 1.0 { let h = "DRAG TO SPIN"; let al = 0.5 + 0.3 * (time * 2.0).sin(); g.text(h, (ax0 + 18.0 * u + ax1) / 2.0 - text_w(h, u) / 2.0, dyy - 12.0 * u, u, fade(DIM, al * (1.0 - gar.hint)), None); }
+    if gar.hint < 0.99 && gar.anim >= 1.0 { let h = "SWIPE TO CHANGE CAR"; let al = 0.5 + 0.3 * (time * 2.0).sin(); g.text(h, (ax0 + 18.0 * u + ax1) / 2.0 - text_w(h, u) / 2.0, dyy - 12.0 * u, u, fade(DIM, al * (1.0 - gar.hint)), None); }
 
     // the big button: SELECT this car, or DRIVE once it is yours
     let mine = gar.sel == ps.car; let label = if mine { "DRIVE" } else { "SELECT" };
