@@ -1,5 +1,6 @@
 //! Desktop check for the native game: headless EGL, a dumped stage (scene + runtime handoff), the game run at a fixed 60 Hz.
 //!   game_host <scene> <rt> <outdir> <script>
+//! env: DUSTN=6000 (the app's dust buffer size, for scenes dumped from the browser build), NODUST, NOHUD
 //! script: comma-separated steps "t:action", e.g. "1:start,1:auto,8:shot,12:shot,20:race,40:shot,60:state"
 //!   start (tap to start)  auto (demo driver drives)  shot (write <outdir>/fNNNN.ppm)  state (print the car)  tap:x:y  race (toggle mode on the menu)
 //!   hit:cx:cz:r:dx:dz:speed / hitcar:cx:cz:axx:axz:dx:dz:speed (dent the bodywork, car frame)  cam  menu  log (car each second from then on)  garage gnext gprev gclose car:k
@@ -50,7 +51,7 @@ fn main() {
             for c in 0..chs { for i in 0..frames { let q = (i * ch as usize + c) * 2; m.extend_from_slice(&data[q..q + 2]); } }
             fogwood_audio::native::message(&m); println!("loaded {} {} ch {} Hz {} frames", f, chs, rate, frames);
         }
-        let mut g = Game::new(rt, Persist::new("/tmp/game_host.sav")); g.resize(w as f64, h as f64, [0.0; 4]); if std::env::var("NOLOD").is_err() { g.attach(&mut r); }
+        let mut g = Game::new(rt, Persist::new("/tmp/game_host.sav")); if let Ok(n) = std::env::var("DUSTN") { g.dust = fogwood_core::game::dust::Dust::new(n.parse().unwrap_or(6000), 0x5EED); }   // a scene dumped from the browser build has the browser's small dust buffer g.resize(w as f64, h as f64, [0.0; 4]); if std::env::var("NOLOD").is_err() { g.attach(&mut r); }
         let gl = r.gl();
         let tex = gl.create_texture().unwrap(); gl.bind_texture(glow::TEXTURE_2D, Some(tex));
         gl.tex_image_2d(glow::TEXTURE_2D, 0, glow::RGBA8 as i32, w, h, 0, glow::RGBA, glow::UNSIGNED_BYTE, None);

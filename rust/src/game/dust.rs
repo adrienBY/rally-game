@@ -39,8 +39,8 @@ pub const DUST: u8 = 0; pub const GRIT: u8 = 1; pub const SMOKE: u8 = 2; pub con
 #[inline] pub fn is_speck(k: u8) -> bool { k == GRIT || k == CHUNK || k == SPRAY }
 /// per kind: relaxation time to the air (s), gravity (m/s2), growth (m per sqrt s), base alpha, how much the wake moves it
 const TAU: [f32; 6] = [0.32, 3.0, 0.45, 0.3, 2.2, 0.35];
-const GRAV: [f32; 6] = [-0.22, -9.8, 0.4, -0.6, -9.8, -9.8];
-const GROW: [f32; 6] = [1.25, 0.0, 1.6, 0.6, 0.0, 0.0];
+const GRAV: [f32; 6] = [-0.06, -9.8, 0.4, -0.3, -9.8, -9.8];
+const GROW: [f32; 6] = [1.2, 0.0, 1.6, 1.0, 0.0, 0.0];
 const WAKE: [f32; 6] = [1.0, 0.15, 0.9, 1.0, 0.2, 0.5];
 
 /// a piece of spinning air left behind by a car: centre, its own drift, unit axis, circulation (m2/s), core radius, length
@@ -133,6 +133,8 @@ pub struct Dust {
     vort: Vec<Vort>, vhead: usize, pub vlive: usize, vstart: Vec<u32>, vitems: Vec<u16>, vcellof: Vec<(i32, i32)>,
     /// where the camera is (far cars shed no blobs)
     pub cam: [f32; 3],
+    /// how much faster than usual dust clouds spread on this stage (dry ground: big, tall, lasting clouds)
+    dgrow: f32,
     /// tread surface heat per car (0 = you, 1.. = race cars) and wheel; 1 = hot enough to smoke
     heat: Vec<[f32; 4]>,
 }
@@ -142,7 +144,7 @@ impl Dust {
         let mut d = Dust { n, pos: vec![0.0; n * 3], col: vec![0.0; n * 3], a: vec![0.0; n], s: vec![0.0; n], vel: vec![[0.0; 3]; n], turb: vec![[0.0; 3]; n], age: vec![0.0; n], life: vec![0.0; n],
             s0: vec![0.0; n], a0: vec![0.0; n], kind: vec![0; n], gy: vec![0.0; n], seed: vec![0.0; n], head: 0, live: 0, was: true, rng: seed | 1, frame: 0, wdir: [1.0, 0.0], t: 0.0,
             out_pos: vec![0.0; n * 3], out_col: vec![0.0; n * 3], out_a: vec![0.0; n], out_s: vec![0.0; n],
-            vort: vec![Vort::default(); NV], vhead: 0, vlive: 0, vstart: vec![0; VBUCK + 1], vitems: vec![0; NV], vcellof: vec![(0, 0); NV], cam: [0.0; 3], heat: Vec::new() };
+            vort: vec![Vort::default(); NV], vhead: 0, vlive: 0, vstart: vec![0; VBUCK + 1], vitems: vec![0; NV], vcellof: vec![(0, 0); NV], cam: [0.0; 3], heat: Vec::new(), dgrow: 1.0 };
         let ang = d.f() * std::f32::consts::TAU; d.wdir = [ang.cos(), ang.sin()]; d
     }
     fn f(&mut self) -> f32 { self.rng ^= self.rng << 13; self.rng ^= self.rng >> 7; self.rng ^= self.rng << 17; (self.rng >> 40) as f32 / (1u64 << 24) as f32 }
@@ -188,30 +190,35 @@ impl Dust {
             // share of the tread's speed relative to the hub (rolling speed plus wheelspin): up and back from the wheel, so with grip
             // it still moves forward with the car (into the arches), and only wheelspin sends it back past the car (a rooster tail)
             let vt = sp + slip * (0.4 + throttle * 0.6);
-            let fwd = [sh, ch];
+            let fwd = [sh, ch]; self.dgrow = 0.7 + 0.3 * env.dry;
+            // sliding: the tyre scrubs sideways and bulldozes material ahead of it, out towards the slide (a drift's side plume)
+            let vl = c.vl as f32; let lat = [ch * vl, -sh * vl];
             let tread = |me: &mut Self, share: f32, th0: f32, th1: f32| -> [f32; 3] {
                 let th = me.r(th0, th1); let k = vt * share * me.r(0.6, 1.1); let side = me.r(-1.0, 1.0) * (0.4 + k * 0.12);
-                [c.vx as f32 - fwd[0] * k * th.cos() + ch * side, k * th.sin(), c.vz as f32 - fwd[1] * k * th.cos() - sh * side] };
+                let ls = share * me.r(0.6, 1.3);
+                [c.vx as f32 - fwd[0] * k * th.cos() + ch * side + lat[0] * ls, k * th.sin(), c.vz as f32 - fwd[1] * k * th.cos() - sh * side + lat[1] * ls] };
             if env.snow {
                 // snow: a spray of loose grains (crisp white specks on arcs that fall back within a second or so) and the fine
                 // powder that breaks off them and hangs a little longer as a thin mist
-                let rate = loose * (1.25 * sp + 7.0 * slip) * lk * front * lod;
+                let rate = loose * (1.25 * sp + 7.0 * slip + 4.0 * vl.abs()) * lk * front * lod;
                 let n = self.count(rate.min(110.0) * dt);
                 for _ in 0..n { let v = tread(self, 0.5, 0.25, 1.4); let tq = self.r(0.0, 1.0) * dt;
                     let p = [wx + back[0] * 0.3 - c.vx as f32 * tq, gy + 0.1, wz + back[1] * 0.3 - c.vz as f32 * tq];
                     let (b, sz, lf) = (self.r(0.92, 1.08), self.r(0.07, 0.13), self.r(1.2, 2.0)); self.speck(SPRAY, p, v, sz, lf, [b, b, b], gy); }
-                let n = self.count((rate * 0.5).min(55.0) * dt);
-                for _ in 0..n { let mut v = tread(self, 0.2, 0.3, 1.1); v[1] += self.r(0.2, 0.9); let tq = self.r(0.0, 1.0) * dt;
+                // the plume: fine powder lifted off the grains and by the wheel's air, hanging for a few seconds in a sunlit fan
+                let n = self.count((rate * 0.6).min(70.0) * dt);
+                for _ in 0..n { let mut v = tread(self, 0.2, 0.3, 1.1); v[1] += self.r(0.8, 2.2); let tq = self.r(0.0, 1.0) * dt;
                     let p = [wx + back[0] * 0.5 + self.r(-0.2, 0.2) - c.vx as f32 * tq, gy + 0.25, wz + back[1] * 0.5 + self.r(-0.2, 0.2) - c.vz as f32 * tq];
-                    let (al, sz, lf, br) = (env.alpha * self.r(0.7, 1.0), self.r(0.16, 0.3) * big, self.r(1.2, 2.4), self.r(1.0, 1.1)); self.emit(POWDER, p, v, sz, lf, al, br, 0.0, gy); }
+                    let (al, sz, lf, br) = (env.alpha * self.r(0.7, 1.0), self.r(0.2, 0.35) * big, self.r(2.5, 5.0), self.r(1.0, 1.1)); self.emit(POWDER, p, v, sz, lf, al, br, 0.0, gy); }
             } else {
                 // fine dust: lifted at the contact patch and by the wheel's own air, then handed to the wake and the wind; it hangs
                 // for seconds (fine powder settles at a few cm/s), spreading and thinning, longer on dry ground
-                let rate = loose * (0.62 * sp + 4.0 * slip) * lk * front * lod;
-                let n = self.count(rate.min(60.0) * dt);
+                let rate = loose * (1.0 * sp + 5.0 * slip) * lk * front * lod;
+                let n = self.count(rate.min(80.0) * dt);
                 for _ in 0..n {
-                    let up = self.r(0.5, 1.3) + sp * 0.05 + slip * 0.08; let side = self.r(-0.7, 0.7);
-                    let v = [c.vx as f32 * 0.32 + back[0] * slip * 0.25 + ch * side, up, c.vz as f32 * 0.32 + back[1] * slip * 0.25 - sh * side];
+                    // the wheel's own air and the wake throw it up a car's height or two
+                    let up = self.r(0.7, 1.8) + sp * 0.085 + slip * 0.1; let side = self.r(-0.7, 0.7);
+                    let v = [c.vx as f32 * 0.32 + back[0] * slip * 0.25 + ch * side + lat[0] * 0.3, up, c.vz as f32 * 0.32 + back[1] * slip * 0.25 - sh * side + lat[1] * 0.3];
                     // spread along where the wheel went during this frame, so the stream is continuous, not dotted
                     let tq = self.r(0.0, 1.0) * dt;
                     let p = [wx + back[0] * 0.3 + self.r(-0.15, 0.15) - c.vx as f32 * tq, gy + 0.15, wz + back[1] * 0.3 + self.r(-0.15, 0.15) - c.vz as f32 * tq];
@@ -222,7 +229,7 @@ impl Dust {
             // stones / snow clumps: flung by the tread, many more with wheelspin, mostly from the driven rear; specks on arcs
             if loose > 0.0 && d_cam < 80.0 {
                 let spin = slip * (0.6 + throttle * 0.8);
-                let n = self.count((loose.min(1.2) * (0.06 * sp + 3.2 * (spin - 0.8).max(0.0)) * lk * front * lod).min(45.0) * dt);
+                let n = self.count((loose.min(1.2) * (0.22 * sp + 3.2 * (spin - 0.8).max(0.0)) * lk * front * lod).min(45.0) * dt);
                 for _ in 0..n {
                     let v = tread(self, 0.32, 0.2, 0.8);
                     let p = [wx + back[0] * 0.25, gy + 0.12, wz + back[1] * 0.25];
@@ -300,7 +307,7 @@ impl Dust {
                 if behind > -0.5 && behind < 6.5 && spd > 1.0 {
                     let fall = (1.0 - behind.max(0.0) / 6.5).powf(1.8);
                     let wf = fall * (-lx * lx / 1.4).exp() * (-(ly - 0.6) * (ly - 0.6) / 1.2).exp() * wk;
-                    al[0] += cv[0] * 0.42 * wf - lx * spd * 0.04 * wf; al[2] += cv[2] * 0.42 * wf; al[1] += spd * 0.05 * wf;
+                    al[0] += cv[0] * 0.42 * wf - lx * spd * 0.04 * wf; al[2] += cv[2] * 0.42 * wf; al[1] += spd * 0.1 * wf;
                 }
                 // wheels: air in contact with the tread turns with it
                 if !heavy { for &(wx, wz, om) in &b.wheels {
@@ -325,14 +332,14 @@ impl Dust {
             let (nx, mut ny, nz) = (x + v[0] * dt, y + v[1] * dt, z + v[2] * dt);
             // the ground: stones stop (with a small puff), dust rolls along it; heights refreshed every 4th frame for dust
             if ballistic || (i as u32 + self.frame) % 4 == 0 { self.gy[i] = w.height(nx as f64, nz as f64) as f32; }
-            let floor = self.gy[i] + if ballistic { 0.04 } else { self.s[i] * 0.22 };
+            let floor = self.gy[i] + if ballistic { 0.04 } else { self.s[i] * if kd == DUST as usize || kd == POWDER as usize { 0.5 } else { 0.22 } };   // a cloud sits on the ground and towers as it spreads
             if ny < floor { if ballistic { self.life[i] = 0.0; self.a[i] = 0.0; if sd < if kd == SPRAY as usize { 0.06 } else { 0.3 } { puffs.push(([nx, floor + 0.1, nz], kd != GRIT as usize, self.gy[i])); } continue; }
                 // dust hitting the ground spreads out along it instead of stopping dead
                 ny = floor; if v[1] < 0.0 { let lost = -v[1]; let hs = (v[0] * v[0] + v[2] * v[2]).sqrt().max(0.3); v[0] += v[0] / hs * lost * 0.45; v[2] += v[2] / hs * lost * 0.45; v[1] = 0.0; } }
             self.pos[i * 3] = nx; self.pos[i * 3 + 1] = ny; self.pos[i * 3 + 2] = nz;
             // spreading and thinning (the same dust over a bigger puff, seen through its depth); a quick fade in so puffs never pop
-            let s = self.s0[i] + GROW[kd] * self.age[i].sqrt(); self.s[i] = s;
-            let thin = if GROW[kd] > 0.0 { (self.s0[i] / s).powf(0.5) } else { 1.0 };
+            let s = self.s0[i] + GROW[kd] * if kd == DUST as usize { self.dgrow } else { 1.0 } * self.age[i].sqrt(); self.s[i] = s;
+            let thin = if GROW[kd] > 0.0 { (self.s0[i] / s).powf(0.25) } else { 1.0 };
             self.a[i] = self.a0[i] * (self.age[i] / 0.08).min(1.0) * (1.0 - k).powf(1.4) * thin;
         }
         for (p, snow, gy) in puffs { self.emit(if snow { POWDER } else { DUST }, p, [0.0, 0.5, 0.0], if snow { 0.22 } else { 0.3 }, if snow { 0.8 } else { 1.4 }, 0.28, 0.95, if snow { 0.0 } else { 0.3 }, gy); }

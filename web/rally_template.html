@@ -1564,8 +1564,8 @@ function updateSnowfall(dt) {
     if (sfPos[k + 1] < cy - 6) sfPos[k + 1] += 26; else if (sfPos[k + 1] > cy + 20) sfPos[k + 1] -= 26; }
   sfGeo.attributes.position.needsUpdate = true;
 }
-// the app runs its own dust system (game/dust.rs) on this buffer: 4000 particles, plus colour = (brightness, earth, seed) per particle
-const DN = RT_MODE ? 4000 : 420, dPos = new Float32Array(DN * 3), dA = new Float32Array(DN), dS = new Float32Array(DN), dV = new Float32Array(DN * 3), dAge = new Float32Array(DN), dLife = new Float32Array(DN), dCol = new Float32Array(DN * 3);
+// the app runs its own dust system (game/dust.rs) on this buffer: 6000 particles, plus colour = (brightness, earth, seed) per particle
+const DN = RT_MODE ? 6000 : 420, dPos = new Float32Array(DN * 3), dA = new Float32Array(DN), dS = new Float32Array(DN), dV = new Float32Array(DN * 3), dAge = new Float32Array(DN), dLife = new Float32Array(DN), dCol = new Float32Array(DN * 3);
 let dHead = 0;
 const dGeo = new THREE.BufferGeometry();
 dGeo.setAttribute("position", new THREE.BufferAttribute(dPos, 3)); dGeo.setAttribute("aA", new THREE.BufferAttribute(dA, 1)); dGeo.setAttribute("aS", new THREE.BufferAttribute(dS, 1)); if (RT_MODE) dGeo.setAttribute("color", new THREE.BufferAttribute(dCol, 3));

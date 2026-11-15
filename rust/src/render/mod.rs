@@ -152,8 +152,11 @@ impl Renderer {
     }
     /// replace a vertex attribute of the geometry an object draws (dust, falling snow)
     pub fn set_attr(&mut self, id: usize, name: &str, data: &[f32]) {
-        let gl = &self.gl; let Some(s) = self.scene.as_ref() else { return }; let Some(o) = s.objs.get(id) else { return };
-        if let Some(a) = s.geos[o.geo].attrs.iter().find(|a| a.name == name) { unsafe { gl.bind_buffer(glow::ARRAY_BUFFER, Some(a.buf)); gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, f32_bytes(data), glow::DYNAMIC_DRAW); } }
+        let gl = &self.gl; let Some(s) = self.scene.as_mut() else { return }; let Some(o) = s.objs.get(id) else { return };
+        let (gi, pts) = (o.geo, o.kind == ObjKind::Points);
+        if let Some(a) = s.geos[gi].attrs.iter().find(|a| a.name == name) { unsafe { gl.bind_buffer(glow::ARRAY_BUFFER, Some(a.buf)); gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, f32_bytes(data), glow::DYNAMIC_DRAW); }
+            // a particle buffer the game sized itself: draw all of it
+            if pts && name == "position" { s.geos[gi].count = (data.len() / 3) as i32; } }
     }
     /// the rest shape (positions, normals; normals empty if it has none) of a car-body object, as the page built it
     pub fn car_rest(&self, id: usize) -> Option<&(Vec<f32>, Vec<f32>)> { self.scene.as_ref()?.car_rest.get(&id) }

@@ -231,7 +231,7 @@ void main() {
   vec2 grad = vec2(gx, gy) / uDensScale; vec2 sd = normalize(uSun - uv + vec2(0.0, 0.6));
   float own = clamp(sc.a / max(b.a, 1e-3), 0.0, 1.0);
   float rim = clamp(dot(-grad, sd) * 2.0, -0.5, 0.8) * own * own;
-  float thick = (1.0 - exp(-D * 2.8)) * 0.84;
+  float thick = (1.0 - exp(-D * 2.8)) * 0.94;
   // stepped shading: three tones from the shadowed core to the lit edge
   float shade = mix(1.08, 0.72, smoothstep(0.15, 1.3, D)) * (0.92 + 0.22 * rim); shade = floor(shade * 6.0 + 0.5) / 6.0;
   col *= shade;
