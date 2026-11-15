@@ -9,6 +9,7 @@ pub mod online;
 pub mod settings;
 pub mod cars;
 pub mod garage;
+pub mod dust;
 mod draw;
 
 use crate::bridge;
@@ -124,7 +125,7 @@ pub struct Game {
     node_base: Vec<(V3, V3, V3, Option<M>)>, node_world: Vec<M>, obj_last: HashMap<usize, M>, named: HashMap<String, usize>,
     cull_vis: Vec<bool>, glit_op: Vec<f32>,
     // particles
-    d_pos: Vec<f32>, d_a: Vec<f32>, d_s: Vec<f32>, d_v: Vec<f64>, d_age: Vec<f64>, d_life: Vec<f64>, d_head: usize, dust_was: bool,
+    pub dust: dust::Dust, dust_env: dust::Env,
     sf_pos: Vec<f32>, sf_init: bool,
     pub boats: Vec<rt::Boat>,
     // light
@@ -175,7 +176,7 @@ impl Game {
             cam_pos: [0.0; 3], cam_rot: ID, fov_now: 56.0, view: ID, proj: ID, w: 1280.0, h: 720.0, lw: 320, lh: 180, u: 1.0, inset: [0.0; 4], inset_px: [0.0; 4],
             race, ui: HashMap::new(), touches: HashMap::new(), time: 0.0, wind: 0.5, rng: Rng(0x9E3779B97F4A7C15 ^ (mid as u64 + 1)), events: Vec::new(), ps, loading: None,
             node_base, node_world: vec![ID; rt.nodes.len()], obj_last: HashMap::new(), named, cull_vis: vec![true; ncull], glit_op: vec![-1.0; nglit],
-            d_pos: vec![0.0; dn * 3], d_a: vec![0.0; dn], d_s: vec![0.0; dn], d_v: vec![0.0; dn * 3], d_age: vec![0.0; dn], d_life: vec![0.0; dn], d_head: 0, dust_was: true,
+            dust: dust::Dust::new(dn, 0x5EED ^ mid as u64), dust_env: dust::Env { tarmac: mid == 5 || mid == 6, snow: mid == 1, sand: mid == 2, lush: mid == 0, alpha: if mid == 5 || mid == 6 { 0.4 } else if mid == 1 { 0.36 } else { 0.44 } },
             sf_pos, sf_init: false, boats,
             sun_vis: 0.0, expo: 1.0, dim: 1.0, expo_tun: false, sun_uv: [0.5, 0.8],
             hap_t: 0.0, hap_cool: 0.0, aud_wet: 0.0, car_audio_on: false, race_was: false, pop_cool: 0.0, fps_acc: 0.0, fps_n: 0, hud_tick: false, hud: hud::Canvas::new(320, 180),
@@ -193,7 +194,7 @@ impl Game {
     /// the GPU copy of the scene was rebuilt (lost GL context): push every object state again
     pub fn scene_reloaded(&mut self) {
         self.tile_lod.clear(); self.obj_last.clear(); for v in self.cull_vis.iter_mut() { *v = !*v; } self.shadow_op = -1.0; for v in self.glit_op.iter_mut() { *v = -1.0; }
-        self.race.shown = false; self.race_was = self.race.on; self.dust_was = true; self.hud.invalidate(); self.car_vis = None;
+        self.race.shown = false; self.race_was = self.race.on; self.hud.invalidate(); self.car_vis = None;
     }
     pub fn clock_ms(&self) -> f64 { self.clock.elapsed().as_secs_f64() * 1000.0 }
     pub fn stage_km(&self) -> String { format!("{:.2}", self.np as f64 / 1000.0) }
@@ -342,11 +343,6 @@ impl Game {
         if self.msg_t > 0.0 { self.msg_t -= dt; }
     }
 
-    fn emit_dust(&mut self, x: f64, y: f64, z: f64, vx: f64, vy: f64, vz: f64, size: f64) {
-        let n = self.d_a.len(); if n == 0 { return; } let i = self.d_head; self.d_head = (self.d_head + 1) % n;
-        self.d_pos[i * 3] = x as f32; self.d_pos[i * 3 + 1] = y as f32; self.d_pos[i * 3 + 2] = z as f32; self.d_v[i * 3] = vx; self.d_v[i * 3 + 1] = vy; self.d_v[i * 3 + 2] = vz;
-        self.d_age[i] = 0.0; self.d_life[i] = self.rng.r(1.2, 2.4); self.d_s[i] = size as f32;
-    }
 
     /// One frame of the game (dt seconds), drawn into the renderer's scene.
     pub fn tick(&mut self, r: &mut Renderer, dt: f64) {
@@ -377,7 +373,7 @@ impl Game {
             if v > 1.8 && self.state == State::Drive { self.buzz("land", clamp((v - 1.5) / 7.0, 0.15, 1.0)); }
             if v > 1.2 { self.audio_msg(&[2.0, 2.0, v as f32, 0.0]); }
             if v > 2.5 { self.shake = self.shake.max(clamp((v - 2.0) / 9.0, 0.0, 0.8));
-                for k in 0..4 { let (wx, wz) = (self.car.wh[k].wx, self.car.wh[k].wz); for _ in 0..6 { let (a, b, c, d) = (self.rng.r(-2.0, 2.0), self.rng.r(0.5, 2.0), self.rng.r(-2.0, 2.0), self.rng.r(0.8, 1.4)); self.emit_dust(wx, w.height(wx, wz) + 0.2, wz, a, b, c, d); } } }
+                { let (env, c) = (self.dust_env, self.car); self.dust.landing(w, &env, &c, v as f32); } }
             self.car.land_v = 0.0; }
         if self.car.impact > 2.5 { self.shake = (self.car.impact / 10.0).min(1.0); }
         if self.state == State::Drive {
@@ -389,24 +385,23 @@ impl Game {
             if k > 0.05 && self.car.contacts > 0.0 && self.hap_t <= 0.0 { self.buzz("rumble", 0.2 + 0.6 * k); self.hap_t = 0.12 - 0.05 * k; }
         }
         self.shake = (self.shake - dt * 3.0).max(0.0);
-        // dust from the wheels
-        let sp = self.car.vx.hypot(self.car.vz);
-        for k in 0..4 { let wh = self.car.wh[k]; let tar = (self.tou || self.riv) && wh.road;
-            let mut e = ((if wh.road { if self.tou || self.riv { 0.0 } else { sp / if self.can { 20.0 } else { 30.0 } } } else { sp / if self.snow { 22.0 } else if self.can { 26.0 } else { 70.0 } })
-                + if tar { clamp(wh.slide - 4.8, 0.0, 10.0) / 10.0 } else { clamp(wh.slide - 1.5, 0.0, 10.0) / 5.0 }) * 18.0 * dt * if self.snow { 1.4 } else if self.can { 1.35 } else { 1.0 };
-            while e > 0.0 { if self.rng.f() < e { let (vx, vz) = (self.car.vx, self.car.vz); let (a, b, c, d) = (self.rng.r(-0.8, 0.8), self.rng.r(0.3, 1.2), self.rng.r(-0.8, 0.8), self.rng.r(0.5, 0.9));
-                self.emit_dust(wh.wx, w.height(wh.wx, wh.wz) + 0.2, wh.wz, -vx * 0.1 + a, b, -vz * 0.1 + c, d * if wh.road { 1.0 } else { 0.6 }); } e -= 1.0; } }
-        let mut d_live = 0;
-        for i in 0..self.d_a.len() { if self.d_life[i] <= 0.0 { self.d_a[i] = 0.0; continue; } d_live += 1; self.d_age[i] += dt; let k = self.d_age[i] / self.d_life[i];
-            if k >= 1.0 { self.d_life[i] = 0.0; self.d_a[i] = 0.0; continue; }
-            for q in 0..3 { self.d_pos[i * 3 + q] += (self.d_v[i * 3 + q] * dt) as f32; }
-            self.d_v[i * 3] *= 1.0 - dt * 1.5; self.d_v[i * 3 + 1] *= 1.0 - dt * 1.2; self.d_v[i * 3 + 2] *= 1.0 - dt * 1.5; self.d_s[i] += (dt * 1.7) as f32;
-            self.d_a[i] = ((if self.tou || self.riv { 0.26 } else { 0.4 }) * (1.0 - k).powf(1.6)) as f32; }
-        if let Some((obj, _)) = self.rt.dust { if d_live > 0 || self.dust_was { r.set_attr(obj, "position", &self.d_pos); r.set_attr(obj, "aA", &self.d_a); r.set_attr(obj, "aS", &self.d_s); } }
-        self.dust_was = d_live > 0;
+        // dust, gravel and smoke: your car, then every other car in a race; cars' wakes carry it
+        { let env = self.dust_env; let cam = self.cam_pos; let c = self.car; let thr = inp.throttle as f32;
+          let slips = [0, 1, 2, 3].map(|k| (c.wh[k].slide as f32, if c.wh[k].fz > 0.0 { c.wh[k].fz as f32 } else { 0.0 }));
+          self.dust.wheels(w, &env, &c, slips, thr, cam, dt as f32);
+          let mut bodies = vec![dust::Body::of(&c)];
+          if self.race.on { for rc in self.race.cars.iter() { if rc.is_player() || rc.left { continue; } let o = rc.car;
+              // other players' cars carry no tyre state here: their sideways speed stands in for slip
+              let slips = if rc.remote.is_some() { let air = o.y - w.height(o.x, o.z) > 0.35; [0, 1, 2, 3].map(|_| ((o.vl.abs() * 0.8) as f32, if air { 0.0 } else { 2900.0 })) }
+                  else { [0, 1, 2, 3].map(|k| (o.wh[k].slide as f32, if o.wh[k].fz > 0.0 { o.wh[k].fz as f32 } else { 0.0 })) };
+              self.dust.wheels(w, &env, &o, slips, 0.7, cam, dt as f32);
+              let mut b = dust::Body::of(&o); if rc.remote.is_some() { for wv in b.wheels.iter_mut() { wv.2 = (o.u / 0.31) as f32; } } bodies.push(b); } }
+          self.dust.step(w, &bodies, gust as f32, dt as f32); }
+        let d_live = self.dust.live;
         self.d_live = d_live; lap!(3);
         self.last_pidx = path_idx(w, self.car.x, self.car.z);
         self.camera(w, dt); lap!(4);
+        if let Some((obj, _)) = self.rt.dust { let f = [-self.cam_rot[8], -self.cam_rot[9], -self.cam_rot[10]]; self.dust.upload(r, obj, self.cam_pos, f); }
         if self.race.on { race::gfx(self, r, w); race::audio(self); } else if self.race_was { race::hide(self, r); self.audio_msg(&[8.0, 0.0]); }
         self.race_was = self.race.on; lap!(5);
         self.world_fx(r, w, dt);
