@@ -16,7 +16,7 @@ pub fn hud(gm: &mut Game) {
     let mut ui: Vec<(&'static str, Rect)> = Vec::new();
     let km_total = gm.stage_km();
     let res = if gm.race.on && gm.race.phase == Phase::Done && gm.race.done_t > 1.2 { race::results(gm) } else { Vec::new() };
-    for k in super::online::KEYS { gm.ui.remove(k); } gm.ui.remove("garage");
+    for k in super::online::KEYS { gm.ui.remove(k); } for k in super::menu::KEYS { gm.ui.remove(k); } gm.ui.remove("garage");
     if gm.ps.online_ui != super::online::OnlineUi::Closed || gm.gar.open { for k in ["mapF", "mapS", "mapC", "mapL", "mapT", "mapR", "mode"] { gm.ui.remove(k); } }
     let g = &mut gm.hud; g.clear();
     let (bw, bh, gap) = (22.0 * u, 13.0 * u, 3.0 * u); let mut bx = lw - pr - bw;
@@ -26,54 +26,24 @@ pub fn hud(gm: &mut Game) {
         g.tx(label, x + (w - text_w(label, u)) / 2.0, pt + 3.0 * u, u, if on { AMBER } else { INK }); bx = x - gap - bw; };
     let drive = gm.state == State::Drive;
     // settings live on the stage-select screen only, never mid-stage
-    if !drive && !gm.gar.open { btn(g, &mut ui, "set", "SET", gm.set.open); }
+    if !drive && !gm.gar.open && gm.state != State::Title { btn(g, &mut ui, "set", "SET", gm.set.open); }
     if drive { btn(g, &mut ui, "cam", "CAM", false); btn(g, &mut ui, "rst", "RST", false); btn(g, &mut ui, "menu", "MENU", false); }
     for k in ["set", "cam", "rst", "menu", "rec", "tel"] { gm.ui.remove(k); }
-    if gm.ps.debug && !gm.gar.open { let rec = gm.bench_secs; let l = match rec { Some(s) => format!("REC {}", s), None => "REC".to_string() }; btn(g, &mut ui, "rec", &l, rec.is_some()); }   // temporary benchmark button
-    if (gm.ps.debug || gm.tel.is_some()) && !gm.gar.open { let l = match &gm.tel { Some(t) => format!("TEL {}:{:02}", (t.t / 60.0) as u32, (t.t as u32) % 60), None => "TEL".to_string() }; btn(g, &mut ui, "tel", &l, gm.tel.is_some()); }
+    if gm.ps.debug && drive { let rec = gm.bench_secs; let l = match rec { Some(s) => format!("REC {}", s), None => "REC".to_string() }; btn(g, &mut ui, "rec", &l, rec.is_some()); }   // temporary benchmark button
+    if (gm.ps.debug || gm.tel.is_some()) && drive { let l = match &gm.tel { Some(t) => format!("TEL {}:{:02}", (t.t / 60.0) as u32, (t.t as u32) % 60), None => "TEL".to_string() }; btn(g, &mut ui, "tel", &l, gm.tel.is_some()); }
     if gm.state == State::Title && gm.gar.open && !portrait {
         super::garage::draw(&mut gm.gar, &gm.ps, gm.time, g, lw, lh, u, pl, pr, pt, pb);
     } else if gm.state == State::Title && gm.ps.online_ui != super::online::OnlineUi::Closed && !portrait {
         g.rect_c(0.0, 0.0, lw, lh, rgba(6, 9, 6, 0.42));
         super::online::draw(&gm.ps, &gm.rt.map, g, &mut ui, lw, lh, u, pt + 16.0 * u);
     } else if gm.state == State::Title {
-        g.rect_c(0.0, 0.0, lw, lh, rgba(6, 9, 6, 0.42));
-        let sc = (4.0 * u).min((lh / 42.0).floor()).min((lw / 46.0).floor()).max(2.0); let ty = js_round(lh * 0.15);
-        g.tx("FOGWOOD", (lw - text_w("FOGWOOD", sc)) / 2.0, ty, sc, INK); g.tx("RALLY", (lw - text_w("RALLY", sc)) / 2.0, ty + 9.0 * sc, sc, AMBER);
         if !portrait {
-            let km = &km_total;
-            let base = match gm.rt.map_id { 6 => format!("SS6 RIVIERA CORNICHE - {km} KM TARMAC"), 5 => format!("SS5 MOMIJI TOUGE - {km} KM TARMAC"), 2 => format!("SS3 CANYON ROUGE - {km} KM SAND"),
-                3 => format!("SS4 LAKELAND - {km} KM GRAVEL"), 1 => format!("SS2 COL DE GIVRE - {km} KM SNOW"), _ => format!("SS1 FOGWOOD - {km} KM GRAVEL") };
-            let sub = if gm.best.is_some() { format!("{} - BEST {}", base, fmt(gm.best)) } else { base };
-            g.tx(&sub, (lw - text_w(&sub, u)) / 2.0, ty + 17.0 * sc, u, rgba(233, 236, 226, 0.8));
-            let tp = if gm.loading.is_some() { "LOADING STAGE" } else { "TAP TO START" };
-            if ((now / 500.0) as i64) % 2 == 0 || gm.loading.is_some() { g.tx(tp, (lw - text_w(tp, u)) / 2.0, ty + 17.0 * sc + 12.0 * u, u, INK); }
-            let hint = "LEFT THUMB STEERS - RIGHT THUMB ON THE PEDALS"; g.tx(hint, (lw - text_w(hint, u)) / 2.0, ty + 17.0 * sc + 24.0 * u, u, rgba(233, 236, 226, 0.7));
-            let gp = 4.0 * u; let mw = (56.0 * u).min(((lw - 8.0 * u - 5.0 * gp) / 6.0).floor()); let mh = 13.0 * u; let my = ty + 17.0 * sc + 35.0 * u; let mx0 = js_round(lw / 2.0 - mw * 3.0 - gp * 2.5);
-            let want = gm.loading.clone().unwrap_or_else(|| gm.rt.map.clone());
-            for (n, (k, label, m)) in [("mapF", "1 FOREST", "forest"), ("mapS", "2 SNOW", "snow"), ("mapC", "3 CANYON", "canyon"), ("mapL", "4 LAKES", "lakes"), ("mapT", "5 TOUGE", "touge"), ("mapR", "6 RIVIERA", "riviera")].iter().enumerate() {
-                let on = *m == want; let x = mx0 + n as f64 * (mw + gp); ui.push((k, Rect { x, y: my, w: mw, h: mh }));
-                g.panel(x, my, mw, mh, u, if on { rgba(243, 207, 98, 0.3) } else { PANEL }, Some(if on { AMBER } else { EDGE }));
-                g.tx(label, x + (mw - text_w(label, u)) / 2.0, my + 3.0 * u, u, if on { AMBER } else { INK }); }
-            let rm = gm.ps.race_mode;
-            let ml = if rm { format!("MODE: RACE - 5 RIVALS - {} LAPS", gm.race.laps) } else { "MODE: TIME TRIAL".to_string() };
-            let room = crate::net::with(|s| s.code); let ol = match room { Some(c) => format!("ONLINE: ROOM {:06}", c), None => "ONLINE RACE".to_string() };
-            let ow = text_w(&ol, u) + 12.0 * u;
-            let mw2 = text_w(&ml, u) + 12.0 * u; let mx2 = js_round((lw - mw2 - ow - gp) / 2.0); let my2 = my + mh + 4.0 * u;
-            ui.push(("mode", Rect { x: mx2, y: my2, w: mw2, h: mh })); g.panel(mx2, my2, mw2, mh, u, if rm { rgba(216, 72, 58, 0.32) } else { PANEL }, Some(if rm { RED } else { EDGE }));
-            g.tx(&ml, mx2 + 6.0 * u, my2 + 3.0 * u, u, if rm { INK } else { rgba(233, 236, 226, 0.85) });
-            { let (ox, oy) = (mx2 + mw2 + gp, my2); ui.push(("online", Rect { x: ox, y: oy, w: ow, h: mh }));
-              g.panel(ox, oy, ow, mh, u, if room.is_some() { rgba(243, 207, 98, 0.3) } else { PANEL }, Some(if room.is_some() { AMBER } else { EDGE })); g.tx(&ol, ox + 6.0 * u, oy + 3.0 * u, u, if room.is_some() { AMBER } else { INK }); }
-            // the garage, top left: your car's name, tap to pick another
-            { let car = &super::cars::CARS[gm.ps.car.min(super::cars::CARS.len() - 1)]; let lab = "GARAGE"; let cw = text_w(car.name, u).max(text_w(lab, u) + 12.0 * u) + 12.0 * u; let (gx, gy, gh) = (pl, pt, 22.0 * u);
-              ui.push(("garage", Rect { x: gx, y: gy, w: cw, h: gh })); let glow = 0.5 + 0.5 * (now / 400.0).sin();
-              g.panel(gx, gy, cw, gh, u, PANEL, Some(rgba(243, 207, 98, (0.55 + 0.35 * glow) as f32))); g.rect_c(gx + u, gy + u, 2.0 * u, gh - 2.0 * u, AMBER);
-              g.tx(lab, gx + 6.0 * u, gy + 3.0 * u, u, AMBER); g.arrow(gx + 6.0 * u + text_w(lab, u) + 6.0 * u + glow * u, gy + 6.5 * u, 1.0, 3.0 * u, u, AMBER);
-              g.tx(car.name, gx + 6.0 * u, gy + 12.0 * u, u, INK); }
-            let c1 = "SOUNDS CC0: KENNEY, LANDEPLAGE, HARGISSSOUND, THREADBARE, RUBBERDUCK, FELIX BLUME";
-            if text_w(c1, u) < lw - 10.0 { g.text(c1, (lw - text_w(c1, u)) / 2.0, lh - pb - 8.0 * u, u, rgba(233, 236, 226, 0.5), None); }
+            let mut m = std::mem::take(g); super::menu::draw(gm, &mut m, &mut ui, lw, lh, u, pl, pt, pb);
+            if gm.loading.is_some() { super::menu::loading(gm, &mut m, lw, lh, u, pl, pb); }
+            gm.hud = m;
         }
     }
+    let g = &mut gm.hud;
     if portrait {
         g.rect_c(0.0, 0.0, lw, lh, rgba(6, 9, 6, 0.78));
         let (cx, cy) = (lw / 2.0, lh * 0.42); let a = (now / 900.0) % 2.0 >= 1.0; let (w, h) = (if a { 30.0 } else { 16.0 } * u, if a { 16.0 } else { 30.0 } * u);
@@ -168,4 +138,5 @@ fn finish(gm: &mut Game, ui: Vec<(&'static str, Rect)>) {
     let (lw, lh, u) = (gm.lw as f64, gm.lh as f64, gm.u);
     let paused = gm.settings_paused(); let cam = gm.cam.mode as u8; let time = gm.time;
     super::settings::draw(&mut gm.set, &gm.ps, cam, paused, &mut gm.hud, lw, lh, u, time);
+    { let mut h = std::mem::take(&mut gm.hud); super::menu::overlays(gm, &mut h, lw, lh, u); gm.hud = h; }
 }

@@ -11,6 +11,7 @@ pub mod cars;
 pub mod garage;
 pub mod dust;
 pub mod crash;
+pub mod menu;
 mod draw;
 
 use crate::bridge;
@@ -148,6 +149,8 @@ pub struct Game {
     pub gar: garage::Garage, pub base_tune: Tune, car_vis: Option<usize>,
     /// the livery on show (body, livery), so it is only swapped when it changes
     paint_vis: Option<(usize, usize)>,
+    /// the main menu's state (cursor, transitions, loading screen)
+    pub menu: menu::Menu,
     /// your car's bodywork: visual crash damage (never touches the driving)
     pub crash: crash::Crash,
 }
@@ -176,7 +179,7 @@ impl Game {
         let ncull = rt.cull.len(); let nglit = rt.glit.len();
         let mut g = Game {
             np, snow: mid == 1, can: mid == 2, lak: mid == 3, tou: mid == 5, riv: mid == 6,
-            tune: cars::tune_for(&Tune::from_slice(&tv), ps.car), base_tune: Tune::from_slice(&tv), gar: Default::default(), car_vis: None, paint_vis: None, crash: crash::Crash::new(), cam_follow, car: Car::new(), rpm_shown: 900.0, shake: 0.0, car_hit: 0.0, prev_throttle: 0.0,
+            tune: cars::tune_for(&Tune::from_slice(&tv), ps.car), base_tune: Tune::from_slice(&tv), gar: Default::default(), car_vis: None, paint_vis: None, menu: menu::fresh(), crash: crash::Crash::new(), cam_follow, car: Car::new(), rpm_shown: 900.0, shake: 0.0, car_hit: 0.0, prev_throttle: 0.0,
             state: State::Title, g_t: 0.0, lap: 1, lap_start: 0.0, best, flags: [false; 3], last_idx: 0, msg: String::new(), msg_t: 0.0, wrong_t: 0.0, started: false, go: 0.0,
             cam: CamState { y: 0.0, h: 0.0, init: false, mode: ps.cam_mode as i32, fov: 56.0, lag: 0.0, cp: None, cr: None, shot: -1, cut_t: 0.0, passed: 0.0, anchor: [0.0; 3], target: 0, side: 1.0 },
             cam_pos: [0.0; 3], cam_rot: ID, fov_now: 56.0, view: ID, proj: ID, w: 1280.0, h: 720.0, lw: 320, lh: 180, u: 1.0, inset: [0.0; 4], inset_px: [0.0; 4],
@@ -257,7 +260,7 @@ impl Game {
 
     fn hit_button(&self, x: f64, y: f64) -> Option<&'static str> {
         let inb = |b: &Rect, l: f64, r: f64, t: f64, bt: f64| x >= b.x - l && x <= b.x + b.w + r && y >= b.y - t && y <= b.y + b.h + bt;
-        if self.state == State::Title { for k in ["mapF", "mapS", "mapC", "mapL", "mapT", "mapR", "mode", "garage"].iter().chain(online::KEYS.iter()) { if let Some(b) = self.ui.get(k) { if inb(b, 2.0, 2.0, 3.0, 3.0) { return Some(k); } } } }
+        if self.state == State::Title { for k in ["mapF", "mapS", "mapC", "mapL", "mapT", "mapR", "mode", "garage"].iter().chain(online::KEYS.iter()).chain(menu::KEYS.iter()) { if let Some(b) = self.ui.get(k) { if inb(b, 2.0, 2.0, 3.0, 3.0) { return Some(k); } } } }
         for k in TOPB { if let Some(b) = self.ui.get(k) { if inb(b, 2.0, 2.0, 2.0, 3.0) { return Some(k); } } }
         let (Some(hb), Some(left), Some(right), Some(gas)) = (self.ui.get("hb"), self.ui.get("left"), self.ui.get("right"), self.ui.get("gas")) else { return None };
         if !self.ps.touch_used { return None; }
@@ -278,6 +281,7 @@ impl Game {
                 self.ps.touch_used = true; let b = self.hit_button(x, y);
                 if let Some(b) = b { self.buzz("tap", if TOPB.contains(&b) || b.starts_with("map") { 0.55 } else { 0.4 }); } else if self.state == State::Title { self.buzz("tap", 0.55); }
                 if let Some(k) = b { if online::KEYS.contains(&k) && self.state == State::Title { self.online_tap(k); return; } }
+                if let Some(k) = b { if k.starts_with("m_") && self.state == State::Title { self.menu_tap(k); return; } }
                 match b {
                     Some("set") if self.state == State::Title => self.open_settings(),
                     Some("garage") if self.state == State::Title => self.open_garage(),
@@ -292,7 +296,7 @@ impl Game {
                     Some(k) if k.starts_with("map") => { let want = match k { "mapF" => "forest", "mapS" => "snow", "mapC" => "canyon", "mapL" => "lakes", "mapT" => "touge", _ => "riviera" }; if want != self.rt.map { self.switch_map(want); } }
                     _ if self.state == State::Title && self.online_open() => {}
                     _ if self.state == State::Title && crate::net::active() => { self.ps.online_ui = online::OnlineUi::Lobby; }
-                    _ if self.state == State::Title => self.start_game(),
+                    _ if self.state == State::Title => {}
                     None if self.race.on && self.race.phase == race::Phase::Done && self.race.done_t > 1.2 => { self.to_title(); }
                     Some("menu") => { self.to_title(); }
                     Some("cam") => self.cycle_cam(),
@@ -316,7 +320,7 @@ impl Game {
     pub fn start_game(&mut self) {
         if self.state != State::Title { return; }
         let g = bridge::lock(); let Some(e) = g.as_ref() else { return };
-        self.close_settings(); self.gar.open = false;
+        self.close_settings(); self.gar.open = false; if self.race.on { race::stop(self); }
         self.state = State::Drive; let np = self.np; self.place_at(&e.world, np - 6); self.lap = 1; self.started = false; self.g_t = 0.0; self.flags = [false; 3]; self.last_idx = np - 6; self.go = 2.2;
         if self.ps.race_mode { race::start(self, &e.world); }
         self.car_audio_on = true;
@@ -354,6 +358,7 @@ impl Game {
 
     /// One frame of the game (dt seconds), drawn into the renderer's scene.
     pub fn tick(&mut self, r: &mut Renderer, dt: f64) {
+        self.menu_step(dt);
         if self.loading.is_some() { self.hud_frame(r); return; }
         let guard = bridge::lock(); let Some(eng) = guard.as_ref() else { return };
         let w = &eng.world; let obs = &eng.obstacles;
@@ -363,11 +368,15 @@ impl Game {
         let gust = clamp(0.5 + (fbm(self.time * 0.06, 3.3, 3) - 0.5) * 1.8, 0.0, 1.0); self.wind = gust;
         let inp = if self.state == State::Drive {
             if self.go > 0.9 { Input { steer: 0.0, throttle: 0.0, brake: 0.0, hb: true } } else if self.auto || (self.race.on && self.race.phase == race::Phase::Done) { self.ai_input(w) } else { self.read_input() }
-        } else if self.gar.open { Input { steer: 0.0, throttle: 0.0, brake: 0.0, hb: true } } else { self.ai_input(w) };
+        } else if self.gar.open || (self.race.demo && self.go > 0.9) { Input { steer: 0.0, throttle: 0.0, brake: 0.0, hb: true } } else { self.ai_input(w) };
         let mut tp = std::time::Instant::now(); let mut prof = [0f32; 8];
         macro_rules! lap { ($k:expr) => {{ let n = std::time::Instant::now(); prof[$k] += (n - tp).as_secs_f32() * 1000.0; tp = n; }} }
         self.online_tick(w, dt);
         self.garage_step(w, dt);
+        // the menu's attract race: you and five rivals, AI at every wheel, round and round behind the menu
+        let demo_ok = self.state == State::Title && !self.gar.open && self.ps.online_ui == online::OnlineUi::Closed && !crate::net::active();
+        if demo_ok && !self.race.on { race::start(self, w); self.race.demo = true; }
+        else if self.race.demo && (!demo_ok || (self.race.phase == race::Phase::Done && self.race.done_t > 4.0)) { race::stop(self); }
         // the body on show: yours, or the one the garage is looking at
         let want = if self.gar.open { self.gar.sel } else { self.ps.car };
         if self.car_vis != Some(want) && !self.rt.car_models.is_empty() { for (k, objs) in self.rt.car_models.iter().enumerate() { for &o in objs { r.set_vis(o, k == want); } } self.car_vis = Some(want); }
@@ -379,7 +388,8 @@ impl Game {
         let pre = (self.car.vx, self.car.vz, self.car.r);
         let shifted = if paused { false } else { self.car.update(w, obs, &self.tune, dt, &inp) }; lap!(0);
         if shifted { if self.state == State::Drive { self.buzz("shift", 0.45); } self.audio_msg(&[7.0, 2.0]); }
-        if self.state == State::Drive && !paused { if self.race.on { race::step(self, w, obs, dt); } else { self.update_lap(w, dt); } } lap!(1);
+        if self.state == State::Drive && !paused { if self.race.on { race::step(self, w, obs, dt); } else { self.update_lap(w, dt); } }
+        else if self.state == State::Title && self.race.demo { race::step(self, w, obs, dt); } lap!(1);
         // crash damage: a hit (a tree, a rock, a wall, another car) dents the bodywork where it landed; a landing does not
         if !paused && self.car.impact > 2.0 {
             if let Some((p, d)) = crash::locate(self.car.vx - pre.0, self.car.vz - pre.1, self.car.r - pre.2, self.car.h, crate::physics::M, self.tune.iz) {

@@ -16,6 +16,8 @@ pub const SHADOW: Col = rgba(0, 0, 0, 0.55);
 /// Draw calls are recorded (integer pixel bounds + colour); when a frame's list equals the last one nothing is rasterized or uploaded.
 pub struct Canvas { pub w: i32, pub h: i32, pub bytes: Vec<u8>, ops: Vec<[u32; 6]>, last_ops: Vec<[u32; 6]>, pub last: Vec<u8>, pub fill: Col, dirty: bool }
 
+impl Default for Canvas { fn default() -> Self { Canvas::new(1, 1) } }
+
 impl Canvas {
     pub fn new(w: i32, h: i32) -> Canvas { let n = (w.max(1) * h.max(1)) as usize; Canvas { w, h, bytes: vec![0; n * 4], ops: Vec::new(), last_ops: Vec::new(), last: Vec::new(), fill: INK, dirty: true } }
     pub fn resize(&mut self, w: i32, h: i32) { if w != self.w || h != self.h { *self = Canvas::new(w, h); } }
@@ -108,6 +110,19 @@ impl Canvas {
         self.glyphs(&s, x, y, sc, c);
     }
     pub fn tx(&mut self, s: &str, x: f64, y: f64, sc: f64, c: Col) { self.text(s, x, y, sc, c, Some(SHADOW)); }
+    /// Italic display lettering: each of the 7 glyph rows gets its own colour (a chrome / sunset gradient) and leans right
+    /// (upper rows pushed right in whole pixels); `gap` extra letter spacing in glyph pixels, `sh` the drop shadow offset.
+    pub fn text_italic(&mut self, s: &str, x: f64, y: f64, sc: f64, rows: &[Col; 7], gap: f64, sh: Option<(Col, f64)>) {
+        let s = s.to_uppercase(); let (x, y) = (js_round(x), js_round(y)); let adv = (6.0 + gap) * sc;
+        let pass = |g: &mut Canvas, ox: f64, oy: f64, solid: Option<Col>| {
+            for (n, ch) in s.chars().enumerate() { if ch == ' ' { continue; } let gl = glyph(ch);
+                for (r, row) in gl.iter().enumerate() { if *row == 0 { continue; } let lean = js_round((6 - r) as f64 * sc / 3.0); let c = solid.unwrap_or(rows[r]);
+                    for b in 0..5 { if row & (16 >> b) != 0 { g.rect_c(x + ox + n as f64 * adv + b as f64 * sc + lean, y + oy + r as f64 * sc, sc, sc, c); } } } } };
+        if let Some((c, d)) = sh { pass(self, d, d, Some(c)); }
+        pass(self, 0.0, 0.0, None);
+    }
+    /// width of italic lettering (lean included)
+    pub fn italic_w(s: &str, sc: f64, gap: f64) -> f64 { s.chars().count() as f64 * (6.0 + gap) * sc - (1.0 + gap) * sc + 2.0 * sc }
     /// panel with clipped corners and an optional one-pixel edge
     pub fn panel(&mut self, x: f64, y: f64, w: f64, h: f64, u: f64, fill: Col, edge: Option<Col>) {
         let (x, y, w, h) = (js_round(x), js_round(y), js_round(w), js_round(h));

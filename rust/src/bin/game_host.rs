@@ -3,7 +3,7 @@
 //! env: DUSTN=6000 (the app's dust buffer size, for scenes dumped from the browser build), NODUST, NOHUD
 //! script: comma-separated steps "t:action", e.g. "1:start,1:auto,8:shot,12:shot,20:race,40:shot,60:state"
 //!   start (tap to start)  auto (demo driver drives)  shot (write <outdir>/fNNNN.ppm)  state (print the car)  tap:x:y  race (toggle mode on the menu)
-//!   hit:cx:cz:r:dx:dz:speed / hitcar:cx:cz:axx:axz:dx:dz:speed (dent the bodywork, car frame)  cam  menu  log (car each second from then on)  garage gnext gprev gclose gpaint[:d] car:k
+//!   mtap:key  hit:cx:cz:r:dx:dz:speed / hitcar:cx:cz:axx:axz:dx:dz:speed (dent the bodywork, car frame)  cam  menu  log (car each second from then on)  garage gnext gprev gclose gpaint[:d] car:k
 use fogwood_core::game::{Game, Persist, State};
 use fogwood_core::render::{loader::Loader, Renderer};
 use glow::HasContext;
@@ -78,6 +78,7 @@ fn main() {
                     "dust" => { let d = &g.dust; let mut v: Vec<(f32, f32, f32)> = (0..d.n).filter(|&i| d.a[i] > 0.0).map(|i| (d.a[i], d.s[i], d.col[i * 3])).collect(); v.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
                         println!("dust live {} visible {} kinds {:?} top {:?}", d.live, v.len(), d.kind_counts(), &v[..v.len().min(5)]); }
                     "car" => { let k: usize = parts[1].parse().unwrap_or(0); g.choose_car(k); }
+                    "mtap" => { g.menu_tap(parts[1]); }   // a main-menu key (m_drive, m_stage, m_race, m_online, m_garage, m_opts, m_sprev, m_snext)
                     "gpaint" => { g.garage_paint(parts.get(1).and_then(|v| v.parse().ok()).unwrap_or(1)); }   // next livery for the car in the garage
                     "hit" => { let f = |i: usize| parts.get(i).and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0); let (dx, dz) = (f(4), f(5)); let l = dx.hypot(dz).max(1e-6);
                         g.crash.hit(fogwood_core::game::crash::Shape::Circle { c: [f(1), f(2)], r: f(3), top: 10.0 }, [dx / l, 0.0, dz / l], f(6)); }   // hit:cx:cz:r:dx:dz:speed: a post of radius r at (cx, cz), car frame

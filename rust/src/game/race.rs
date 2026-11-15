@@ -50,13 +50,15 @@ pub struct Race {
     pub online: bool, pub go_at: f64,
     /// online: pushes this phone gave other players' cars this frame (peer, [dvx, dvz, yaw rate, dx, dz], impact), sent to their owners
     pub hits: Vec<(u32, [f64; 5], f64)>, pub me_id: u32,
+    /// the menu's attract-mode race (AI drives your car too; nothing it does is saved)
+    pub demo: bool,
 }
 
 impl Race {
     pub fn new(rt: &Rt, ps: &Persist) -> Race {
         let np = rt.np; let n = (np + 9) / 10; let mut rlearn = vec![1.0; n];
         if let Some(v) = ps.saves.get(&format!("fogwood-learn-{}", rt.map)) { if v.len() == n * 2 { for i in 0..n { rlearn[i] = 0.7 + v[i * 2..i * 2 + 2].parse::<f64>().unwrap_or(99.0) / 330.0; } } }
-        Race { on: false, laps: if np > 2300 { 2 } else { 3 }, cars: Vec::new(), player: 0, phase: Phase::Off, t: 0.0, done_t: 0.0, note: String::new(), pos: 0, order: Vec::new(), finish_pos: 0, rlearn, shown: false, online: false, go_at: 0.0, hits: Vec::new(), me_id: 0 }
+        Race { on: false, laps: if np > 2300 { 2 } else { 3 }, cars: Vec::new(), player: 0, phase: Phase::Off, t: 0.0, done_t: 0.0, note: String::new(), pos: 0, order: Vec::new(), finish_pos: 0, rlearn, shown: false, online: false, go_at: 0.0, hits: Vec::new(), me_id: 0, demo: false }
     }
 }
 
@@ -87,7 +89,7 @@ pub fn start(g: &mut Game, w: &World) {
         let mut c = mk_car(g, Some(order[ri]), k, lat); ri += 1; rc_place(&mut c.car, &g.rt, w, k, lat, 0.0); g.race.cars.push(c);
     }
 }
-pub fn stop(g: &mut Game) { g.race.online = false; g.race.on = false; g.race.phase = Phase::Off; g.race.cars.clear(); }
+pub fn stop(g: &mut Game) { g.race.online = false; g.race.demo = false; g.race.on = false; g.race.phase = Phase::Off; g.race.cars.clear(); }
 
 fn state<'a>(g: &'a Game, k: usize) -> &'a Car { if g.race.cars[k].is_player() { &g.car } else { &g.race.cars[k].car } }
 
@@ -237,7 +239,7 @@ fn finish(g: &mut Game) {
         let mut best = 1e9; for c in &g.race.cars { if !c.is_player() { best = f64::min(best, (laps * np - c.prog) / c.v.max(15.0)); } } best } else { 0.0 };
     let d = if pos == 1 { if next > 10.0 { 0.05 } else if next > 4.0 { 0.03 } else { 0.015 } } else if pos <= 3 { 0.0 } else if pos <= 5 { -0.015 } else { -0.03 };
     let d = if g.race.online { 0.0 } else { d };
-    if !g.race.online { g.ps.race_skill = clamp(g.ps.race_skill + d, 0.84, 1.1); let v = format!("{:.3}", g.ps.race_skill); g.ps.saves.set("fogwood-skill", v); }
+    if !g.race.online && !g.race.demo { g.ps.race_skill = clamp(g.ps.race_skill + d, 0.84, 1.1); let v = format!("{:.3}", g.ps.race_skill); g.ps.saves.set("fogwood-skill", v); }
     g.race.note = if d > 0.0 { "RIVALS WILL PUSH HARDER".into() } else if d < 0.0 { "RIVALS WILL EASE OFF".into() } else { String::new() }; g.race.finish_pos = pos;
     let m = if pos == 1 { "YOU WIN!".to_string() } else { format!("FINISHED P{}", pos) }; g.flash_msg(&m, 3.0);
 }
