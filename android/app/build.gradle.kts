@@ -16,10 +16,11 @@ android {
         versionName = "1.0.$runNumber"
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
     }
-    // One permanent key for every build, so each new APK installs over the previous one.
-    // CI decrypts android/signing/fogwood-release.jks.enc with the FOGWOOD_KEYSTORE_PASSWORD secret.
-    val ksFile = System.getenv("FOGWOOD_KEYSTORE")?.let { file(it) }?.takeIf { it.exists() }
-    val ksPass = System.getenv("FOGWOOD_KEYSTORE_PASSWORD")
+    // One permanent key for every build, so each new APK installs over the previous one: the key committed in
+    // android/signing/fogwood-public.jks (public on purpose, no secret needed), unless FOGWOOD_KEYSTORE points elsewhere.
+    val custom = System.getenv("FOGWOOD_KEYSTORE")?.let { file(it) }?.takeIf { it.exists() }
+    val ksFile = custom ?: rootProject.file("signing/fogwood-public.jks").takeIf { it.exists() }
+    val ksPass = if (custom != null) System.getenv("FOGWOOD_KEYSTORE_PASSWORD") else "fogwood-public"
     signingConfigs {
         if (ksFile != null && ksPass != null) create("fogwood") {
             storeFile = ksFile; storePassword = ksPass; keyAlias = "fogwood"; keyPassword = ksPass
