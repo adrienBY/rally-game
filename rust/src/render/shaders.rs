@@ -160,6 +160,9 @@ void main() { vec4 mv = uView * uModel * vec4(position, 1.0); gl_Position = uPro
   vec3 c = dot(color, color) < 1e-6 ? vec3(1.0, 0.0, 0.0) : color; vSeed = c.z;
   // lit like a thin scattering medium: sky and ground light from all round, the sun on top, nothing sphere-like
   vec3 base = mix(uCol, vec3(0.38, 0.31, 0.22), c.y) * c.x;
+  // airborne dust is paler and greyer than the ground it came from (fine grains scatter light more evenly): wash half the
+  // colour out and lift it a little, so a red-earth stage throws a pale tan cloud, not an orange one
+  base = mix(base, vec3(dot(base, vec3(0.3, 0.55, 0.15))) * 1.08, 0.5);
   vec3 lit = base * (mix(uHemiGround, uHemiSky, 0.62) * 0.46 + uDirColor * (0.32 + 0.12 * max(uDirDir.y, 0.0)));
   vRgb = mix(lit, uFog, fogk); }
 "#;
