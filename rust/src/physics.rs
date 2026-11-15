@@ -48,7 +48,8 @@ impl Tune {
 }
 
 const WB_F: f64 = 1.22; const WB_R: f64 = -1.28; const TRACK: f64 = 0.75; const TIRE_R: f64 = 0.31;
-const M: f64 = 1180.0; const HCG: f64 = 0.5; const IW: f64 = 1.25; const DRAG: f64 = 0.44; const VEH_L: f64 = WB_F - WB_R;
+/// the car's mass (kg)
+pub const M: f64 = 1180.0; const HCG: f64 = 0.5; const IW: f64 = 1.25; const DRAG: f64 = 0.44; const VEH_L: f64 = WB_F - WB_R;
 const GEARS: [f64; 5] = [3.15, 2.1, 1.55, 1.21, 0.98]; const FINAL: f64 = 4.1; const REV: f64 = 3.3;
 const TQ_R: [f64; 9] = [800.0, 1500.0, 2500.0, 3500.0, 4500.0, 5500.0, 6500.0, 7200.0, 7600.0];
 const TQ_N: [f64; 9] = [170.0, 290.0, 410.0, 520.0, 575.0, 560.0, 505.0, 420.0, 0.0];

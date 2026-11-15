@@ -2,7 +2,7 @@
 //!   game_host <scene> <rt> <outdir> <script>
 //! script: comma-separated steps "t:action", e.g. "1:start,1:auto,8:shot,12:shot,20:race,40:shot,60:state"
 //!   start (tap to start)  auto (demo driver drives)  shot (write <outdir>/fNNNN.ppm)  state (print the car)  tap:x:y  race (toggle mode on the menu)
-//!   cam  menu  log (car each second from then on)  garage gnext gprev gclose car:k
+//!   hit:x:y:z:dx:dy:dz:speed (dent the bodywork, car frame)  cam  menu  log (car each second from then on)  garage gnext gprev gclose car:k
 use fogwood_core::game::{Game, Persist, State};
 use fogwood_core::render::{loader::Loader, Renderer};
 use glow::HasContext;
@@ -77,6 +77,8 @@ fn main() {
                     "dust" => { let d = &g.dust; let mut v: Vec<(f32, f32, f32)> = (0..d.n).filter(|&i| d.a[i] > 0.0).map(|i| (d.a[i], d.s[i], d.col[i * 3])).collect(); v.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
                         println!("dust live {} visible {} top {:?}", d.live, v.len(), &v[..v.len().min(5)]); }
                     "car" => { let k: usize = parts[1].parse().unwrap_or(0); g.choose_car(k); }
+                    "hit" => { let f = |i: usize| parts.get(i).and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0); let d = [f(4), f(5), f(6)]; let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-6);
+                        g.crash.hit([f(1), f(2), f(3)], [d[0] / l, d[1] / l, d[2] / l], f(7)); }   // hit:x:y:z:dx:dy:dz:speed (car frame): crash damage without a crash
                     "sclose" => g.close_settings(),
                     "stap" => { let f: f64 = parts.get(2).and_then(|v| v.parse().ok()).unwrap_or(0.5); let key = parts[1].replace(".", ":"); println!("stap {} {} vol={} hap={} pix={} rays={}", key, g.settings_tap_key(&key, f), g.ps.vol, g.ps.hap, g.ps.pix_idx, g.ps.rays); }
                     "netstat" => { fogwood_core::net::with(|s| println!("traffic t={:.1} bytes {:?} packets {:?}", t, s.traffic.get(), s.packets.get())); }

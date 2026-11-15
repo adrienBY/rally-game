@@ -32,12 +32,16 @@ struct Object {
     prog: usize, no_normal: bool, no_uv: bool, no_color: bool,
     /// coarser index buffers (every 2nd / 4th grid line) for far ground tiles, and which one to draw (0 = full)
     lods: Vec<(glow::Buffer, i32)>, lod: usize,
+    /// its own position / normal buffers once the game reshapes it (a dented car body), so meshes sharing the geometry keep theirs
+    own: Option<(glow::Buffer, Option<glow::Buffer>)>,
 }
 struct GpuScene {
     texs: Vec<Texture>, geos: Vec<Geometry>, mats: Vec<Material>, objs: Vec<Object>,
     fog_c: [f32; 3], fog_d: f32, clear: [f32; 4], hemi: ([f32; 3], [f32; 3], [f32; 3]), dir: ([f32; 3], [f32; 3]),
     /// the sky's sun direction, glow and halo: the fog borrows them so the haze matches the sky
     sky: ([f32; 3], [f32; 3], f32),
+    /// CPU copies of the car bodies' positions and normals (object id -> rest shape), for the crash deformation
+    car_rest: HashMap<usize, (Vec<f32>, Vec<f32>)>,
 }
 #[derive(Clone, Copy, Default)]
 pub struct FrameState { pub lw: i32, pub lh: i32, pub view: M4, pub proj: M4, pub cam: [f32; 3], pub time: f32, pub wind: f32, pub sun: [f32; 2],
@@ -149,6 +153,24 @@ impl Renderer {
         let gl = &self.gl; let Some(s) = self.scene.as_ref() else { return }; let Some(o) = s.objs.get(id) else { return };
         if let Some(a) = s.geos[o.geo].attrs.iter().find(|a| a.name == name) { unsafe { gl.bind_buffer(glow::ARRAY_BUFFER, Some(a.buf)); gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, f32_bytes(data), glow::DYNAMIC_DRAW); } }
     }
+    /// the rest shape (positions, normals; normals empty if it has none) of a car-body object, as the page built it
+    pub fn car_rest(&self, id: usize) -> Option<&(Vec<f32>, Vec<f32>)> { self.scene.as_ref()?.car_rest.get(&id) }
+    /// reshape one object: new positions (and normals) in its own buffers, rebound in its vertex array the first time
+    pub fn reshape(&mut self, id: usize, pos: &[f32], nrm: Option<&[f32]>) {
+        let gl = &self.gl; let Some(o) = self.scene.as_mut().and_then(|s| s.objs.get_mut(id)) else { return };
+        unsafe {
+            if o.own.is_none() {
+                let (Ok(pb), nb) = (gl.create_buffer(), if nrm.is_some() { gl.create_buffer().ok() } else { None }) else { return };
+                gl.bind_vertex_array(Some(o.vao));
+                gl.bind_buffer(glow::ARRAY_BUFFER, Some(pb)); gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, f32_bytes(pos), glow::DYNAMIC_DRAW); gl.vertex_attrib_pointer_f32(0, 3, glow::FLOAT, false, 0, 0);
+                if let (Some(nb), Some(n)) = (nb, nrm) { gl.bind_buffer(glow::ARRAY_BUFFER, Some(nb)); gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, f32_bytes(n), glow::DYNAMIC_DRAW); gl.vertex_attrib_pointer_f32(1, 3, glow::FLOAT, false, 0, 0); }
+                gl.bind_vertex_array(None); o.own = Some((pb, nb)); return;
+            }
+            let (pb, nb) = o.own.unwrap();
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(pb)); gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, f32_bytes(pos), glow::DYNAMIC_DRAW);
+            if let (Some(nb), Some(n)) = (nb, nrm) { gl.bind_buffer(glow::ARRAY_BUFFER, Some(nb)); gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, f32_bytes(n), glow::DYNAMIC_DRAW); }
+        }
+    }
     /// coarse versions of a tw x th vertex grid tile (same winding as the page builds it): every 2nd and every 4th grid line, edges kept
     pub fn add_grid_lods(&mut self, id: usize, tw: usize, th: usize) {
         let gl = &self.gl; let Some(o) = self.scene.as_mut().and_then(|s| s.objs.get_mut(id)) else { return };
@@ -199,7 +221,7 @@ impl Renderer {
         if let Some(s) = self.scene.take() {
             for t in s.texs { gl.delete_texture(t.tex); }
             for g in s.geos { for a in g.attrs { gl.delete_buffer(a.buf); } if let Some(i) = g.index { gl.delete_buffer(i); } }
-            for o in s.objs { gl.delete_vertex_array(o.vao); if let Some(b) = o.ibuf { gl.delete_buffer(b); } if let Some(b) = o.cbuf { gl.delete_buffer(b); } for (b, _) in o.lods { gl.delete_buffer(b); } }
+            for o in s.objs { gl.delete_vertex_array(o.vao); if let Some(b) = o.ibuf { gl.delete_buffer(b); } if let Some(b) = o.cbuf { gl.delete_buffer(b); } for (b, _) in o.lods { gl.delete_buffer(b); } if let Some((p, n)) = o.own { gl.delete_buffer(p); if let Some(n) = n { gl.delete_buffer(n); } } }
         }
     }
 
@@ -257,10 +279,13 @@ impl Renderer {
                 poly: m["po"].as_array().map(|a| (f(&a[0]), f(&a[1]))), blend: m["blend"].as_i64().unwrap_or(1) as i32,
                 sway: m["sway"].as_array().map(|a| (f(&a[0]), a[1].as_i64() == Some(1), a.get(2).map(f).unwrap_or(0.0), a.get(3).map(f).unwrap_or(0.0))), size: f(&m["size"]), sky, dust });
         }
-        let mut objs = vec![];
+        let mut objs = vec![]; let mut car_rest = HashMap::new();
         for o in head["objs"].as_array().cloned().unwrap_or_default() {
             let kind = match o["type"].as_str().unwrap_or("mesh") { "inst" => ObjKind::Inst, "points" => ObjKind::Points, _ => ObjKind::Mesh };
             let gi = o["g"].as_u64().unwrap_or(0) as usize; let geo = &geos[gi.min(geos.len() - 1)];
+            if kind == ObjKind::Mesh && o["car"].as_i64() == Some(1) {
+                let ga = &head["geos"][gi]["attrs"]; let pick = |n: &str| ga.as_array().and_then(|l| l.iter().find(|a| a["name"].as_str() == Some(n))).map(|a| as_f32(bytes_of(&a["data"], blob)));
+                if let Some(pos) = pick("position") { car_rest.insert(objs.len(), (pos, pick("normal").unwrap_or_default())); } }
             let mut mw = [0f32; 16]; if let Some(a) = o["mw"].as_array() { for (i, x) in a.iter().take(16).enumerate() { mw[i] = f(x); } }
             let vao = gl.create_vertex_array()?; gl.bind_vertex_array(Some(vao));
             for a in &geo.attrs {
@@ -282,7 +307,7 @@ impl Renderer {
             let mi = o["m"].as_u64().unwrap_or(0) as usize;
             let has = |n: &str| geo.attrs.iter().any(|a| a.name == n);
             let (no_normal, no_uv, no_color) = (!has("normal"), !has("uv"), !has("color"));
-            objs.push(Object { lods: Vec::new(), lod: 0, prog: usize::MAX, no_normal, no_uv, no_color, kind, geo: gi, mat: mi, mw, ro: o["ro"].as_i64().unwrap_or(0) as i32, cull: o["cull"].as_i64() == Some(1), vis: o["vis"].as_i64() != Some(0), car: o["car"].as_i64() == Some(1),
+            objs.push(Object { own: None, lods: Vec::new(), lod: 0, prog: usize::MAX, no_normal, no_uv, no_color, kind, geo: gi, mat: mi, mw, ro: o["ro"].as_i64().unwrap_or(0) as i32, cull: o["cull"].as_i64() == Some(1), vis: o["vis"].as_i64() != Some(0), car: o["car"].as_i64() == Some(1),
                 opacity: mats.get(mi).map(|m| m.opacity).unwrap_or(1.0), count: o["count"].as_i64().unwrap_or(1) as i32, ibuf, cbuf,
                 ibs: o["ibs"].as_array().map(|a| [f(&a[0]), f(&a[1]), f(&a[2]), f(&a[3])]), vao,
                 dr: o["dr"].as_array().map(|a| (a[0].as_i64().unwrap_or(0) as i32, a[1].as_i64().unwrap_or(0) as i32)) });
@@ -292,7 +317,7 @@ impl Renderer {
         if let Some(d) = head["lights"]["dir"].as_array().and_then(|a| a.first()) { dir = (v3(&d["c"]), v3(&d["d"])); }
         let clear = head["clear"].as_array().map(|a| [f(&a[0]), f(&a[1]), f(&a[2]), f(&a[3])]).unwrap_or([0.5, 0.5, 0.5, 0.0]);
         let sky = mats.iter().find_map(|m| m.sky.map(|(sun, _, _, glow, halo)| (sun, glow, halo))).unwrap_or(([0.0, 1.0, 0.0], [0.0; 3], 0.0));
-        self.scene = Some(GpuScene { texs, geos, mats, objs, fog_c: v3(&head["fog"]["c"]), fog_d: f(&head["fog"]["d"]), clear, hemi, dir, sky });
+        self.scene = Some(GpuScene { car_rest, texs, geos, mats, objs, fog_c: v3(&head["fog"]["c"]), fog_d: f(&head["fog"]["d"]), clear, hemi, dir, sky });
         // compile every program the scene needs now, so the first frames don't hitch
         let keys: Vec<Option<MeshKey>> = { let s = self.scene.as_ref().unwrap(); s.objs.iter().map(|o| Self::mesh_key(s, o)).collect() };
         for (i, k) in keys.iter().enumerate() { if let Some(k) = k { let pi = self.mesh_prog(k)?; self.scene.as_mut().unwrap().objs[i].prog = pi; } }

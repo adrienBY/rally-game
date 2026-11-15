@@ -10,6 +10,7 @@ pub mod settings;
 pub mod cars;
 pub mod garage;
 pub mod dust;
+pub mod crash;
 mod draw;
 
 use crate::bridge;
@@ -144,6 +145,8 @@ pub struct Game {
     pub set: settings::Settings,
     /// the garage, the stage tune before your car's character, which body is on show
     pub gar: garage::Garage, pub base_tune: Tune, car_vis: Option<usize>,
+    /// your car's bodywork: visual crash damage (never touches the driving)
+    pub crash: crash::Crash,
 }
 
 pub fn path_idx(w: &World, x: f64, z: f64) -> usize {
@@ -170,7 +173,7 @@ impl Game {
         let ncull = rt.cull.len(); let nglit = rt.glit.len();
         let mut g = Game {
             np, snow: mid == 1, can: mid == 2, lak: mid == 3, tou: mid == 5, riv: mid == 6,
-            tune: cars::tune_for(&Tune::from_slice(&tv), ps.car), base_tune: Tune::from_slice(&tv), gar: Default::default(), car_vis: None, cam_follow, car: Car::new(), rpm_shown: 900.0, shake: 0.0, car_hit: 0.0, prev_throttle: 0.0,
+            tune: cars::tune_for(&Tune::from_slice(&tv), ps.car), base_tune: Tune::from_slice(&tv), gar: Default::default(), car_vis: None, crash: crash::Crash::new(), cam_follow, car: Car::new(), rpm_shown: 900.0, shake: 0.0, car_hit: 0.0, prev_throttle: 0.0,
             state: State::Title, g_t: 0.0, lap: 1, lap_start: 0.0, best, flags: [false; 3], last_idx: 0, msg: String::new(), msg_t: 0.0, wrong_t: 0.0, started: false, go: 0.0,
             cam: CamState { y: 0.0, h: 0.0, init: false, mode: ps.cam_mode as i32, fov: 56.0, lag: 0.0, cp: None, cr: None, shot: -1, cut_t: 0.0, passed: 0.0, anchor: [0.0; 3], target: 0, side: 1.0 },
             cam_pos: [0.0; 3], cam_rot: ID, fov_now: 56.0, view: ID, proj: ID, w: 1280.0, h: 720.0, lw: 320, lh: 180, u: 1.0, inset: [0.0; 4], inset_px: [0.0; 4],
@@ -194,7 +197,7 @@ impl Game {
     /// the GPU copy of the scene was rebuilt (lost GL context): push every object state again
     pub fn scene_reloaded(&mut self) {
         self.tile_lod.clear(); self.obj_last.clear(); for v in self.cull_vis.iter_mut() { *v = !*v; } self.shadow_op = -1.0; for v in self.glit_op.iter_mut() { *v = -1.0; }
-        self.race.shown = false; self.race_was = self.race.on; self.hud.invalidate(); self.car_vis = None;
+        self.race.shown = false; self.race_was = self.race.on; self.hud.invalidate(); self.car_vis = None; self.crash.rebind();
     }
     pub fn clock_ms(&self) -> f64 { self.clock.elapsed().as_secs_f64() * 1000.0 }
     pub fn stage_km(&self) -> String { format!("{:.2}", self.np as f64 / 1000.0) }
@@ -213,7 +216,7 @@ impl Game {
         for wh in car.wh.iter_mut() { wh.w = 0.0; wh.comp = 0.135; wh.d = 0.075; wh.fz = 2900.0; }
         car.hb_t = 0.0; car.p_t = 0.0; car.p_b = 0.0; car.impact = 0.0;
     }
-    pub fn place_at(&mut self, w: &World, i: usize) { Self::place_raw(&mut self.car, &self.rt, w, i); self.cam.init = false; }
+    pub fn place_at(&mut self, w: &World, i: usize) { Self::place_raw(&mut self.car, &self.rt, w, i); self.cam.init = false; self.crash.repair(); }
 
     pub fn buzz(&mut self, k: &str, s: f64) { if self.ps.vib_on { let g = [0.0, 0.55, 0.8, 1.0][self.ps.hap.clamp(0, 3) as usize]; self.events.push(format!("h {} {:.3}", k, (s * g).clamp(0.0, 1.0))); } }
     pub fn flash_msg(&mut self, m: &str, t: f64) { self.msg = m.to_string(); self.msg_t = t; }
@@ -364,9 +367,15 @@ impl Game {
         let want = if self.gar.open { self.gar.sel } else { self.ps.car };
         if self.car_vis != Some(want) && !self.rt.car_models.is_empty() { for (k, objs) in self.rt.car_models.iter().enumerate() { for &o in objs { r.set_vis(o, k == want); } } self.car_vis = Some(want); }
         let paused = self.settings_paused();   // settings open while driving alone: the world holds still
+        let pre = (self.car.vx, self.car.vz, self.car.r);
         let shifted = if paused { false } else { self.car.update(w, obs, &self.tune, dt, &inp) }; lap!(0);
         if shifted { if self.state == State::Drive { self.buzz("shift", 0.45); } self.audio_msg(&[7.0, 2.0]); }
         if self.state == State::Drive && !paused { if self.race.on { race::step(self, w, obs, dt); } else { self.update_lap(w, dt); } } lap!(1);
+        // crash damage: a hit (a tree, a rock, a wall, another car) dents the bodywork where it landed; a landing does not
+        if !paused && self.car.impact > 2.0 {
+            if let Some((p, d)) = crash::locate(self.car.vx - pre.0, self.car.vz - pre.1, self.car.r - pre.2, self.car.h, crate::physics::M, self.tune.iz) { self.crash.hit(p, d, self.car.impact as f32); } }
+        if self.crash.model != Some(want) { if let Some(objs) = self.rt.car_models.get(want) { let objs = objs.clone(); self.crash.bind(r, want, &objs); } }
+        if !paused { self.crash.step(dt as f32); } self.crash.upload(r);
         if self.tel.is_some() && !paused { let ti = path_idx(w, self.car.x, self.car.z); self.tel_frame(&inp, dt, ti); }
         self.update_audio(w, dt, &inp, gust); lap!(2);
         if self.car.landed { let v = -self.car.land_v; self.car.landed = false;

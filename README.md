@@ -35,6 +35,10 @@ Cars: five bodies built by the page from `CAR_SPECS` (one lofted shell each, sha
 `rust/src/game/garage.rs` / `cars.rs` (names, stats, handling; same order). `node web/tools/car_preview.mjs out.png [k]`
 renders the bodies alone in headless Chrome.
 
+Crash damage (`rust/src/game/crash.rs`): a visual-only soft body (a plastic spring lattice around your car that the body meshes
+follow) dents, bends and crumples the bodywork where a hit lands; it never touches the physics. `game_host ... "hit:x:y:z:dx:dy:dz:speed"`
+dents it on demand.
+
 Tyre smoke check: `cargo run --release --bin smoke_stats <stage.rt>...` drives a lap on each stage (`SMOKE_HB=1` adds handbrake
 slides) and reports how often the tyres would smoke on the tarmac and how many puffs per second (`.rt` = the page's `__rtPacket()`).
 
