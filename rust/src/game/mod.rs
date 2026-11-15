@@ -262,7 +262,7 @@ impl Game {
                 if let Some(b) = b { self.buzz("tap", if TOPB.contains(&b) || b.starts_with("map") { 0.55 } else { 0.4 }); } else if self.state == State::Title { self.buzz("tap", 0.55); }
                 if let Some(k) = b { if online::KEYS.contains(&k) && self.state == State::Title { self.online_tap(k); return; } }
                 match b {
-                    Some("set") => self.open_settings(),
+                    Some("set") if self.state == State::Title => self.open_settings(),
                     Some("snd") => self.toggle_sound(),
                     Some("vib") => { self.ps.vib_on = !self.ps.vib_on; self.ps.saves.set("fogwood-vib", if self.ps.vib_on { "1".into() } else { "0".into() }); if self.ps.vib_on { self.buzz("shift", 0.7); }
                         let m = if self.ps.vib_on { "HAPTICS ON" } else { "HAPTICS OFF" }; self.flash_msg(m, 1.0); }
@@ -298,6 +298,7 @@ impl Game {
     pub fn start_game(&mut self) {
         if self.state != State::Title { return; }
         let g = bridge::lock(); let Some(e) = g.as_ref() else { return };
+        self.close_settings();
         self.state = State::Drive; let np = self.np; self.place_at(&e.world, np - 6); self.lap = 1; self.started = false; self.g_t = 0.0; self.flags = [false; 3]; self.last_idx = np - 6; self.go = 2.2;
         if self.ps.race_mode { race::start(self, &e.world); }
         self.car_audio_on = true;

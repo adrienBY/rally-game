@@ -24,10 +24,11 @@ pub fn hud(gm: &mut Game) {
         let w = bw.max(text_w(label, u) + 6.0 * u); let x = bx + bw - w; ui.push((k, Rect { x, y: pt, w, h: bh }));
         g.panel(x, pt, w, bh, u, if on { rgba(243, 207, 98, 0.28) } else { PANEL }, Some(if on { AMBER } else { EDGE }));
         g.tx(label, x + (w - text_w(label, u)) / 2.0, pt + 3.0 * u, u, if on { AMBER } else { INK }); bx = x - gap - bw; };
-    btn(g, &mut ui, "set", "SET", gm.set.open);
     let drive = gm.state == State::Drive;
+    // settings live on the stage-select screen only, never mid-stage
+    if !drive { btn(g, &mut ui, "set", "SET", gm.set.open); }
     if drive { btn(g, &mut ui, "cam", "CAM", false); btn(g, &mut ui, "rst", "RST", false); btn(g, &mut ui, "menu", "MENU", false); }
-    for k in ["cam", "rst", "menu"] { gm.ui.remove(k); }
+    for k in ["set", "cam", "rst", "menu"] { gm.ui.remove(k); }
     if gm.ps.debug { let rec = gm.bench_secs; let l = match rec { Some(s) => format!("REC {}", s), None => "REC".to_string() }; btn(g, &mut ui, "rec", &l, rec.is_some()); }   // temporary benchmark button
     if gm.ps.debug || gm.tel.is_some() { let l = match &gm.tel { Some(t) => format!("TEL {}:{:02}", (t.t / 60.0) as u32, (t.t as u32) % 60), None => "TEL".to_string() }; btn(g, &mut ui, "tel", &l, gm.tel.is_some()); }
     if gm.state == State::Title && gm.ps.online_ui != super::online::OnlineUi::Closed && !portrait {
@@ -70,9 +71,9 @@ pub fn hud(gm: &mut Game) {
         let (cx, cy) = (lw / 2.0, lh * 0.42); let a = (now / 900.0) % 2.0 >= 1.0; let (w, h) = (if a { 30.0 } else { 16.0 } * u, if a { 16.0 } else { 30.0 } * u);
         g.panel(cx - w / 2.0, cy - h / 2.0, w, h, u, rgba(233, 236, 226, 0.12), Some(INK));
         g.tx("TURN YOUR PHONE", cx - text_w("TURN YOUR PHONE", u) / 2.0, cy + 22.0 * u, u, INK); g.tx("SIDEWAYS TO DRIVE", cx - text_w("SIDEWAYS TO DRIVE", u) / 2.0, cy + 31.0 * u, u, AMBER);
-        for (k, r) in ui { gm.ui.insert(k, r); } return;
+        finish(gm, ui); return;
     }
-    if !drive { for (k, r) in ui { gm.ui.insert(k, r); } return; }
+    if !drive { finish(gm, ui); return; }
     // stage panel
     let km = format!("{:.2}", gm.last_pidx as f64 / 1000.0);
     let race_on = gm.race.on;
@@ -150,7 +151,13 @@ pub fn hud(gm: &mut Game) {
         if !gm.race.note.is_empty() { let nt = gm.race.note.clone(); g.text(&nt, rx + (rw - text_w(&nt, u)) / 2.0, ry + rh - 20.0 * u, u, rgba(233, 236, 226, 0.7), None); }
         let tc = "TAP TO CONTINUE"; if ((now / 500.0) as i64) % 2 == 0 { g.text(tc, rx + (rw - text_w(tc, u)) / 2.0, ry + rh - 10.0 * u, u, INK, None); }
     }
+    finish(gm, ui);
+}
+
+/// hit areas for this frame, then the settings screen on top (on the menu too)
+fn finish(gm: &mut Game, ui: Vec<(&'static str, Rect)>) {
     for (k, r) in ui { gm.ui.insert(k, r); }
+    let (lw, lh, u) = (gm.lw as f64, gm.lh as f64, gm.u);
     let paused = gm.settings_paused(); let cam = gm.cam.mode as u8; let time = gm.time;
     super::settings::draw(&mut gm.set, &gm.ps, cam, paused, &mut gm.hud, lw, lh, u, time);
 }

@@ -7,10 +7,14 @@ use crate::physics::Car;
 use crate::world::World;
 
 #[derive(Clone, PartialEq, Debug, Default)]
-pub enum OnlineUi { #[default] Closed, Menu, Join(String), Lobby }
+pub enum OnlineUi { #[default] Closed, Menu, Join(String), Lobby, Stages }
 
-pub const KEYS: [&str; 20] = ["on_host", "on_join", "on_back", "on_start", "on_leave", "on_stage", "k0", "k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "k9", "kdel", "kok", "on_laps", "online"];
+pub const KEYS: [&str; 27] = ["on_host", "on_join", "on_back", "on_start", "on_leave", "on_stage", "k0", "k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "k9", "kdel", "kok", "on_laps", "online",
+    "on_name", "on_st0", "on_st1", "on_st2", "on_st3", "on_st4", "on_st5"];
 const MAPS: [(&str, &str); 6] = [("forest", "FOGWOOD"), ("snow", "COL DE GIVRE"), ("canyon", "CANYON ROUGE"), ("lakes", "LAKELAND"), ("touge", "MOMIJI TOUGE"), ("riviera", "RIVIERA CORNICHE")];
+/// the stage list: tile key, short name, surface
+const TILES: [(&str, &str, &str); 6] = [("on_st0", "FOREST", "GRAVEL"), ("on_st1", "SNOW", "SNOW"), ("on_st2", "CANYON", "SAND"), ("on_st3", "LAKES", "GRAVEL"), ("on_st4", "TOUGE", "TARMAC"), ("on_st5", "RIVIERA", "TARMAC")];
+fn short_name(m: &str) -> &'static str { MAPS.iter().position(|x| x.0 == m).map(|k| TILES[k].1).unwrap_or("STAGE") }
 fn stage_name(m: &str) -> &'static str { MAPS.iter().find(|x| x.0 == m).map(|x| x.1).unwrap_or("STAGE") }
 
 fn snap_of(c: &Car) -> CarSnap {
@@ -35,7 +39,8 @@ impl Game {
     pub(crate) fn online_tick(&mut self, w: &World, dt: f64) {
         if !net::active() { return; }
         let map = self.rt.map.clone(); let racing = self.race.online && self.state == State::Drive;
-        let pending = net::with(|s| { s.map = map.clone(); s.racing = racing; s.poll(); s.start_in.clone() }).flatten();
+        let name = self.ps.name.clone();   // a new name reaches the room with the next presence message
+        let pending = net::with(|s| { s.map = map.clone(); s.racing = racing; if !name.is_empty() { s.name = name; } s.poll(); s.start_in.clone() }).flatten();
         // guests follow the host's stage while waiting, so it is already built when the race starts
         if pending.is_none() && self.state == State::Title && self.loading.is_none() {
             if let Some(Some(hm)) = net::with(|s| if s.is_host { None } else { s.host_id.and_then(|h| s.peers.get(&h)).map(|p| p.map.clone()).filter(|m| !m.is_empty()) }) {
@@ -77,6 +82,7 @@ impl Game {
         let me = net::with(|s| s.me).unwrap_or(0);
         let names: Vec<(u32, String)> = net::with(|s| s.peers.values().map(|p| (p.id, p.name.clone())).collect()).unwrap_or_default();
         if self.state == State::Drive { self.to_title(); }
+        self.close_settings();
         self.state = State::Drive; self.lap = 1; self.started = false; self.g_t = 0.0; self.flags = [false; 3]; self.car_audio_on = true;
         let np = self.np; let rc = &mut self.race; rc.on = true; rc.online = true; rc.phase = race::Phase::Grid; rc.t = 0.0; rc.done_t = 0.0; rc.note.clear(); rc.cars.clear(); rc.pos = 0; rc.order.clear();
         rc.laps = st.laps.max(1) as i64; rc.go_at = st.go_at; rc.me_id = me; rc.hits.clear();
@@ -111,7 +117,12 @@ impl Game {
                 else if code.len() < 6 { code.push_str(&k[1..]); }
                 self.ps.online_ui = OnlineUi::Join(code); }
             ("on_leave", OnlineUi::Lobby) => { net::leave(); self.ps.online_ui = OnlineUi::Menu; }
-            ("on_stage", OnlineUi::Lobby) => { let k = MAPS.iter().position(|m| m.0 == self.rt.map).unwrap_or(0); let next = MAPS[(k + 1) % MAPS.len()].0; self.switch_map(next); }
+            ("on_name", _) => { self.edit_name(); }
+            ("on_stage", OnlineUi::Lobby) => { self.ps.online_ui = OnlineUi::Stages; }
+            ("on_back", OnlineUi::Stages) => { self.ps.online_ui = OnlineUi::Lobby; }
+            (k, OnlineUi::Stages) if k.starts_with("on_st") => {
+                if let Some(n) = k[5..].parse::<usize>().ok().filter(|n| *n < MAPS.len()) { let m = MAPS[n].0; if m != self.rt.map { self.switch_map(m); } }
+                self.ps.online_ui = OnlineUi::Lobby; }
             ("on_laps", OnlineUi::Lobby) => { self.ps.online_laps = self.ps.online_laps % 5 + 1; }
             ("on_start", OnlineUi::Lobby) => {
                 if self.loading.is_some() { return true; }
@@ -142,7 +153,8 @@ pub fn draw(ps: &super::Persist, map: &str, g: &mut Canvas, ui: &mut Vec<(&'stat
             button(g, ui, "on_host", "HOST A ROOM", bx, y0, bw, true);
             button(g, ui, "on_join", "JOIN WITH A CODE", bx, y0 + 17.0 * u, bw, false);
             button(g, ui, "on_back", "BACK", bx, y0 + 34.0 * u, bw, false);
-            centre(g, &format!("YOUR NAME: {}", ps.name), y0 + 52.0 * u, u, rgba(233, 236, 226, 0.6));
+            let nm = if ps.name.is_empty() { "SET YOUR NAME".to_string() } else { format!("NAME: {}  - EDIT", ps.name) };
+            button(g, ui, "on_name", &nm, bx, y0 + 51.0 * u, bw, ps.name.is_empty());
         }
         OnlineUi::Join(code) => {
             centre(g, "ENTER ROOM CODE", py + 5.0 * u, u, AMBER);
@@ -160,8 +172,9 @@ pub fn draw(ps: &super::Persist, map: &str, g: &mut Canvas, ui: &mut Vec<(&'stat
             let status = if up == 0 { "CONNECTING TO THE MEETING POINT...".to_string() } else if !host && !have_host { "LOOKING FOR THE HOST...".to_string() } else if host { "SHARE THE CODE - FRIENDS TAP JOIN".to_string() } else { "CONNECTED".to_string() };
             centre(g, &status, py + 20.0 * u, u, if up == 0 { RED } else { rgba(233, 236, 226, 0.75) });
             let mut y = py + 31.0 * u;
+            ui.push(("on_name", Rect { x: bx, y: y - u, w: bw, h: 9.0 * u }));   // your own row: tap to rename
             let row = |g: &mut Canvas, y: f64, name: &str, right: &str, me: bool| { if me { g.rect_c(bx, y - u, bw, 9.0 * u, rgba(243, 207, 98, 0.16)); } g.tx(name, bx + 3.0 * u, y, u, if me { AMBER } else { INK }); g.text(right, bx + bw - 3.0 * u - text_w(right, u), y, u, rgba(233, 236, 226, 0.7), None); };
-            row(g, y, &format!("{}{}", ps.name, if host { " (HOST)" } else { "" }), "YOU", true); y += 10.0 * u;
+            row(g, y, &format!("{}{}", ps.name, if host { " (HOST)" } else { "" }), "YOU - EDIT NAME", true); y += 10.0 * u;
             for (name, link, rtt, ph, _, _) in peers.iter().take(5) {
                 let r = match link { Link::Direct => format!("DIRECT{}", if *rtt > 0.0 { format!(" {:.0}MS", rtt * 1000.0) } else { String::new() }), Link::Relay => format!("RELAY{}", if *rtt > 0.0 { format!(" {:.0}MS", rtt * 1000.0) } else { String::new() }), Link::Connecting => "...".into() };
                 row(g, y, &format!("{}{}", name, if *ph { " (HOST)" } else { "" }), &r, false); y += 10.0 * u; }
@@ -169,7 +182,7 @@ pub fn draw(ps: &super::Persist, map: &str, g: &mut Canvas, ui: &mut Vec<(&'stat
             let yb = py + ph - 32.0 * u;
             if host {
                 let half = ((bw - 4.0 * u) / 2.0).floor();
-                button(g, ui, "on_stage", &format!("STAGE: {}", stage_name(map)), bx, yb - 17.0 * u, half, false);
+                button(g, ui, "on_stage", &format!("STAGE: {} >", short_name(map)), bx, yb - 17.0 * u, half, false);
                 button(g, ui, "on_laps", &format!("LAPS: {}", ps.online_laps), bx + half + 4.0 * u, yb - 17.0 * u, half, false);
                 button(g, ui, "on_start", "START RACE", bx, yb, half, !peers.is_empty());
                 button(g, ui, "on_leave", "CLOSE ROOM", bx + half + 4.0 * u, yb, half, false);
@@ -179,6 +192,19 @@ pub fn draw(ps: &super::Persist, map: &str, g: &mut Canvas, ui: &mut Vec<(&'stat
                 button(g, ui, "on_back", "HIDE", bx, yb, half, false); button(g, ui, "on_leave", "LEAVE ROOM", bx + half + 4.0 * u, yb, half, false);
             }
             if host { button(g, ui, "on_back", "HIDE", bx, yb + 16.0 * u, bw, false); }
+        }
+        OnlineUi::Stages => {
+            centre(g, "PICK THE STAGE", py + 5.0 * u, u, AMBER);
+            let gp = 4.0 * u; let tw = ((bw - 2.0 * gp) / 3.0).floor(); let th = 25.0 * u; let y0 = py + 17.0 * u;
+            for (n, (k, name, surf)) in TILES.iter().enumerate() {
+                let (x, y) = (bx + (n % 3) as f64 * (tw + gp), y0 + (n / 3) as f64 * (th + gp)); let on = MAPS[n].0 == map;
+                ui.push((k, Rect { x, y, w: tw, h: th }));
+                g.panel(x, y, tw, th, u, if on { rgba(243, 207, 98, 0.3) } else { PANEL }, Some(if on { AMBER } else { EDGE }));
+                g.tx(name, x + (tw - text_w(name, u)) / 2.0, y + 5.0 * u, u, if on { AMBER } else { INK });
+                g.tx(surf, x + (tw - text_w(surf, u)) / 2.0, y + 15.0 * u, u, rgba(233, 236, 226, 0.55));
+            }
+            let yb = py + ph - 17.0 * u;
+            button(g, ui, "on_back", "BACK", bx, yb, bw, false);
         }
         OnlineUi::Closed => {}
     }
