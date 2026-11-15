@@ -53,6 +53,6 @@ itself only draws the HUD. If the WebView can't post binary messages, the game f
 ## Signing
 
 Every APK is signed with the same permanent key, so a new build installs over the previous one.
-The keystore is committed encrypted (`android/signing/fogwood-release.jks.enc`, AES-256, PBKDF2) and CI
-unlocks it with the `FOGWOOD_KEYSTORE_PASSWORD` repository secret (Settings → Secrets and variables → Actions).
-Without that secret the build still succeeds but falls back to a throwaway debug key.
+The keystore is committed in the clear (`android/signing/fogwood-public.jks`, alias `fogwood`, password
+`fogwood-public`), so no secret is needed. It is public on purpose: fine for sideloaded builds, not for a store
+release. To sign with a private key instead, set `FOGWOOD_KEYSTORE` (path) and `FOGWOOD_KEYSTORE_PASSWORD`.
