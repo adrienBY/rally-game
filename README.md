@@ -31,6 +31,13 @@ named *Fogwood Rally build n* and to the run's artifacts. Install it on the phon
 Locally: `cd rust && cargo test --release`, then `cargo ndk -t arm64-v8a -o ../android/app/src/main/jniLibs build --release --lib`
 and `cd android && gradle assembleRelease` (Android SDK + NDK required).
 
+Cars: five bodies built by the page from `CAR_SPECS` (one lofted shell each, shared wheels) and the garage in
+`rust/src/game/garage.rs` / `cars.rs` (names, stats, handling; same order). `node web/tools/car_preview.mjs out.png [k]`
+renders the bodies alone in headless Chrome.
+
+Online netcode check (no phones needed): `cargo run --release --bin net_sim` drives a car round each stage, sends it
+through a simulated link and reports how far off and how smooth the other player's car looks, plus data per hour.
+
 After editing the game: `python3 web/build.py` (rebuilds `web/dist/*.html` and the app's `assets/index.html`).
 
 ## Native renderer (Android)

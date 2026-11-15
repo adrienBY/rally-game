@@ -1,0 +1,253 @@
+//! How other players' cars move on screen, and when our car's state is worth sending.
+//!
+//! Both phones run the same prediction from the last state sent: the car carries on along its arc with its current
+//! acceleration, glued to the stage's terrain (height, pitch and roll follow the ground under it), or flies
+//! ballistically while airborne. The sender only transmits when its real car has drifted away from that prediction,
+//! so the receiver's picture is never further off than the send thresholds (plus what changed during the trip).
+//!
+//! When a new state arrives the receiver does not jump to it: the gap between where the car was being shown and the
+//! new prediction becomes an offset that fades to zero along a cubic curve within a fixed time. Position *and*
+//! velocity of the shown car stay continuous, so corrections look like the car steering back onto its line, never a
+//! twitch, and the error is fully gone a third of a second later (no long tail).
+use super::proto::CarSnap;
+
+/// stage terrain height at (x, z): identical on every phone, so sender and receiver predict the same thing
+pub type Ground<'a> = Option<&'a dyn Fn(f32, f32) -> f32>;
+
+/// flags bit: the car is in the air (it flies ballistically instead of following the ground)
+pub const AIR: u8 = 1;
+const G: f32 = 9.81;
+/// body height above the ground at rest (the physics keeps the car's reference point ~7.5 cm above the terrain)
+const REST: f32 = 0.075;
+/// predictions run in full up to this age, then ease to a stop over the next half second instead of freezing
+const FULL_PREDICT: f32 = 0.5;
+/// a gap this large is a reset or a teleport: show the new state straight away
+const SNAP_DIST: f32 = 7.0;
+/// a velocity change this large (m/s) between two states is a collision, not a drift
+const IMPACT_DV: f32 = 6.0;
+
+fn wrap(a: f32) -> f32 { let tau = std::f32::consts::TAU; let a = a.rem_euclid(tau); if a > std::f32::consts::PI { a - tau } else { a } }
+
+/// predicted time: real age up to FULL_PREDICT, then slowing down (continuous rate) so a stalled link glides, not freezes
+/// (slightly negative ages are fine: rates are measured on both sides of a state)
+fn soft_age(dt: f32) -> f32 { if dt <= FULL_PREDICT { dt } else { FULL_PREDICT + 0.5 * (1.0 - (-(dt - FULL_PREDICT) / 0.5).exp()) } }
+
+/// ground pitch and roll under a car at (x, z) with heading h (pitch: nose up, roll: right side up; same signs as the physics)
+fn slope(g: &dyn Fn(f32, f32) -> f32, x: f32, z: f32, h: f32) -> (f32, f32) {
+    let (sh, ch) = (h.sin(), h.cos());
+    let f = g(x + sh * 1.25, z + ch * 1.25) - g(x - sh * 1.25, z - ch * 1.25);
+    let l = g(x + ch * 0.75, z - sh * 0.75) - g(x - ch * 0.75, z + sh * 0.75);
+    ((f / 2.5).atan(), (l / 1.5).atan())
+}
+
+/// The car `dt` seconds after state `c`: constant yaw rate and sideways slip, forward speed changing at `c.a` (never
+/// through zero), height/pitch/roll following the terrain or a ballistic arc in the air.
+pub fn predict(c: &CarSnap, dt: f32, g: Ground) -> CarSnap {
+    let dt = soft_age(dt);
+    let mut s = *c; let (sh, ch) = (c.h.sin(), c.h.cos()); let u0 = c.vx * sh + c.vz * ch; let vl = c.vx * ch - c.vz * sh;
+    // forward speed under constant acceleration, stopping at zero rather than reversing
+    let a = c.a; let t_stop = if a * u0 < 0.0 { -u0 / a } else { f32::INFINITY };
+    let n = ((dt.abs() / 0.03).ceil() as usize).clamp(1, 16); let st = dt / n as f32; let mut h = c.h; let mut t = 0.0f32;
+    let speed = |t: f32| u0 + a * t.min(t_stop);
+    for _ in 0..n {
+        let um = speed(t + st * 0.5); let hm = h + c.r * st * 0.5; let (sa, ca) = (hm.sin(), hm.cos());
+        s.x += (um * sa + vl * ca) * st; s.z += (um * ca - vl * sa) * st; h += c.r * st; t += st;
+    }
+    let u = speed(t); s.h = h; let (sa, ca) = (h.sin(), h.cos()); s.vx = u * sa + vl * ca; s.vz = u * ca - vl * sa; s.u = u;
+    if let Some(g) = g {
+        let g0 = g(c.x, c.z); let g1 = g(s.x, s.z);
+        if c.flags & AIR != 0 {
+            let floor = g1 + REST; s.y = c.y + c.vy * dt - 0.5 * G * dt * dt; s.vy = c.vy - G * dt;
+            if s.y < floor { s.y = floor; s.vy = 0.0; }
+        } else {
+            s.y = g1 + (c.y - g0);
+            let (p0, r0) = slope(g, c.x, c.z, c.h); let (p1, r1) = slope(g, s.x, s.z, s.h);
+            s.pitch = c.pitch + (p1 - p0); s.roll = c.roll + (r1 - r0);
+        }
+    }
+    s
+}
+
+/// what the receiver smooths: x, z, heading, height above ground, pitch and roll relative to the ground, steering
+const NCH: usize = 7;
+fn channels(s: &CarSnap, g: Ground) -> [f32; NCH] {
+    let (gy, gp, gr) = match g { Some(g) => { let (p, r) = slope(g, s.x, s.z, s.h); (g(s.x, s.z), p, r) } None => (0.0, 0.0, 0.0) };
+    [s.x, s.z, s.h, s.y - gy, s.pitch - gp, s.roll - gr, s.steer]
+}
+
+/// Critically damped third-order fade of an offset released with value x0, rate v0 and acceleration a0:
+/// x(t) = (c0 + c1 t + c2 t^2) e^(-w t). Position, velocity *and* acceleration of the shown car stay continuous.
+/// Returns (x, v, a) at `tau`.
+fn fade3(x0: f32, v0: f32, a0: f32, w: f32, tau: f32) -> (f32, f32, f32) {
+    let (c0, c1) = (x0, v0 + w * x0); let c2 = (a0 + 2.0 * w * v0 + w * w * x0) * 0.5;
+    let e = (-w * tau).exp(); let p = c0 + c1 * tau + c2 * tau * tau; let dp = c1 + 2.0 * c2 * tau;
+    (p * e, (dp - w * p) * e, (2.0 * c2 - 2.0 * w * dp + w * w * p) * e)
+}
+/// One remote car on this phone.
+#[derive(Clone, Debug, Default)]
+pub struct Track {
+    /// newest state received (its `t` is on the host clock)
+    pub latest: Option<CarSnap>,
+    /// the state the current offsets are measured from
+    base: Option<CarSnap>,
+    /// offsets, their rates and accelerations when the last state was taken in, when that was (view clock), how fast they fade
+    off: [f32; NCH], offv: [f32; NCH], offa: [f32; NCH], anchor_t: f64, w: f32,
+    /// fade speed multiplier (0 means 1; the simulator tunes with it)
+    pub stiff: f32,
+}
+
+/// fade speed (1/s) per channel for small corrections; bigger ones fade faster (see `sample`)
+const OMEGA: [f32; NCH] = [13.0, 13.0, 14.0, 16.0, 16.0, 16.0, 18.0];
+/// offset (m) at which the fade speed doubles: a car far off its line gets back quicker, small drifts melt away gently
+const ADAPT: f32 = 0.3;
+
+impl Track {
+    pub fn push(&mut self, c: CarSnap) { self.latest = Some(c); }
+
+    /// A bump this phone resolved: the push applies at once (like it does to an AI car), velocity included.
+    pub fn nudge(&mut self, d: [f32; 5], now: f64) {
+        for c in [self.latest.as_mut(), self.base.as_mut()].into_iter().flatten() {
+            let age = soft_age((now - c.t) as f32);
+            c.vx += d[0]; c.vz += d[1]; c.r += d[2]; c.x += d[3] - d[0] * age; c.z += d[4] - d[1] * age; c.h -= d[2] * age;
+        }
+    }
+
+    /// The car as shown at host time `t` (call once per frame, with a smoothly advancing `t`).
+    pub fn sample(&mut self, t: f64, g: Ground) -> Option<CarSnap> {
+        let latest = self.latest?;
+        let ks = if self.stiff > 0.0 { self.stiff } else { 1.0 }; let tau = (t - self.anchor_t).max(0.0) as f32;
+        // the offsets as they stand now
+        let (mut off, mut offv, mut offa) = ([0f32; NCH], [0f32; NCH], [0f32; NCH]);
+        for k in 0..NCH { let (x, v, a) = fade3(self.off[k], self.offv[k], self.offa[k], OMEGA[k] * self.w * ks, tau); off[k] = x; offv[k] = v; offa[k] = a; }
+        // a prediction's channels with their rates and accelerations at time t
+        const E: f32 = 1.0 / 120.0;
+        let at = |c: &CarSnap, t: f64| -> ([f32; NCH], [f32; NCH], [f32; NCH]) {
+            let age = (t - c.t) as f32; let m = channels(&predict(c, age - E, g), g); let p = channels(&predict(c, age, g), g); let n = channels(&predict(c, age + E, g), g);
+            let (mut v, mut a) = ([0f32; NCH], [0f32; NCH]);
+            for k in 0..NCH { let (d1, d0) = if k == 2 { (wrap(n[k] - p[k]), wrap(p[k] - m[k])) } else { (n[k] - p[k], p[k] - m[k]) }; v[k] = (d1 + d0) / (2.0 * E); a[k] = (d1 - d0) / (E * E); }
+            (p, v, a) };
+        match self.base {
+            Some(b) if b != latest => {
+                // re-anchor: keep showing the same pose moving the same way, and let the offset fade it onto the new line
+                let (p0, v0, a0) = at(&b, t); let (p1, v1, a1) = at(&latest, t);
+                for k in 0..NCH {
+                    let d = p0[k] + off[k] - p1[k]; off[k] = if k == 2 { wrap(d) } else { d };
+                    offv[k] = v0[k] + offv[k] - v1[k]; offa[k] = a0[k] + offa[k] - a1[k];
+                }
+                // a real knock (wall, tree, another car) changes the velocity at once: show it at once instead of easing into it
+                if offv[0].hypot(offv[1]) > IMPACT_DV { for k in 0..3 { offv[k] = 0.0; offa[k] = 0.0; } }
+                if off[0].hypot(off[1]) > SNAP_DIST || off[2].abs() > 1.2 { off = [0.0; NCH]; offv = [0.0; NCH]; offa = [0.0; NCH]; }
+                self.w = 1.0 + off[0].hypot(off[1]) / ADAPT;
+                self.base = Some(latest); self.off = off; self.offv = offv; self.offa = offa; self.anchor_t = t;
+            }
+            None => { self.base = Some(latest); self.off = [0.0; NCH]; self.offv = [0.0; NCH]; self.offa = [0.0; NCH]; self.anchor_t = t; self.w = 1.0; }
+            _ => {}
+        }
+        let c = self.base?; let mut s = predict(&c, (t - c.t) as f32, g);
+        let p = channels(&s, g);
+        s.x = p[0] + off[0]; s.z = p[1] + off[1]; s.h = p[2] + off[2]; s.steer = p[6] + off[6];
+        let (gy, gp, gr) = match g { Some(g) => { let (pp, rr) = slope(g, s.x, s.z, s.h); (g(s.x, s.z), pp, rr) } None => (0.0, 0.0, 0.0) };
+        s.y = gy + p[3] + off[3]; s.pitch = gp + p[4] + off[4]; s.roll = gr + p[5] + off[5];
+        // the shown velocity includes the correction, so wheels, sound and contacts see the motion that is drawn
+        s.vx += offv[0]; s.vz += offv[1]; s.r += offv[2];
+        Some(s)
+    }
+}
+
+/// The clock other cars are drawn at. It advances by exactly each frame's length (vsync to vsync), so they move in
+/// step with our own car and the camera, and follows the host clock through a slow loop: reading the wall clock at a
+/// varying point of each frame would shake a car at 30 m/s by several centimetres.
+#[derive(Clone, Debug, Default)]
+pub struct ViewClock { t: Option<f64>, err: f64 }
+impl ViewClock {
+    /// `now`: the host clock read this frame, `dt`: the frame's length
+    pub fn advance(&mut self, now: f64, dt: f64) -> f64 {
+        let t = match self.t {
+            Some(t) if (now - (t + dt)).abs() < 0.25 => {
+                // low-passed offset (~0.3 s), corrected at 1/s: the rate wobbles by well under a tenth of a percent
+                let t = t + dt; self.err += (now - t - self.err) * (dt * 3.0).min(1.0); t + self.err * (dt * 1.0).min(1.0)
+            }
+            _ => { self.err = 0.0; now }
+        };
+        self.t = Some(t); t
+    }
+    pub fn get(&self) -> Option<f64> { self.t }
+}
+
+/// Sender side: decides when our car's state goes out.
+#[derive(Clone, Debug, Default)]
+pub struct Policy {
+    /// exactly what receivers decoded from our last packet (both sides predict from these numbers)
+    pub sent: Option<CarSnap>,
+    tokens: f32, last_t: f64, u_prev: Option<f32>, accel: f32,
+}
+
+/// thresholds: position m, heading rad, speed m/s, height m, body angle rad
+#[derive(Clone, Copy, Debug)]
+pub struct Thresholds { pub pos: f32, pub head: f32, pub speed: f32, pub height: f32, pub body: f32 }
+impl Default for Thresholds { fn default() -> Self { Thresholds { pos: 0.15, head: 0.026, speed: 0.8, height: 0.12, body: 0.06 } } }
+
+impl Policy {
+    /// forward acceleration from the speed history, smoothed (~80 ms) so one bumpy frame does not swing the prediction
+    pub fn accel(&mut self, u: f32, dt: f32) -> f32 {
+        if dt > 0.0 { if let Some(p) = self.u_prev { let raw = ((u - p) / dt).clamp(-30.0, 30.0); self.accel += (raw - self.accel) * (dt * 12.0).min(1.0); } }
+        self.u_prev = Some(u); self.accel
+    }
+    /// Whether `c` (stamped `c.t` on the host clock) should be sent now: it has drifted from what receivers predict, or
+    /// `heartbeat` seconds passed. Never more than `rate` packets a second on average (bursts of up to a quarter second).
+    pub fn due(&mut self, c: &CarSnap, g: Ground, thr: &Thresholds, rate: f32, heartbeat: f32) -> bool {
+        let dt = if self.last_t > 0.0 { (c.t - self.last_t).clamp(0.0, 0.5) as f32 } else { 0.0 }; self.last_t = c.t;
+        let cap = (rate * 0.25).max(1.0); self.tokens = (self.tokens + dt * rate).min(cap);
+        let Some(s) = &self.sent else { return self.take(); };
+        let age = (c.t - s.t) as f32; if age < 1.0 / 31.0 || self.tokens < 1.0 { return false; }
+        if age >= heartbeat || c.gear != s.gear || c.flags != s.flags { return self.take(); }
+        let p = predict(s, age, g);
+        let de = (c.x - p.x).hypot(c.z - p.z); let dh = wrap(c.h - p.h).abs();
+        let dy = (c.y - p.y).abs(); let db = (c.pitch - p.pitch).abs().max((c.roll - p.roll).abs());
+        // one score so several medium errors together also count
+        let e = (de / thr.pos).max(dh / thr.head).max((c.u - p.u).abs() / thr.speed).max(dy / thr.height).max(db / thr.body);
+        if e >= 1.0 { self.take() } else { false }
+    }
+    fn take(&mut self) -> bool { self.tokens = (self.tokens - 1.0).max(0.0); true }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn prediction_follows_arc() {
+        // 20 m/s with yaw rate 0.5 rad/s: a quarter turn later the car is on the circle of radius 40 around (40, 0)
+        let c = CarSnap { h: 0.0, vz: 20.0, r: 0.5, ..Default::default() };
+        let p = predict(&c, 0.4, None); assert!(((p.x - 40.0).hypot(p.z) - 40.0).abs() < 0.01, "{} {}", p.x, p.z); assert!((p.h - 0.2).abs() < 1e-4);
+        // braking at 8 m/s2 from 10 m/s stops after 1.25 m... within the full-prediction window it covers u*t - a t^2/2
+        let b = CarSnap { vz: 10.0, a: -8.0, ..Default::default() }; let q = predict(&b, 0.5, None);
+        assert!((q.z - (5.0 - 1.0)).abs() < 1e-3, "{}", q.z); assert!((q.u - 6.0).abs() < 1e-4);
+        let r = predict(&CarSnap { vz: 2.0, a: -8.0, ..Default::default() }, 0.5, None); assert!(r.u.abs() < 1e-6 && (r.z - 0.25).abs() < 1e-3, "{} {}", r.u, r.z);
+    }
+    #[test]
+    fn terrain_and_air() {
+        let ramp = |_x: f32, z: f32| z * 0.1;   // 10% climb along +z
+        let g: &dyn Fn(f32, f32) -> f32 = &ramp;
+        let c = CarSnap { vz: 20.0, y: REST, pitch: (0.1f32).atan(), ..Default::default() };
+        let p = predict(&c, 0.5, Some(g)); assert!((p.y - (1.0 + REST)).abs() < 1e-3, "{}", p.y); assert!((p.pitch - c.pitch).abs() < 1e-4);
+        let j = CarSnap { vz: 20.0, y: 2.0, vy: 3.0, flags: AIR, ..Default::default() }; let q = predict(&j, 0.3, Some(g));
+        assert!((q.y - (2.0 + 0.9 - 0.5 * G * 0.09)).abs() < 1e-3);
+    }
+    /// a correction never makes the shown car jump: position moves smoothly from the old line to the new one
+    #[test]
+    fn corrections_are_continuous() {
+        let mut tr = Track::default(); let dt = 1.0 / 60.0;
+        tr.push(CarSnap { t: 0.0, vz: 20.0, ..Default::default() });
+        let mut prev = tr.sample(0.0, None).unwrap(); let mut prev_v = 20.0f32; let mut worst_jump = 0.0f32; let mut worst_acc = 0.0f32;
+        for f in 1..120 {
+            let t = f as f64 * dt;
+            // at 0.5 s the real car turns out to be 0.6 m to the side and slightly slower
+            // (and from then on reports arrive every quarter second, 50 ms old, along that line)
+            if f >= 30 && f % 15 == 0 { let ts = t - 0.05; tr.push(CarSnap { t: ts, x: 0.6, z: 9.0 + 19.0 * (ts - 0.45) as f32, vz: 19.0, ..Default::default() }); }
+            let s = tr.sample(t, None).unwrap(); let step = (s.x - prev.x).hypot(s.z - prev.z); let v = step / dt as f32;
+            worst_jump = worst_jump.max((step - prev_v * dt as f32).abs()); worst_acc = worst_acc.max(((v - prev_v) / dt as f32).abs()); prev = s; prev_v = v;
+        }
+        assert!(worst_jump < 0.05, "jump {worst_jump}"); assert!(worst_acc < 25.0, "accel {worst_acc}");
+        assert!((prev.x - 0.6).abs() < 0.02, "settled at {}", prev.x);
+    }
+}

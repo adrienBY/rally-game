@@ -7,6 +7,8 @@ pub mod rt;
 pub mod telemetry;
 pub mod online;
 pub mod settings;
+pub mod cars;
+pub mod garage;
 mod draw;
 
 use crate::bridge;
@@ -70,12 +72,14 @@ pub struct Persist { pub saves: Saves, pub sound_on: bool, pub vib_on: bool, pub
     /// online: which room screen is open, your name in rooms, laps for a hosted race
     pub online_ui: online::OnlineUi, pub name: String, pub online_laps: u8,
     /// settings screen: volumes 0..10, haptics 0..3, sun rays, mph, camera view, camera shake, 30 fps battery saver, debug buttons
-    pub vol: i32, pub rvol: i32, pub hap: i32, pub rays: bool, pub mph: bool, pub cam_mode: u8, pub shake: bool, pub saver: bool, pub debug: bool }
+    pub vol: i32, pub rvol: i32, pub hap: i32, pub rays: bool, pub mph: bool, pub cam_mode: u8, pub shake: bool, pub saver: bool, pub debug: bool,
+    /// your car (garage)
+    pub car: usize }
 impl Persist {
     pub fn new(save_path: &str) -> Persist {
         let saves = Saves::load(save_path);
         let mut p = Persist { saves, sound_on: true, vib_on: true, pix_idx: 2, touch_used: false, downgraded: false, race_mode: false, race_skill: 0.95, online_ui: online::OnlineUi::Closed, name: String::new(), online_laps: 2,
-            vol: 10, rvol: 8, hap: 2, rays: true, mph: false, cam_mode: 0, shake: true, saver: false, debug: true };
+            vol: 10, rvol: 8, hap: 2, rays: true, mph: false, cam_mode: 0, shake: true, saver: false, debug: true, car: 0 };
         p.reload(); p
     }
     pub fn reload(&mut self) {
@@ -92,6 +96,7 @@ impl Persist {
         self.hap = gi(&self.saves, "fogwood-hap").map(|v| v.clamp(0, 3)).unwrap_or(if self.vib_on { 2 } else { 0 }); self.vib_on = self.hap > 0;
         if let Some(v) = gi(&self.saves, "fogwood-cam") { self.cam_mode = v.clamp(0, 2) as u8; }
         if let Some(v) = gi(&self.saves, "fogwood-olaps") { self.online_laps = v.clamp(1, 5) as u8; }
+        if let Some(v) = gi(&self.saves, "fogwood-car") { self.car = (v.max(0) as usize).min(cars::CARS.len() - 1); }
         for (k, f) in [("fogwood-rays", &mut self.rays), ("fogwood-mph", &mut self.mph), ("fogwood-shake", &mut self.shake), ("fogwood-saver", &mut self.saver), ("fogwood-debug", &mut self.debug)] {
             if let Some(v) = self.saves.get(k) { *f = v == "1"; } }
         if self.saves.get("fogwood-dg") == Some("1") { self.downgraded = true; }
@@ -136,6 +141,8 @@ pub struct Game {
     pub tel: Option<telemetry::Tel>, pub tel_note: String,
     /// the settings screen
     pub set: settings::Settings,
+    /// the garage, the stage tune before your car's character, which body is on show
+    pub gar: garage::Garage, pub base_tune: Tune, car_vis: Option<usize>,
 }
 
 pub fn path_idx(w: &World, x: f64, z: f64) -> usize {
@@ -162,7 +169,7 @@ impl Game {
         let ncull = rt.cull.len(); let nglit = rt.glit.len();
         let mut g = Game {
             np, snow: mid == 1, can: mid == 2, lak: mid == 3, tou: mid == 5, riv: mid == 6,
-            tune: Tune::from_slice(&tv), cam_follow, car: Car::new(), rpm_shown: 900.0, shake: 0.0, car_hit: 0.0, prev_throttle: 0.0,
+            tune: cars::tune_for(&Tune::from_slice(&tv), ps.car), base_tune: Tune::from_slice(&tv), gar: Default::default(), car_vis: None, cam_follow, car: Car::new(), rpm_shown: 900.0, shake: 0.0, car_hit: 0.0, prev_throttle: 0.0,
             state: State::Title, g_t: 0.0, lap: 1, lap_start: 0.0, best, flags: [false; 3], last_idx: 0, msg: String::new(), msg_t: 0.0, wrong_t: 0.0, started: false, go: 0.0,
             cam: CamState { y: 0.0, h: 0.0, init: false, mode: ps.cam_mode as i32, fov: 56.0, lag: 0.0, cp: None, cr: None, shot: -1, cut_t: 0.0, passed: 0.0, anchor: [0.0; 3], target: 0, side: 1.0 },
             cam_pos: [0.0; 3], cam_rot: ID, fov_now: 56.0, view: ID, proj: ID, w: 1280.0, h: 720.0, lw: 320, lh: 180, u: 1.0, inset: [0.0; 4], inset_px: [0.0; 4],
@@ -186,7 +193,7 @@ impl Game {
     /// the GPU copy of the scene was rebuilt (lost GL context): push every object state again
     pub fn scene_reloaded(&mut self) {
         self.tile_lod.clear(); self.obj_last.clear(); for v in self.cull_vis.iter_mut() { *v = !*v; } self.shadow_op = -1.0; for v in self.glit_op.iter_mut() { *v = -1.0; }
-        self.race.shown = false; self.race_was = self.race.on; self.dust_was = true; self.hud.invalidate();
+        self.race.shown = false; self.race_was = self.race.on; self.dust_was = true; self.hud.invalidate(); self.car_vis = None;
     }
     pub fn clock_ms(&self) -> f64 { self.clock.elapsed().as_secs_f64() * 1000.0 }
     pub fn stage_km(&self) -> String { format!("{:.2}", self.np as f64 / 1000.0) }
@@ -241,7 +248,7 @@ impl Game {
 
     fn hit_button(&self, x: f64, y: f64) -> Option<&'static str> {
         let inb = |b: &Rect, l: f64, r: f64, t: f64, bt: f64| x >= b.x - l && x <= b.x + b.w + r && y >= b.y - t && y <= b.y + b.h + bt;
-        if self.state == State::Title { for k in ["mapF", "mapS", "mapC", "mapL", "mapT", "mapR", "mode"].iter().chain(online::KEYS.iter()) { if let Some(b) = self.ui.get(k) { if inb(b, 2.0, 2.0, 3.0, 3.0) { return Some(k); } } } }
+        if self.state == State::Title { for k in ["mapF", "mapS", "mapC", "mapL", "mapT", "mapR", "mode", "garage"].iter().chain(online::KEYS.iter()) { if let Some(b) = self.ui.get(k) { if inb(b, 2.0, 2.0, 3.0, 3.0) { return Some(k); } } } }
         for k in TOPB { if let Some(b) = self.ui.get(k) { if inb(b, 2.0, 2.0, 2.0, 3.0) { return Some(k); } } }
         let (Some(hb), Some(left), Some(right), Some(gas)) = (self.ui.get("hb"), self.ui.get("left"), self.ui.get("right"), self.ui.get("gas")) else { return None };
         if !self.ps.touch_used { return None; }
@@ -256,13 +263,15 @@ impl Game {
     pub fn touch(&mut self, action: i32, id: i32, sx: f64, sy: f64) {
         let (x, y) = self.low_xy(sx, sy);
         if self.settings_touch(action, id, x, y) { return; }
+        if self.garage_touch(action, id, x, y) { return; }
         match action {
             0 => {
                 self.ps.touch_used = true; let b = self.hit_button(x, y);
                 if let Some(b) = b { self.buzz("tap", if TOPB.contains(&b) || b.starts_with("map") { 0.55 } else { 0.4 }); } else if self.state == State::Title { self.buzz("tap", 0.55); }
                 if let Some(k) = b { if online::KEYS.contains(&k) && self.state == State::Title { self.online_tap(k); return; } }
                 match b {
-                    Some("set") => self.open_settings(),
+                    Some("set") if self.state == State::Title => self.open_settings(),
+                    Some("garage") if self.state == State::Title => self.open_garage(),
                     Some("snd") => self.toggle_sound(),
                     Some("vib") => { self.ps.vib_on = !self.ps.vib_on; self.ps.saves.set("fogwood-vib", if self.ps.vib_on { "1".into() } else { "0".into() }); if self.ps.vib_on { self.buzz("shift", 0.7); }
                         let m = if self.ps.vib_on { "HAPTICS ON" } else { "HAPTICS OFF" }; self.flash_msg(m, 1.0); }
@@ -288,7 +297,7 @@ impl Game {
         }
     }
     /// Android back: to the menu while driving; false lets the app close from the menu
-    pub fn back(&mut self) -> bool { if self.set.open { self.close_settings(); return true; } self.to_title() }
+    pub fn back(&mut self) -> bool { if self.set.open { self.close_settings(); return true; } if self.gar.open { self.close_garage(); return true; } self.to_title() }
 
     pub fn switch_map(&mut self, name: &str) { if self.loading.is_none() { self.loading = Some(name.to_string()); self.events.push(format!("map {}", name)); self.ps.saves.set("fogwood-map", name.to_string()); } }
     fn toggle_mode(&mut self) { self.ps.race_mode = !self.ps.race_mode; self.ps.saves.set("fogwood-mode", if self.ps.race_mode { "race".into() } else { "tt".into() }); }
@@ -298,6 +307,7 @@ impl Game {
     pub fn start_game(&mut self) {
         if self.state != State::Title { return; }
         let g = bridge::lock(); let Some(e) = g.as_ref() else { return };
+        self.close_settings(); self.gar.open = false;
         self.state = State::Drive; let np = self.np; self.place_at(&e.world, np - 6); self.lap = 1; self.started = false; self.g_t = 0.0; self.flags = [false; 3]; self.last_idx = np - 6; self.go = 2.2;
         if self.ps.race_mode { race::start(self, &e.world); }
         self.car_audio_on = true;
@@ -349,10 +359,14 @@ impl Game {
         let gust = clamp(0.5 + (fbm(self.time * 0.06, 3.3, 3) - 0.5) * 1.8, 0.0, 1.0); self.wind = gust;
         let inp = if self.state == State::Drive {
             if self.go > 0.9 { Input { steer: 0.0, throttle: 0.0, brake: 0.0, hb: true } } else if self.auto || (self.race.on && self.race.phase == race::Phase::Done) { self.ai_input(w) } else { self.read_input() }
-        } else { self.ai_input(w) };
+        } else if self.gar.open { Input { steer: 0.0, throttle: 0.0, brake: 0.0, hb: true } } else { self.ai_input(w) };
         let mut tp = std::time::Instant::now(); let mut prof = [0f32; 8];
         macro_rules! lap { ($k:expr) => {{ let n = std::time::Instant::now(); prof[$k] += (n - tp).as_secs_f32() * 1000.0; tp = n; }} }
         self.online_tick(w, dt);
+        self.garage_step(w, dt);
+        // the body on show: yours, or the one the garage is looking at
+        let want = if self.gar.open { self.gar.sel } else { self.ps.car };
+        if self.car_vis != Some(want) && !self.rt.car_models.is_empty() { for (k, objs) in self.rt.car_models.iter().enumerate() { for &o in objs { r.set_vis(o, k == want); } } self.car_vis = Some(want); }
         let paused = self.settings_paused();   // settings open while driving alone: the world holds still
         let shifted = if paused { false } else { self.car.update(w, obs, &self.tune, dt, &inp) }; lap!(0);
         if shifted { if self.state == State::Drive { self.buzz("shift", 0.45); } self.audio_msg(&[7.0, 2.0]); }
@@ -427,7 +441,7 @@ impl Game {
             self.cam_rot = look_rot(self.cam_pos, [s.x + sh * 4.0, s.y + 1.05, s.z + ch * 4.0]);
         }
         let mut fov_t = 54.0 + sp_k * 20.0;
-        if self.state == State::Title { fov_t = self.cinematic(w, dt); } else { self.cam.shot = -1; }
+        if self.state == State::Title { fov_t = if self.gar.open { self.garage_cam(w) } else { self.cinematic(w, dt) }; } else { self.cam.shot = -1; }
         if self.state == State::Title && self.cam.shot >= 0 && self.cam.cut_t < 0.05 { self.cam.fov = fov_t; }
         self.cam.fov += (fov_t - self.cam.fov) * (dt * 3.0).min(1.0);
         self.fov_now = if self.w > self.h { self.cam.fov } else { self.cam.fov + 20.0 };
@@ -645,7 +659,8 @@ impl Game {
         let sp = s.vx.hypot(s.vz);
         let vol = self.ps.vol as f64 / 10.0 * if self.settings_paused() { 0.0 } else { 1.0 };
         let on = self.ps.sound_on && self.car_audio_on && vol > 0.0;
-        self.audio_msg(&[6.0, self.rpm_shown as f32, thr as f32, slide as f32, surf as f32, (sp / 35.0).min(1.0) as f32, if s.on_road { 1.0 } else { 0.0 },
+        let pitch = cars::CARS[self.ps.car.min(cars::CARS.len() - 1)].pitch;   // each car's engine note
+        self.audio_msg(&[6.0, (self.rpm_shown * pitch) as f32, thr as f32, slide as f32, surf as f32, (sp / 35.0).min(1.0) as f32, if s.on_road { 1.0 } else { 0.0 },
             if self.expo_tun { 1.0 } else { 0.0 }, if s.shift_t > 0.0 { 1.0 } else { 0.0 }, if on { (0.9 * vol) as f32 } else { 0.0 }]);
         self.pop_cool -= dt;
         if self.prev_throttle > 0.0 && inp.throttle == 0.0 && self.rpm_shown > 4800.0 && self.pop_cool <= 0.0 && s.gear > 0.0 {

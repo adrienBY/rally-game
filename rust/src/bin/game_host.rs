@@ -2,7 +2,7 @@
 //!   game_host <scene> <rt> <outdir> <script>
 //! script: comma-separated steps "t:action", e.g. "1:start,1:auto,8:shot,12:shot,20:race,40:shot,60:state"
 //!   start (tap to start)  auto (demo driver drives)  shot (write <outdir>/fNNNN.ppm)  state (print the car)  tap:x:y  race (toggle mode on the menu)
-//!   cam  menu  log (car each second from then on)
+//!   cam  menu  log (car each second from then on)  garage gnext gprev gclose car:k
 use fogwood_core::game::{Game, Persist, State};
 use fogwood_core::render::{loader::Loader, Renderer};
 use glow::HasContext;
@@ -73,6 +73,8 @@ fn main() {
                         if key == "on_host" { if let Some(c) = fogwood_core::net::with(|s| s.code) { std::fs::write("/tmp/fw_code", c.to_string()).unwrap(); println!("hosting {}", c); } } }
                     "joincode" => { let c = std::fs::read_to_string("/tmp/fw_code").unwrap(); g.online_tap("online"); g.online_tap("on_join"); for ch in c.trim().chars() { let k: &'static str = ["k0","k1","k2","k3","k4","k5","k6","k7","k8","k9"][ch.to_digit(10).unwrap() as usize]; g.online_tap(k); } g.online_tap("kok"); println!("joined {}", c.trim()); }
                     "settings" => g.open_settings(),
+                    "garage" => g.open_garage(), "gnext" => g.garage_go(1), "gprev" => g.garage_go(-1), "gclose" => g.close_garage(),
+                    "car" => { let k: usize = parts[1].parse().unwrap_or(0); g.choose_car(k); }
                     "sclose" => g.close_settings(),
                     "stap" => { let f: f64 = parts.get(2).and_then(|v| v.parse().ok()).unwrap_or(0.5); let key = parts[1].replace(".", ":"); println!("stap {} {} vol={} hap={} pix={} rays={}", key, g.settings_tap_key(&key, f), g.ps.vol, g.ps.hap, g.ps.pix_idx, g.ps.rays); }
                     "netstat" => { fogwood_core::net::with(|s| println!("traffic t={:.1} bytes {:?} packets {:?}", t, s.traffic.get(), s.packets.get())); }

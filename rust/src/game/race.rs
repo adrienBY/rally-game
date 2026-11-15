@@ -28,6 +28,8 @@ pub struct RCar {
     pub err: f64, pub trust: f64, pub off_at: Option<usize>, pub resets: i32,
     /// online: the peer driving this car (its colour still comes from `r`) and their name
     pub remote: Option<u32>, pub name: String,
+    /// which body this car is drawn with (garage family)
+    pub model: usize,
     /// online: the player dropped out (hidden, listed as OUT); when this phone last resolved a bump with them (race clock)
     pub left: bool, pub contact_t: f64,
 }
@@ -61,7 +63,8 @@ impl Race {
 pub(crate) fn mk_car(g: &mut Game, r: Option<usize>, k: usize, lat: f64) -> RCar {
     let form = 0.98 + g.rng.f() * 0.04; let mist_cd = 5.0 + g.rng.f() * 5.0; let react = 0.12 + g.rng.f() * 0.4;
     RCar { r, car: Car::new(), prog: k as f64 - g.np as f64, last_idx: k, i: k, lat, v: 0.0, lane: lat, lane_t: lat, pass_t: 3.0, cap: 99.0, pv: 1.0, boost: 0.0, form, mist: 0.0, mist_cd,
-        stuck_t: 0.0, lap_t0: 0.0, laps_done: 0, last: None, best: None, finished: false, finish_t: 0.0, react, tag_x: -99.0, tag_y: -99.0, tag_on: false, err: 0.0, trust: 1.0, off_at: None, resets: 0, remote: None, name: String::new(), left: false, contact_t: -9.0 }
+        stuck_t: 0.0, lap_t0: 0.0, laps_done: 0, last: None, best: None, finished: false, finish_t: 0.0, react, tag_x: -99.0, tag_y: -99.0, tag_on: false, err: 0.0, trust: 1.0, off_at: None, resets: 0, remote: None, name: String::new(), left: false, contact_t: -9.0,
+        model: match r { Some(i) => super::cars::rival_model(i), None => g.ps.car } }
 }
 /// rcPlace: on the road at index i, lat metres right of the centre line, optionally already rolling
 pub(crate) fn rc_place(c: &mut Car, rt: &Rt, w: &World, i: usize, lat: f64, speed: f64) {
@@ -254,9 +257,10 @@ pub fn step(g: &mut Game, w: &World, obs: &Obstacles, dt: f64) {
     plan(g, w, dt);
     for k in 0..g.race.cars.len() {
         if !g.race.cars[k].is_ai() { continue; }
-        let bo = g.race.cars[k].boost; let mut t: Tune = g.tune;
-        t.power = g.tune.power * (1.0 + bo); t.mu_road = g.tune.mu_road * (RT_MU + bo * 0.4); t.mu_grass = g.tune.mu_grass * (1.0 + bo * 0.4);
-        t.a_grip = g.tune.a_grip * RT_GRIP; t.a_yaw_cap = g.tune.a_yaw_cap * RT_YAW;
+        // rivals drive on the stage tune (their pace is balanced for it), whatever car you picked
+        let bo = g.race.cars[k].boost; let b = g.base_tune; let mut t: Tune = b;
+        t.power = b.power * (1.0 + bo); t.mu_road = b.mu_road * (RT_MU + bo * 0.4); t.mu_grass = b.mu_grass * (1.0 + bo * 0.4);
+        t.a_grip = b.a_grip * RT_GRIP; t.a_yaw_cap = b.a_yaw_cap * RT_YAW;
         let inp = rival_input(g, w, k); let mut car = g.race.cars[k].car; car.update(w, obs, &t, dt, &inp); g.race.cars[k].car = car;
         recover(g, w, k, dt);
     }
@@ -267,22 +271,29 @@ pub fn step(g: &mut Game, w: &World, obs: &Obstacles, dt: f64) {
     if g.msg_t > 0.0 { g.msg_t -= dt; }
 }
 
-/// rivals on screen: every instanced part posed through the car puppet, tinted per team; shadows; name tags
+/// rivals on screen: every instanced part posed through the car puppet; body parts only for the cars driving that body, tinted
+/// per team (colours follow the cars, so they stay right whoever is on which body); shadows; name tags
 pub fn gfx(g: &mut Game, r: &mut Renderer, w: &World) {
     let nr = g.race.cars.iter().filter(|c| !c.is_player()).count();
     if !g.race.shown { for p in &g.rt.rg_parts { r.set_vis(p.obj, true); } if let Some(s) = g.rt.rg_shadow { r.set_vis(s, true); } g.race.shown = true; }
     let mut mats: Vec<Vec<f32>> = g.rt.rg_parts.iter().map(|p| Vec::with_capacity(nr * p.src.len() * 16)).collect(); let mut sh: Vec<f32> = Vec::with_capacity(nr * 16);
+    let mut cols: Vec<Vec<f32>> = g.rt.rg_parts.iter().map(|_| Vec::new()).collect();
+    let nmodels = super::cars::CARS.len();
     for k in 0..g.race.cars.len() {
         if g.race.cars[k].is_player() { continue; }
         if g.race.cars[k].left { g.race.cars[k].tag_on = false; continue; }
-        let s = g.race.cars[k].car; let pose = g.car_pose(&s);
-        for (pi, p) in g.rt.rg_parts.iter().enumerate() { for (node, local) in &p.src { let nw = pose.get(node).copied().unwrap_or(ID); mats[pi].extend_from_slice(&to_f32(&mul(&nw, local))); } }
+        let s = g.race.cars[k].car; let pose = g.car_pose(&s); let model = g.race.cars[k].model % nmodels; let col = RIVALS[g.race.cars[k].r.unwrap_or(0) % RIVALS.len()].col;
+        for (pi, p) in g.rt.rg_parts.iter().enumerate() {
+            if let Some(m) = p.model { if m != model { continue; } }
+            for (node, local) in &p.src { let nw = pose.get(node).copied().unwrap_or(ID); mats[pi].extend_from_slice(&to_f32(&mul(&nw, local))); }
+            if p.tint && p.model.is_some() { cols[pi].extend_from_slice(&[col[0] as f32, col[1] as f32, col[2] as f32]); }
+        }
         let gh = w.height(s.x, s.z); let m = compose([s.x, gh + 0.05, s.z], &euler(0.0, s.h, 0.0, false), [1.0 + clamp(s.y - gh - 0.08, 0.0, 4.0) * 0.12; 3]); sh.extend_from_slice(&to_f32(&m));
         let v = project(&g.view, &g.proj, [s.x, s.y + 2.1, s.z]); let d = (s.x - g.cam_pos[0]).hypot(s.z - g.cam_pos[2]);
         let c = &mut g.race.cars[k]; c.tag_on = v[2] < 1.0 && v[0].abs() < 1.0 && v[1].abs() < 1.0 && d < 70.0 && d > 3.0;
         c.tag_x = (v[0] * 0.5 + 0.5) * g.lw as f64; c.tag_y = (0.5 - v[1] * 0.5) * g.lh as f64;
     }
-    for (pi, p) in g.rt.rg_parts.iter().enumerate() { r.set_instances(p.obj, (mats[pi].len() / 16) as i32, &mats[pi]); }
+    for (pi, p) in g.rt.rg_parts.iter().enumerate() { r.set_instances(p.obj, (mats[pi].len() / 16) as i32, &mats[pi]); if !cols[pi].is_empty() { r.set_instance_colors(p.obj, &cols[pi]); } }
     if let Some(s) = g.rt.rg_shadow { r.set_instances(s, (sh.len() / 16) as i32, &sh); }
 }
 /// hide the rivals again (back on the menu)

@@ -129,6 +129,11 @@ impl Renderer {
         // fresh storage each time (orphaning), so the driver never waits for the GPU to finish with last frame's matrices
         if let Some(b) = o.ibuf { if !mats.is_empty() { unsafe { gl.bind_buffer(glow::ARRAY_BUFFER, Some(b)); gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, f32_bytes(mats), glow::STREAM_DRAW); } } }
     }
+    /// per-instance colours (rgb), resized to fit
+    pub fn set_instance_colors(&mut self, id: usize, cols: &[f32]) {
+        let gl = &self.gl; let Some(o) = self.scene.as_mut().and_then(|s| s.objs.get_mut(id)) else { return };
+        if let Some(b) = o.cbuf { if !cols.is_empty() { unsafe { gl.bind_buffer(glow::ARRAY_BUFFER, Some(b)); gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, f32_bytes(cols), glow::DYNAMIC_DRAW); } } }
+    }
     /// replace a vertex attribute of the geometry an object draws (dust, falling snow)
     pub fn set_attr(&mut self, id: usize, name: &str, data: &[f32]) {
         let gl = &self.gl; let Some(s) = self.scene.as_ref() else { return }; let Some(o) = s.objs.get(id) else { return };

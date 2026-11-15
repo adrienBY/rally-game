@@ -28,6 +28,8 @@ pub struct Settings {
     pub open: bool, anim: f64, tab: usize, tab_y: f64, content_t: f64, content_dir: f64,
     springs: HashMap<&'static str, (f64, f64)>, flash: HashMap<String, f64>, slide: HashMap<&'static str, (f64, f64)>,
     drag: Option<(i32, &'static str, Rect, i32)>, pub kb: Option<String>, last_t: f64, rects: Vec<(String, Rect)>,
+    /// opened just to type the name (from the online screen): DONE or CANCEL closes the whole screen again
+    kb_only: bool,
 }
 impl Settings {
     /// still on screen (open, or sliding away)
@@ -48,8 +50,13 @@ fn value(ps: &Persist, cam: u8, key: &str) -> i32 {
 
 impl Game {
     pub fn settings_paused(&self) -> bool { self.set.open && self.state == State::Drive && !self.race.online }
-    pub fn open_settings(&mut self) { self.set.open = true; self.set.kb = None; self.set.drag = None; self.set.tab_y = self.set.tab as f64; }
-    pub fn close_settings(&mut self) { self.set.open = false; self.set.kb = None; self.set.drag = None; self.touches.clear(); }
+    pub fn open_settings(&mut self) { self.set.open = true; self.set.kb = None; self.set.drag = None; self.set.kb_only = false; self.set.tab_y = self.set.tab as f64; }
+    pub fn close_settings(&mut self) { self.set.open = false; self.set.kb = None; self.set.drag = None; self.set.kb_only = false; self.touches.clear(); }
+    /// the name keyboard on its own (online screen): the settings screen opens on PLAYER with the keyboard up
+    pub fn edit_name(&mut self) {
+        self.open_settings(); let t = TABS.iter().position(|t| t.0 == "PLAYER").unwrap_or(0);
+        self.set.tab = t; self.set.tab_y = t as f64; self.set.content_t = 1.0; self.set.kb = Some(self.ps.name.clone()); self.set.kb_only = true;
+    }
 
     fn set_value(&mut self, key: &'static str, v: i32) {
         let ps = &mut self.ps;
@@ -79,8 +86,8 @@ impl Game {
                 if let Some(t) = k.strip_prefix("tab").and_then(|t| t.parse::<usize>().ok()) {
                     if t != self.set.tab { self.set.content_dir = if t > self.set.tab { 1.0 } else { -1.0 }; self.set.tab = t; self.set.content_t = 0.0; self.set.kb = None; self.buzz("tap", 0.45); } return true; }
                 if let Some(mut name) = self.set.kb.clone() {
-                    match k.as_str() { "kb:del" => { name.pop(); } "kb:ok" => { let n = name.trim().to_string(); if !n.is_empty() { self.ps.name = n.clone(); self.ps.saves.set("fogwood-name", n); } self.set.kb = None; self.buzz("shift", 0.6); return true; }
-                        "kb:cancel" => { self.set.kb = None; self.buzz("tap", 0.4); return true; }
+                    match k.as_str() { "kb:del" => { name.pop(); } "kb:ok" => { let n = name.trim().to_string(); if !n.is_empty() { self.ps.name = n.clone(); self.ps.saves.set("fogwood-name", n); } self.set.kb = None; self.buzz("shift", 0.6); if self.set.kb_only { self.close_settings(); } return true; }
+                        "kb:cancel" => { self.set.kb = None; self.buzz("tap", 0.4); if self.set.kb_only { self.close_settings(); } return true; }
                         s if s.starts_with("kb:") => { if name.len() < NAME_MAX { name.push_str(&s[3..]); } }
                         _ => return true }
                     self.set.kb = Some(name); self.buzz("tap", 0.35); return true;
