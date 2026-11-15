@@ -26,6 +26,9 @@ pub const CARS: [CarSpec; 5] = [
         power: 1.14, grip_f: 1.06, grip_r: 1.08, split: 0.45, yaw: 1.0, side: 1.1, brake: 1.1, pitch: 1.06 },
 ];
 
+/// the liveries every car can wear (garage), in the order the page builds them: 0 is each car's own
+pub const LIVERIES: [&str; 8] = ["ORIGINAL", "BOLT", "CHECKER", "INFERNO", "CAMO", "SPLIT", "FADE", "GULF"];
+
 /// the stage tune with car k's character
 pub fn tune_for(base: &Tune, k: usize) -> Tune {
     let c = &CARS[k.min(CARS.len() - 1)]; let mut t = *base;

@@ -1258,6 +1258,16 @@ const CAR_SPECS = [
     lights: "strip", splitter: true, wing: { z: -1.52, chord: 0.46, y: 1.5, span: 1.62, base: 1.04, stay: 0.36, swan: true }, scoop: true,
     liv: { pat: "hoop", base: "#2c3038", a: "#3fd0d8", b: "#e2662a", c: "#ece8dc", num: "1" } },
 ];
+// pickable liveries for every body (garage), after each car's own: bold shapes, no lettering
+const LIVERIES = [
+  { pat: "bolt", base: "#18181b", a: "#f2c230", b: "#ece8dc", c: "#c23a2c" },
+  { pat: "checker", base: "#ece8dc", a: "#141414", b: "#c23a2c", c: "#141414" },
+  { pat: "flames", base: "#1b1b22", a: "#e2662a", b: "#f2c230", c: "#b8281f" },
+  { pat: "camo", base: "#5b6640", a: "#3b4429", b: "#8c8a5e", c: "#2a2e22" },
+  { pat: "split", base: "#1aa39a", a: "#141414", b: "#ece8dc", c: "#141414" },
+  { pat: "fade", base: "#1d2c5c", a: "#c2347a", b: "#ece8dc", c: "#1d2c5c" },
+  { pat: "gulf", base: "#8ec5e6", a: "#e2662a", b: "#141414", c: "#141414" },
+];
 const car = { root: new THREE.Group(), body: null, models: [], wheels: [], shadow: null, model: 0 };
 {
   // the first car's livery used the shared seeded generator: burn the same draws so the rest of the stage (trees, rocks...) is
@@ -1341,7 +1351,7 @@ const car = { root: new THREE.Group(), body: null, models: [], wheels: [], shado
     // painted at 512 px, then reduced 4x to chunky pixel art: each texel takes the colour that covers most of its 4x4 block, so the livery
     // keeps its exact palette (no blended in-between shades) and reads like a sprite at the game's low resolution
     const PX = 4;
-    const atlas = canvasTex(AW / PX, (gs) => {
+    const makeAtlas = (L) => { const atlas = canvasTex(AW / PX, (gs) => {
       const big = document.createElement("canvas"); big.width = AW; big.height = 4 * SH; const g = big.getContext("2d");
       g.imageSmoothingEnabled = false;
       const W_ = L.base;
@@ -1356,16 +1366,26 @@ const car = { root: new THREE.Group(), body: null, models: [], wheels: [], shado
         else if (L.pat === "twotone") { hband(0.74, 1.75, L.a); hband(0.72, 0.745, L.b); hband(0.98, 1.75, L.c); }
         else if (L.pat === "classic") { hband(0.5, 0.6, L.b); hband(0.48, 0.5, L.a); hband(0.6, 0.62, L.a); hband(0.97, 1.75, L.a); }
         else if (L.pat === "hoop") { band(1.0, 0.45, 0.3, 0.3, 0.7, L.a); band(0.92, 0.38, 0.3, 0.3, 0.7, L.base); band(0.88, 0.35, 0.3, 0.3, 0.7, L.a); hband(0.38, 0.41, L.b); hband(0.97, 1.75, "#16181c"); }
+        // the pickable liveries (no lettering): shapes only, every edge on the texel grid after the reduction
+        const poly = (pts, col) => { g.fillStyle = col; g.beginPath(); pts.forEach(([z, y], k) => k ? g.lineTo(X(z), Y(y)) : g.moveTo(X(z), Y(y))); g.closePath(); g.fill(); };
+        if (L.pat === "bolt") { const P = [[2.3, 0.6], [1.15, 0.74], [0.75, 0.52], [-0.45, 0.74], [-0.85, 0.5], [-2.3, 0.64]];
+          for (let k = 0; k < P.length - 1; k++) { band(P[k][0], P[k + 1][0], P[k][1] - 0.02, P[k + 1][1] - 0.02, 0.15, L.b); band(P[k][0], P[k + 1][0], P[k][1], P[k + 1][1], 0.11, L.a); }
+          hband(0.98, 1.75, L.base); }
+        else if (L.pat === "checker") { const sq = 0.13; for (let r = 0; r < 2; r++) for (let z = -2.3; z < 2.3; z += sq) if ((Math.round((z + 2.3) / sq) + r) % 2 === 0) poly([[z, 0.5 + r * sq], [z + sq, 0.5 + r * sq], [z + sq, 0.5 + (r + 1) * sq], [z, 0.5 + (r + 1) * sq]], L.a);
+          hband(0.76, 0.79, L.b); hband(0.47, 0.5, L.b); hband(0.98, 1.75, L.a); }
+        else if (L.pat === "flames") { for (const [y0, len, col] of [[0.62, 2.4, L.c], [0.6, 1.9, L.a], [0.58, 1.3, L.b]]) for (let t = 0; t < 4; t++) { const yb = y0 - 0.2 + t * 0.12, l = len * (0.75 + 0.25 * ((t * 37) % 5) / 4);
+            poly([[2.3, yb - 0.09], [2.3 - l * 0.55, yb - 0.07], [2.3 - l, yb + 0.03], [2.3 - l * 0.6, yb + 0.06], [2.3 - l * 0.8, yb + 0.12], [2.3, yb + 0.1]], col); }
+          hband(0.98, 1.75, L.base); }
+        else if (L.pat === "camo") { for (let k = 0; k < 260; k++) { const z = crr(-2.3, 2.3), y = crr(0.15, 1.75), w = (2 + (crnd() * 4 | 0)) * PX * 2, h = (1 + (crnd() * 3 | 0)) * PX * 2;
+            g.fillStyle = [L.a, L.b, L.c][k % 3]; g.fillRect(Math.round(X(z) / (2 * PX)) * 2 * PX, Math.round(Y(y) / (2 * PX)) * 2 * PX, w, h); } }
+        else if (L.pat === "split") { poly([[1.2, 0.1], [-2.4, 0.1], [-2.4, 1.8], [-0.4, 1.8]], L.a); band(1.2, -0.4, 0.1, 1.8, 0.0001, L.b); poly([[1.2, 0.1], [1.32, 0.1], [-0.28, 1.8], [-0.4, 1.8]], L.b); }
+        else if (L.pat === "fade") { for (let z = -2.3; z < 2.3; z += 0.034) for (let y = 0.15; y < 1.75; y += 0.04) { const t = (z + 2.3) / 4.6, bx = Math.round(X(z) / PX), by = Math.round(Y(y) / PX);
+            if (t * 1.1 - 0.05 > [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5][(by & 3) * 4 + (bx & 3)] / 16) { g.fillStyle = L.a; g.fillRect(bx * PX, by * PX, PX, PX); } }
+          for (let k = 0; k < 3; k++) { const z0 = 0.35 - k * 0.32; poly([[z0, 0.5], [z0 - 0.12, 0.5], [z0 - 0.26, 0.64], [z0 - 0.12, 0.78], [z0, 0.78], [z0 - 0.14, 0.64]], L.b); } hband(0.98, 1.75, L.base); }
+        else if (L.pat === "gulf") { hband(0.52, 0.78, L.a); hband(0.5, 0.52, L.b); hband(0.78, 0.8, L.b); }
         g.fillStyle = "#111"; g.fillRect(0, Y(0.37), AW, Y(0.15) - Y(0.37));                 // black sills
         g.fillStyle = L.b; g.fillRect(0, Y(0.385), AW, 1);
         g.fillStyle = "rgba(24,24,24,0.6)"; for (const z of [ZW - 0.04, S.zB ?? ZRE + 0.08]) g.fillRect(X(z) | 0, Y(0.97), 1, Y(0.36) - Y(0.97)); g.fillRect(X(lerp(ZW, ZRE, 0.7)) | 0, Y(0.86) | 0, 6, 1);
-        // door roundel and sponsors (invented)
-        // lettering is drawn at the final texel size (pixel font x PX, on the PX grid), so it survives the reduction as crisp,
-        // readable pixel text, one texel per font pixel, like the boxy car of the early builds
-        const q = (v) => Math.round(v / PX) * PX;
-        const cx = q(X(lerp(ZW, ZRE, 0.35))), cy = q(Y(0.66)); g.fillStyle = "#151515"; g.fillRect(cx - 7 * PX, cy - 6 * PX, (6 * L.num.length + 8) * PX, 12 * PX);
-        g.fillStyle = "#f4f1e8"; g.fillRect(cx - 6 * PX, cy - 5 * PX, (6 * L.num.length + 6) * PX, 10 * PX); text(g, L.num, cx - 3 * PX, cy - 4 * PX, PX, "#151515", null);
-        const sp1 = WB_R + 0.5 + (mirror ? 0.84 : -0.84), sx = q(X(sp1)), sy = q(Y(0.86));   // on the rear quarter, reading front to back on both sides g.fillStyle = L.b; g.fillRect(sx, sy, 50 * PX, 10 * PX); text(g, "BRUME", sx + PX * 2, sy + PX, PX, "#ece8dc", null);
         // mud thrown up behind the wheels: whole texels in two solid tones
         for (let i = 0; i < 150; i++) { const z = crr(-2.15, 2.15), near = Math.min(Math.abs(z - WB_F), Math.abs(z - WB_R)) < 0.6 ? 1 : 0.15; if (crnd() > near) continue;
           const y = 0.26 + Math.pow(crnd(), 2.2) * 0.3 * (0.5 + near);
@@ -1383,9 +1403,15 @@ const car = { root: new THREE.Group(), body: null, models: [], wheels: [], shado
       if (L.pat === "twotone") { top(ZW - 0.1, 2.3, -0.03, 0.03, L.b); }
       if (L.pat === "classic") { top(ZW + 0.1, 2.3, -1.1, 1.1, L.a); top(ZW + 0.1, 2.3, -0.06, 0.06, L.b); }
       if (L.pat === "hoop") { top(-2.3, 2.3, -0.04, 0.04, L.a); }
-      const roundel = (z) => { const n = L.num.length; g.save(); g.translate(Math.round(TX(z) / PX) * PX, Math.round(TY(0) / PX) * PX); g.rotate(-Math.PI / 2);
-        g.fillStyle = "#f4f1e8"; g.fillRect(-(3 * n + 2) * PX, -5 * PX, (6 * n + 4) * PX, 10 * PX); text(g, L.num, -3 * n * PX, -4 * PX, PX, "#151515", null); g.restore(); };
-      roundel(lerp(ZR, ZRE, 0.55));
+      if (L.pat === "bolt") { top(-2.3, 2.3, -0.1, 0.1, L.a); top(-2.3, 2.3, -0.13, -0.1, L.b); top(-2.3, 2.3, 0.1, 0.13, L.b); }
+      if (L.pat === "checker") { const sq = 0.13; for (let z = ZH - 0.1; z < ZW; z += sq) for (let x = -0.65; x < 0.65; x += sq) if ((Math.round((z + 3) / sq) + Math.round((x + 1) / sq)) % 2 === 0) top(z, z + sq, x, x + sq, L.a); }
+      if (L.pat === "flames") { for (const [w, len, col] of [[0.5, 1.5, L.c], [0.38, 1.15, L.a], [0.24, 0.8, L.b]]) { g.fillStyle = col; g.beginPath(); g.moveTo(TX(2.3), TY(-w));
+          for (let k = 0; k <= 6; k++) { const x = -w + 2 * w * k / 6, l = len * (k % 2 ? 0.7 : 1.0); g.lineTo(TX(2.3 - l), TY(x)); } g.lineTo(TX(2.3), TY(w)); g.closePath(); g.fill(); } }
+      if (L.pat === "camo") { for (let k = 0; k < 120; k++) { const z = crr(-2.3, 2.3), x = crr(-1.1, 1.1), w = (2 + (crnd() * 4 | 0)) * PX * 2, h = (1 + (crnd() * 3 | 0)) * PX * 2;
+          g.fillStyle = [L.a, L.b, L.c][k % 3]; g.fillRect(Math.round(TX(z) / (2 * PX)) * 2 * PX, Math.round(TY(x) / (2 * PX)) * 2 * PX, w, h); } }
+      if (L.pat === "split") { top(-2.3, 0.4, -1.1, 1.1, L.a); top(0.4, 0.46, -1.1, 1.1, L.b); }
+      if (L.pat === "fade") { top(ZW - 0.1, 2.3, -1.1, 1.1, L.a); }
+      if (L.pat === "gulf") { top(-2.3, 2.3, -0.2, 0.2, L.a); top(-2.3, 2.3, -0.22, -0.2, L.b); top(-2.3, 2.3, 0.2, 0.22, L.b); }
       g.fillStyle = "#111"; g.fillRect(TX(ZH - 0.2), 2 * SH, 1, SH);
       const FX = (x, rear) => (rear ? 0.5 + (0.55 - x / 2.2) * 0.5 : (x / 2.2 + 0.5) * 0.5) * AW, FY = (y) => 3 * SH + (1 - (y - Y0) / YH) * SH;
       g.fillStyle = W_; g.fillRect(0, 3 * SH, AW, SH);
@@ -1396,10 +1422,23 @@ const car = { root: new THREE.Group(), body: null, models: [], wheels: [], shado
       g.fillStyle = "#111"; g.fillRect(0, FY(0.42), AW, FY(0.1) - FY(0.42));
       g.fillStyle = L.pat === "hoop" ? "#16181c" : L.pat === "stripes" ? L.b : L.a; g.fillRect(0, FY(1.75), AW, FY(1.0) - FY(1.75));
       g.fillStyle = L.a; g.fillRect(AW / 2, FY(0.7), AW / 2, FY(0.5) - FY(0.7)); g.fillStyle = L.b; g.fillRect(AW / 2, FY(0.72), AW / 2, 3);
+      const fr = (x0, x1, y0, y1, col, rear) => { g.fillStyle = col; const a = FX(x0, rear), b = FX(x1, rear); g.fillRect(Math.min(a, b), FY(y1), Math.abs(b - a), FY(y0) - FY(y1)); };
+      if (L.pat === "bolt") for (const r of [false, true]) { fr(-0.1, 0.1, 0.3, 1.3, L.a, r); }
+      if (L.pat === "checker") for (const r of [false, true]) for (let x = -1.1, k = 0; x < 1.1; x += 0.13, k++) for (let q = 0; q < 2; q++) if ((k + q) % 2 === 0) fr(x, x + 0.13, 0.5 + q * 0.13, 0.63 + q * 0.13, L.a, r);
+      if (L.pat === "flames") { fr(-0.5, 0.5, 0.4, 0.75, L.c, false); fr(-0.35, 0.35, 0.45, 0.72, L.a, false); fr(-0.2, 0.2, 0.5, 0.68, L.b, false); }
+      if (L.pat === "camo") for (let k = 0; k < 60; k++) { g.fillStyle = [L.a, L.b, L.c][k % 3]; g.fillRect(Math.round(crr(0, AW) / (2 * PX)) * 2 * PX, Math.round(crr(FY(1.75), FY(0.2)) / (2 * PX)) * 2 * PX, (2 + (crnd() * 4 | 0)) * PX * 2, (1 + (crnd() * 3 | 0)) * PX * 2); }
+      if (L.pat === "split") { fr(-1.1, 1.1, 0.2, 1.75, L.a, true); }
+      if (L.pat === "fade") { fr(-1.1, 1.1, 0.2, 1.75, L.a, false); }
+      if (L.pat === "gulf") for (const r of [false, true]) { fr(-0.2, 0.2, 0.3, 1.3, L.a, r); }
       pixelate(g, gs, PX); retroShade(gs, AW / PX, 4 * SH / PX, SH / PX);
     }, false, 4 * SH / PX);
-    atlas.minFilter = atlas.magFilter = THREE.NearestFilter; atlas.generateMipmaps = false;
-    const paint = phong({ map: atlas });
+    atlas.minFilter = atlas.magFilter = THREE.NearestFilter; atlas.generateMipmaps = false; return atlas; };
+    // the car's own livery first, then every pickable one: the extras ride on invisible carrier meshes so the app gets their
+    // textures, and swaps the paint's texture for the one picked in the garage
+    const atlases = [L, ...LIVERIES].map(makeAtlas);
+    const paint = phong({ map: atlases[0] }); paint.userData.paint = true;
+    { const cg = new THREE.BufferGeometry(); cg.setAttribute("position", new THREE.Float32BufferAttribute([0, 0.5, 0, 0, 0.5, 0, 0, 0.5, 0], 3)); cg.setAttribute("normal", new THREE.Float32BufferAttribute([0, 1, 0, 0, 1, 0, 0, 1, 0], 3));
+      cg.setAttribute("uv", new THREE.Float32BufferAttribute([0, 0, 0, 0, 0, 0], 2)); B.userData.liveries = atlases.slice(1).map(t => { const m = new THREE.Mesh(cg, phong({ map: t })); B.add(m); return m; }); }
     const AH = 4 * SH, V = (row) => 1 - row / AH;
     const uvSide = (p) => { const mir = p[0] > 0, u = (mir ? (Z0 + ZL - p[2]) : (p[2] - Z0)) / ZL; return [u, V((mir ? SH : 0) + (1 - (p[1] - Y0) / YH) * SH)]; };
     const uvTop = (p) => [(p[2] - Z0) / ZL, V(2 * SH + (p[0] + 1.1) / 2.2 * SH)];
@@ -1438,8 +1477,8 @@ const car = { root: new THREE.Group(), body: null, models: [], wheels: [], shado
       const [x, y, z] = c, ax = Math.abs(x);
       if (n[1] < -0.3) return null;
       if (n[1] > 0.8 && z < ZR + 0.05 && z > ZRE - 0.05) return PAINT;
-      if (z > ZR - 0.02) { if (Math.abs(n[0]) > 0.42) return PAINT; if (z < zb0 + 0.18 && ax < bw) return BANNER; return GLASS; }
-      if (z < ZRE + 0.02) { if (Math.abs(n[0]) > 0.42) return PAINT; if (S.louvres) return Math.floor(z / 0.06) % 2 === 0 ? BLACK : PAINT; if (Math.abs(z - zs0) < 0.07 && ax < 0.55) return STICK; return GLASS; }
+      if (z > ZR - 0.02) { if (Math.abs(n[0]) > 0.42) return PAINT; return GLASS; }
+      if (z < ZRE + 0.02) { if (Math.abs(n[0]) > 0.42) return PAINT; if (S.louvres) return Math.floor(z / 0.06) % 2 === 0 ? BLACK : PAINT; return GLASS; }
       if (S.zB !== null && Math.abs(z - S.zB) < 0.07) return PAINT;
       if (S.thickC !== null && z < S.thickC) return PAINT;
       if (y > roofY(z) - 0.03) return PAINT;
@@ -2941,7 +2980,8 @@ function rtPacket() {
     obstacles: obstacles.map(o => [o.x, o.z, o.r, o.m || 0]),
     split: [...post.uniforms.uSplitS.value.toArray(), ...post.uniforms.uSplitH.value.toArray()],
     nodes: NODES, objn: OBJN, rg,
-    car: { shadow: ids(car.shadow)[0], models: car.models.map(B => { const l = []; B.traverse(o => l.push(...ids(o))); return l; }) }, glit: GLIT.map(m => ids(m)[0]),
+    car: { liveries: car.models.map(B => { const paint = []; B.traverse(o => { if (o.isMesh && o.material && o.material.userData && o.material.userData.paint) paint.push(...ids(o)); });
+      return { paint, alt: (B.userData.liveries || []).map(m => ids(m)[0]) }; }), shadow: ids(car.shadow)[0], models: car.models.map(B => { const l = []; B.traverse(o => l.push(...ids(o))); return l; }) }, glit: GLIT.map(m => ids(m)[0]),
     cull: CULL.map(c => [ids(c.o), c.c.x, c.c.y, c.c.z, c.r, c.d]),
     boats: BOATS.ims ? { list: BOATS.list, hull: ids(BOATS.ims.hull)[0], sail: ids(BOATS.ims.sail)[0], cab: ids(BOATS.ims.cab)[0], wake: ids(BOATS.ims.wake)[0] } : null,
     snow: (SNOW || TOU) ? { obj: ids(snowfall)[0], n: SFN, pos: Array.from(sfPos), seed: Array.from(sfSeed) } : null,

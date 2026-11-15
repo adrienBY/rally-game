@@ -34,6 +34,8 @@ struct Object {
     lods: Vec<(glow::Buffer, i32)>, lod: usize,
     /// its own position / normal buffers once the game reshapes it (a dented car body), so meshes sharing the geometry keep theirs
     own: Option<(glow::Buffer, Option<glow::Buffer>)>,
+    /// a texture drawn instead of its material's (a livery picked in the garage)
+    map: Option<i32>,
 }
 struct GpuScene {
     texs: Vec<Texture>, geos: Vec<Geometry>, mats: Vec<Material>, objs: Vec<Object>,
@@ -158,6 +160,10 @@ impl Renderer {
             // a particle buffer the game sized itself: draw all of it
             if pts && name == "position" { s.geos[gi].count = (data.len() / 3) as i32; } }
     }
+    /// the texture an object's material draws with (-1: none)
+    pub fn obj_map(&self, id: usize) -> i32 { self.scene.as_ref().and_then(|s| s.objs.get(id).map(|o| s.mats[o.mat].map)).unwrap_or(-1) }
+    /// draw an object with another texture (None: its material's again)
+    pub fn set_map(&mut self, id: usize, tex: Option<i32>) { if let Some(o) = self.scene.as_mut().and_then(|s| s.objs.get_mut(id)) { o.map = tex.filter(|t| *t >= 0); } }
     /// the rest shape (positions, normals; normals empty if it has none) of a car-body object, as the page built it
     pub fn car_rest(&self, id: usize) -> Option<&(Vec<f32>, Vec<f32>)> { self.scene.as_ref()?.car_rest.get(&id) }
     /// reshape one object: new positions (and normals) in its own buffers, rebound in its vertex array the first time
@@ -326,7 +332,7 @@ impl Renderer {
             let mi = o["m"].as_u64().unwrap_or(0) as usize;
             let has = |n: &str| geo.attrs.iter().any(|a| a.name == n);
             let (no_normal, no_uv, no_color) = (!has("normal"), !has("uv"), !has("color"));
-            objs.push(Object { own: None, lods: Vec::new(), lod: 0, prog: usize::MAX, no_normal, no_uv, no_color, kind, geo: gi, mat: mi, mw, ro: o["ro"].as_i64().unwrap_or(0) as i32, cull: o["cull"].as_i64() == Some(1), vis: o["vis"].as_i64() != Some(0), car: o["car"].as_i64() == Some(1),
+            objs.push(Object { map: None, own: None, lods: Vec::new(), lod: 0, prog: usize::MAX, no_normal, no_uv, no_color, kind, geo: gi, mat: mi, mw, ro: o["ro"].as_i64().unwrap_or(0) as i32, cull: o["cull"].as_i64() == Some(1), vis: o["vis"].as_i64() != Some(0), car: o["car"].as_i64() == Some(1),
                 opacity: mats.get(mi).map(|m| m.opacity).unwrap_or(1.0), count: o["count"].as_i64().unwrap_or(1) as i32, ibuf, cbuf,
                 ibs: o["ibs"].as_array().map(|a| [f(&a[0]), f(&a[1]), f(&a[2]), f(&a[3])]), vao,
                 dr: o["dr"].as_array().map(|a| (a[0].as_i64().unwrap_or(0) as i32, a[1].as_i64().unwrap_or(0) as i32)) });
@@ -529,7 +535,7 @@ impl Renderer {
         transp.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)));
         let mut calls = 0u32; let mut tris = 0u32;
         // GL state is tracked here so each draw only issues the calls that change something
-        let mut st_blend = -1i32; let mut st_dt: i8 = -1; let mut st_dw: i8 = -1; let mut st_cull = -1i32; let mut st_ff = 0u32; let mut st_poly: Option<Option<(f32, f32)>> = None;
+        let mut st_ovr = false; let mut st_blend = -1i32; let mut st_dt: i8 = -1; let mut st_dw: i8 = -1; let mut st_cull = -1i32; let mut st_ff = 0u32; let mut st_poly: Option<Option<(f32, f32)>> = None;
         let mut st_prog = usize::MAX - 1; let mut st_mat = usize::MAX; let mut st_tex: Option<glow::Texture> = None;
         let mut st_const = [None::<bool>; 4];   // constant normal / uv / colour / instance colour currently set
         let mut framed = vec![false; self.mesh_list.len() + 3];   // per-frame uniforms already sent to this program
@@ -576,13 +582,14 @@ impl Renderer {
                     gl.uniform_3_f32_slice(u(U!("uFog")), &fog); gl.uniform_3_f32_slice(u(U!("uCol")), &col); } }
                 _ => {
                     gl.uniform_matrix_3_f32_slice(u(U!("uNormalM")), false, &normal_matrix(&o.mw));
-                    if st_mat != o.mat {   // material uniforms: only when the material changes
-                        let tm = if m.map >= 0 { s.texs.get(m.map as usize).map(|t| t.m).unwrap_or([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]) } else { [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0] };
+                    let mmap = o.map.unwrap_or(m.map); if st_mat != o.mat || o.map.is_some() || st_ovr {   // material uniforms: only when the material changes (or a texture override starts/ends)
+                        st_ovr = o.map.is_some();
+                        let tm = if mmap >= 0 { s.texs.get(mmap as usize).map(|t| t.m).unwrap_or([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]) } else { [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0] };
                         gl.uniform_matrix_3_f32_slice(u(U!("uMapM")), false, &tm);
                         gl.uniform_3_f32_slice(u(U!("uColor")), &m.color); gl.uniform_1_f32(u(U!("uAlphaTest")), m.alpha_test);
                         gl.uniform_1_f32(u(U!("uFogDensity")), if m.fog { s.fog_d } else { 0.0 });
                         gl.uniform_3_f32_slice(u(U!("uSpec")), &m.spec); gl.uniform_1_f32(u(U!("uShin")), m.shin.max(1e-4)); gl.uniform_3_f32_slice(u(U!("uEmissive")), &m.emis);
-                        if m.map >= 0 { if let Some(t) = s.texs.get(m.map as usize) { if st_tex != Some(t.tex) { gl.active_texture(glow::TEXTURE0); gl.bind_texture(glow::TEXTURE_2D, Some(t.tex)); st_tex = Some(t.tex); } } }
+                        if mmap >= 0 { if let Some(t) = s.texs.get(mmap as usize) { if st_tex != Some(t.tex) { gl.active_texture(glow::TEXTURE0); gl.bind_texture(glow::TEXTURE_2D, Some(t.tex)); st_tex = Some(t.tex); } } }
                     }
                     gl.uniform_1_f32(u(U!("uOpacity")), o.opacity);
                     gl.uniform_1_f32(u(U!("uDim")), if o.car { fr.dim.max(0.05) } else { 1.0 });

@@ -75,13 +75,13 @@ pub struct Persist { pub saves: Saves, pub sound_on: bool, pub vib_on: bool, pub
     pub online_ui: online::OnlineUi, pub name: String, pub online_laps: u8,
     /// settings screen: volumes 0..10, haptics 0..3, sun rays, mph, camera view, camera shake, 30 fps battery saver, debug buttons
     pub vol: i32, pub rvol: i32, pub hap: i32, pub rays: bool, pub mph: bool, pub cam_mode: u8, pub shake: bool, pub saver: bool, pub debug: bool,
-    /// your car (garage)
-    pub car: usize }
+    /// your car (garage), and the livery picked for each car (0 = its own)
+    pub car: usize, pub paint: Vec<usize> }
 impl Persist {
     pub fn new(save_path: &str) -> Persist {
         let saves = Saves::load(save_path);
         let mut p = Persist { saves, sound_on: true, vib_on: true, pix_idx: 2, touch_used: false, downgraded: false, race_mode: false, race_skill: 0.95, online_ui: online::OnlineUi::Closed, name: String::new(), online_laps: 2,
-            vol: 10, rvol: 8, hap: 2, rays: true, mph: false, cam_mode: 0, shake: true, saver: false, debug: true, car: 0 };
+            vol: 10, rvol: 8, hap: 2, rays: true, mph: false, cam_mode: 0, shake: true, saver: false, debug: true, car: 0, paint: vec![0; cars::CARS.len()] };
         p.reload(); p
     }
     pub fn reload(&mut self) {
@@ -99,6 +99,7 @@ impl Persist {
         if let Some(v) = gi(&self.saves, "fogwood-cam") { self.cam_mode = v.clamp(0, 2) as u8; }
         if let Some(v) = gi(&self.saves, "fogwood-olaps") { self.online_laps = v.clamp(1, 5) as u8; }
         if let Some(v) = gi(&self.saves, "fogwood-car") { self.car = (v.max(0) as usize).min(cars::CARS.len() - 1); }
+        if let Some(v) = self.saves.get("fogwood-paint") { for (k, x) in v.split(',').enumerate() { if let (Some(slot), Ok(n)) = (self.paint.get_mut(k), x.parse::<usize>()) { *slot = n.min(cars::LIVERIES.len() - 1); } } }
         for (k, f) in [("fogwood-rays", &mut self.rays), ("fogwood-mph", &mut self.mph), ("fogwood-shake", &mut self.shake), ("fogwood-saver", &mut self.saver), ("fogwood-debug", &mut self.debug)] {
             if let Some(v) = self.saves.get(k) { *f = v == "1"; } }
         if self.saves.get("fogwood-dg") == Some("1") { self.downgraded = true; }
@@ -145,6 +146,8 @@ pub struct Game {
     pub set: settings::Settings,
     /// the garage, the stage tune before your car's character, which body is on show
     pub gar: garage::Garage, pub base_tune: Tune, car_vis: Option<usize>,
+    /// the livery on show (body, livery), so it is only swapped when it changes
+    paint_vis: Option<(usize, usize)>,
     /// your car's bodywork: visual crash damage (never touches the driving)
     pub crash: crash::Crash,
 }
@@ -173,7 +176,7 @@ impl Game {
         let ncull = rt.cull.len(); let nglit = rt.glit.len();
         let mut g = Game {
             np, snow: mid == 1, can: mid == 2, lak: mid == 3, tou: mid == 5, riv: mid == 6,
-            tune: cars::tune_for(&Tune::from_slice(&tv), ps.car), base_tune: Tune::from_slice(&tv), gar: Default::default(), car_vis: None, crash: crash::Crash::new(), cam_follow, car: Car::new(), rpm_shown: 900.0, shake: 0.0, car_hit: 0.0, prev_throttle: 0.0,
+            tune: cars::tune_for(&Tune::from_slice(&tv), ps.car), base_tune: Tune::from_slice(&tv), gar: Default::default(), car_vis: None, paint_vis: None, crash: crash::Crash::new(), cam_follow, car: Car::new(), rpm_shown: 900.0, shake: 0.0, car_hit: 0.0, prev_throttle: 0.0,
             state: State::Title, g_t: 0.0, lap: 1, lap_start: 0.0, best, flags: [false; 3], last_idx: 0, msg: String::new(), msg_t: 0.0, wrong_t: 0.0, started: false, go: 0.0,
             cam: CamState { y: 0.0, h: 0.0, init: false, mode: ps.cam_mode as i32, fov: 56.0, lag: 0.0, cp: None, cr: None, shot: -1, cut_t: 0.0, passed: 0.0, anchor: [0.0; 3], target: 0, side: 1.0 },
             cam_pos: [0.0; 3], cam_rot: ID, fov_now: 56.0, view: ID, proj: ID, w: 1280.0, h: 720.0, lw: 320, lh: 180, u: 1.0, inset: [0.0; 4], inset_px: [0.0; 4],
@@ -199,7 +202,7 @@ impl Game {
     /// the GPU copy of the scene was rebuilt (lost GL context): push every object state again
     pub fn scene_reloaded(&mut self) {
         self.tile_lod.clear(); self.obj_last.clear(); for v in self.cull_vis.iter_mut() { *v = !*v; } self.shadow_op = -1.0; for v in self.glit_op.iter_mut() { *v = -1.0; }
-        self.race.shown = false; self.race_was = self.race.on; self.hud.invalidate(); self.car_vis = None; self.crash.rebind();
+        self.race.shown = false; self.race_was = self.race.on; self.hud.invalidate(); self.car_vis = None; self.paint_vis = None; self.crash.rebind();
     }
     pub fn clock_ms(&self) -> f64 { self.clock.elapsed().as_secs_f64() * 1000.0 }
     pub fn stage_km(&self) -> String { format!("{:.2}", self.np as f64 / 1000.0) }
@@ -368,6 +371,10 @@ impl Game {
         // the body on show: yours, or the one the garage is looking at
         let want = if self.gar.open { self.gar.sel } else { self.ps.car };
         if self.car_vis != Some(want) && !self.rt.car_models.is_empty() { for (k, objs) in self.rt.car_models.iter().enumerate() { for &o in objs { r.set_vis(o, k == want); } } self.car_vis = Some(want); }
+        // its livery: the paint drawn with the picked texture (carried by an invisible mesh of that body), or its own
+        let pk = self.ps.paint.get(want).copied().unwrap_or(0);
+        if self.paint_vis != Some((want, pk)) { if let Some((paint, alt)) = self.rt.liveries.get(want) {
+            let tex = if pk == 0 { None } else { alt.get(pk - 1).map(|&o| r.obj_map(o)) }; for &o in paint { r.set_map(o, tex); } } self.paint_vis = Some((want, pk)); }
         let paused = self.settings_paused();   // settings open while driving alone: the world holds still
         let pre = (self.car.vx, self.car.vz, self.car.r);
         let shifted = if paused { false } else { self.car.update(w, obs, &self.tune, dt, &inp) }; lap!(0);

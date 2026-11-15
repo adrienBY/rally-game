@@ -1,7 +1,7 @@
 //! The garage: pick your car. The car stands on the stage with the camera slowly orbiting it (not draggable: a swipe
 //! anywhere changes car); a panel on the left shows its name, class and four stat bars that fill block by block; arrows
 //! and dots change car (the new body drops onto its springs), and SELECT makes it yours (then DRIVE starts the stage).
-use super::cars::{tune_for, CARS};
+use super::cars::{tune_for, CARS, LIVERIES};
 use super::hud::*;
 use super::math::*;
 use super::{js_round, Game, Rect, State};
@@ -23,6 +23,8 @@ pub struct Garage {
     drag: Option<(i32, f64, f64, f64, bool)>, moved: f64, hint: f64,
     /// asks the game loop to park the car / drop the new body (it has the world)
     pub park: bool, pub hop: bool,
+    /// time since the livery changed (its name pops)
+    paint_t: f64,
 }
 
 fn ease_out(t: f64) -> f64 { let t = t.clamp(0.0, 1.0); 1.0 - (1.0 - t).powi(3) }
@@ -46,6 +48,12 @@ impl Game {
     pub fn choose_car(&mut self, k: usize) {
         let k = k.min(CARS.len() - 1); self.ps.car = k; self.ps.saves.set("fogwood-car", k.to_string()); self.tune = tune_for(&self.base_tune, k);
     }
+    /// the next / previous livery for the car on show (saved straight away, like a preference)
+    pub fn garage_paint(&mut self, d: i32) {
+        let n = LIVERIES.len() as i32; let s = self.gar.sel; if let Some(p) = self.ps.paint.get_mut(s) { *p = ((*p as i32 + d) % n + n) as usize % n as usize; }
+        let v: Vec<String> = self.ps.paint.iter().map(|p| p.to_string()).collect(); self.ps.saves.set("fogwood-paint", v.join(","));
+        self.gar.paint_t = 0.0; self.buzz("tap", 0.5);
+    }
     pub fn garage_go(&mut self, d: i32) {
         let n = CARS.len() as i32; let g = &mut self.gar; let next = ((g.sel as i32 + d) % n + n) % n;
         g.from = g.bars; g.sel = next as usize; g.change_t = 0.0; g.dir = if d >= 0 { 1.0 } else { -1.0 }; g.hop = true; g.yaw_v = g.dir * 1.2; g.idle = 0.0;
@@ -64,6 +72,8 @@ impl Game {
                     match k.as_str() {
                         "g_prev" => { self.garage_go(-1); return true; }
                         "g_next" => { self.garage_go(1); return true; }
+                        "g_lprev" => { self.garage_paint(-1); return true; }
+                        "g_lnext" => { self.garage_paint(1); return true; }
                         "g_back" => { self.buzz("tap", 0.5); self.close_garage(); return true; }
                         "g_sel" => { let s = self.gar.sel;
                             if s != self.ps.car { self.choose_car(s); self.gar.stamp_t = 0.0; self.buzz("shift", 0.8); }
@@ -92,7 +102,7 @@ impl Game {
         // the new body drops from a fixed height onto its springs: back to the parked pose first, so switching quickly
         // restarts the drop instead of adding to it (it used to stack up and launch the car)
         if self.gar.hop { self.gar.hop = false; self.place_at(w, 6); self.car.y += 0.3; self.car.vy = 0.0; self.car.pr = 0.35 * self.gar.dir; }
-        let g = &mut self.gar; g.idle += dt; g.change_t += dt; g.stamp_t += dt; g.hint = (g.hint - dt * 0.4).max(0.0);
+        let g = &mut self.gar; g.idle += dt; g.change_t += dt; g.paint_t += dt; g.stamp_t += dt; g.hint = (g.hint - dt * 0.4).max(0.0);
         // the turntable: a short swing after a change, settling back into a slow drift
         g.yaw += g.yaw_v * dt; g.yaw_v += (0.22 - g.yaw_v) * (dt * 1.6).min(1.0);
     }
@@ -175,6 +185,16 @@ pub fn draw(gar: &mut Garage, ps: &super::Persist, time: f64, g: &mut Canvas, lw
     for k in 0..n { let on = k == gar.sel; let x = dx0 + k as f64 * dwid; let s = if on { 5.0 * u } else { 3.0 * u };
         gar.rects.push((format!("g_dot{}", k), Rect { x: x - 2.0 * u, y: dyy - 4.0 * u, w: dwid, h: 12.0 * u }));
         g.rect_c(x + (5.0 * u - s) / 2.0, dyy + (5.0 * u - s) / 2.0, s, s, if on { AMBER } else if k == ps.car { rgba(170, 240, 150, 0.8) } else { DIM }); }
+    // livery picker over the dots: arrows either side of its name
+    { let pk = ps.paint.get(gar.sel).copied().unwrap_or(0).min(LIVERIES.len() - 1); let name = LIVERIES[pk]; let cxm = (ax0 + 18.0 * u + ax1) / 2.0;
+      let lbl = format!("PAINT {}", name); let lw_ = text_w(&lbl, u); let py_ = dyy - 30.0 * u; let (bw_, bh_) = (14.0 * u, 12.0 * u);
+      let pop = back_out(gar.paint_t / 0.25); let tx_ = js_round(cxm - lw_ / 2.0);
+      g.panel(tx_ - 5.0 * u, py_ - 2.0 * u, lw_ + 10.0 * u, bh_, u, DARK, Some(rgba(243, 207, 98, 0.6)));
+      g.text("PAINT", tx_, py_ + 1.0 * u - (1.0 - pop) * 2.0 * u, u, DIM, None); g.text(name, tx_ + text_w("PAINT ", u), py_ + 1.0 * u - (1.0 - pop) * 2.0 * u, u, AMBER, None);
+      for (k, x, d) in [("g_lprev", tx_ - 7.0 * u - bw_, -1.0), ("g_lnext", tx_ + lw_ + 7.0 * u, 1.0)] { let f = fl(gar, k);
+        gar.rects.push((k.into(), Rect { x, y: py_ - 2.0 * u, w: bw_, h: bh_ }));
+        g.panel(x, py_ - 2.0 * u + f * u, bw_, bh_, u, mix(rgba(8, 11, 8, 0.55), rgba(243, 207, 98, 0.45), f), Some(rgba(243, 207, 98, 0.75)));
+        g.arrow(x + bw_ / 2.0 + u * d * 0.5, py_ + bh_ / 2.0 - 2.0 * u + f * u, d, 3.0 * u, u, AMBER); } }
     if gar.hint < 0.99 && gar.anim >= 1.0 { let h = "SWIPE TO CHANGE CAR"; let al = 0.5 + 0.3 * (time * 2.0).sin(); g.text(h, (ax0 + 18.0 * u + ax1) / 2.0 - text_w(h, u) / 2.0, dyy - 12.0 * u, u, fade(DIM, al * (1.0 - gar.hint)), None); }
 
     // the big button: SELECT this car, or DRIVE once it is yours

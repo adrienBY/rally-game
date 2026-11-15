@@ -22,6 +22,8 @@ pub struct Rt {
     pub shadow_obj: Option<usize>, pub glit: Vec<usize>, pub cull: Vec<Cull>,
     /// your car's bodies: the scene objects of each (one is shown, the wheels are shared)
     pub car_models: Vec<Vec<usize>>,
+    /// per body: its paint objects, and the invisible carriers of each pickable livery's texture (garage)
+    pub liveries: Vec<(Vec<usize>, Vec<usize>)>,
     pub boats: Vec<Boat>, pub boat_ims: Option<[usize; 4]>,
     pub snow: Option<(usize, usize, Vec<f32>, Vec<f32>)>, pub dust: Option<(usize, usize)>,
     pub saves: Vec<(String, String)>,
@@ -73,6 +75,7 @@ pub fn parse(pkt: &[u8]) -> Result<Rt, String> {
         obstacles: j["obstacles"].as_array().cloned().unwrap_or_default().iter().map(|o| { let a = arr(o); [a[0], a[1], a[2], a.get(3).copied().unwrap_or(0.0)] }).collect(),
         split, nodes, objn, rg_parts, rg_shadow: id(&j["rg"]["shadow"]),
         shadow_obj: id(&j["car"]["shadow"]), car_models: j["car"]["models"].as_array().cloned().unwrap_or_default().iter().map(|l| l.as_array().map(|a| a.iter().filter_map(id).collect()).unwrap_or_default()).collect(), glit: j["glit"].as_array().map(|a| a.iter().filter_map(id).collect()).unwrap_or_default(), cull,
+        liveries: j["car"]["liveries"].as_array().cloned().unwrap_or_default().iter().map(|l| { let ids = |k: &str| l[k].as_array().map(|a| a.iter().filter_map(id).collect()).unwrap_or_default(); (ids("paint"), ids("alt")) }).collect(),
         boats, boat_ims, snow, dust,
         shade: arr(&j["shade"]).iter().map(|&v| v as u8).collect(), shade_tint: { let t = arr(&j["shadeTint"]); if t.len() == 3 { [t[0], t[1], t[2]] } else { [1.0; 3] } },
         tiles: j["tiles"].as_array().cloned().unwrap_or_default().iter().map(|t| { let a = arr(t); (a[0] as usize, a[1] as usize, a[2] as usize, [a[3], a[4], a[5]]) }).collect(),

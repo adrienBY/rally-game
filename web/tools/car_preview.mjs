@@ -1,4 +1,4 @@
-// node web/tools/car_preview.mjs [out.png] [lowres-scale]
+// node web/tools/car_preview.mjs [out.png] [model]   (LIVERY=n: show the garage livery n on every body, 0 = its own)
 // Renders the car block of rally_template.html on its own (four views: chase, 3/4 front, side, rear 3/4), at the
 // game's low resolution upscaled with nearest filtering plus one sharp view, and saves a screenshot.
 import { readFileSync, writeFileSync, mkdirSync, copyFileSync } from "fs";
@@ -28,6 +28,8 @@ ${helpers}
 ${carBlock}
 console.log("PARTS " + JSON.stringify(car.body.children.filter(m => m.isMesh).map(m => [m.material.type, m.material.vertexColors ? "vc" : (m.material.color && m.material.color.getHexString()), m.geometry.attributes.position.count])));
 for (const w of car.wheels) w.pivot.position.y = 0.235;   // suspension at rest, as in the game
+const LIV = ${JSON.stringify(process.env.LIVERY || "0")} | 0;
+if (LIV > 0) for (const B of car.models) { const alt = B.userData.liveries[LIV - 1]; B.traverse(o => { if (o.isMesh && o.material.userData.paint) o.material.map = alt.material.map; }); }
 const r = new THREE.WebGLRenderer({ antialias: false, preserveDrawingBuffer: true }); r.outputColorSpace = THREE.LinearSRGBColorSpace;
 const grid = document.getElementById("grid");
 const shot = (v, w, h, k) => { r.setSize(w, h, false); const cam = new THREE.PerspectiveCamera(46, w / h, 0.1, 100); cam.position.set(v[0], v[1], v[2]); cam.lookAt(v[3], v[4], v[5]);
