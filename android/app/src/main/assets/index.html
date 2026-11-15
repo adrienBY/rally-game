@@ -1268,7 +1268,7 @@ const car = { root: new THREE.Group(), body: null, models: [], wheels: [], shado
   const lam = (c, o = {}) => new THREE.MeshLambertMaterial({ color: c, ...o });
   const black = lam(0x161616), trimGrey = lam(0x3a3c3e), dark = lam(0x202020), seatM = lam(0x7a1d18), suit = lam(0x2b3b6a);
   const glass = phong({ color: 0x1c2a34, transparent: true, opacity: 0.7, shininess: 12, specular: 0x2c3a44 });
-  const lampOn = new THREE.MeshBasicMaterial({ color: 0xf0f2ff }), tailLamp = new THREE.MeshBasicMaterial({ color: 0x9a1c14 }), fogLamp = new THREE.MeshBasicMaterial({ color: 0xd8b860 });
+  const lampOn = new THREE.MeshBasicMaterial({ color: 0xe6dfc6 }), tailLamp = new THREE.MeshBasicMaterial({ color: 0x9a1c14 }), fogLamp = new THREE.MeshBasicMaterial({ color: 0xd8b860 });
   const mirrorGlass = lam(0x88a0a8, { side: THREE.DoubleSide }), plateM = lam(0xe6e2d6), flapM = lam(0x2a2a2a);
   const smoothstep = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
   const lerp = (a, b, t) => a + (b - a) * t;
@@ -1396,8 +1396,6 @@ const car = { root: new THREE.Group(), body: null, models: [], wheels: [], shado
       g.fillStyle = "#111"; g.fillRect(0, FY(0.42), AW, FY(0.1) - FY(0.42));
       g.fillStyle = L.pat === "hoop" ? "#16181c" : L.pat === "stripes" ? L.b : L.a; g.fillRect(0, FY(1.75), AW, FY(1.0) - FY(1.75));
       g.fillStyle = L.a; g.fillRect(AW / 2, FY(0.7), AW / 2, FY(0.5) - FY(0.7)); g.fillStyle = L.b; g.fillRect(AW / 2, FY(0.72), AW / 2, 3);
-      { const tx = Math.round((FX(0, true) - 21 * PX) / PX) * PX, ty = Math.round(FY(0.95) / PX) * PX; g.fillStyle = "#ece8dc"; g.fillRect(tx - PX, ty - PX, 44 * PX, 10 * PX);
-        text(g, "FOGWOOD", tx, ty, PX, L.pat === "hoop" ? L.a : "#1d2c5c", null); }
       pixelate(g, gs, PX); retroShade(gs, AW / PX, 4 * SH / PX, SH / PX);
     }, false, 4 * SH / PX);
     atlas.minFilter = atlas.magFilter = THREE.NearestFilter; atlas.generateMipmaps = false;
@@ -1417,9 +1415,6 @@ const car = { root: new THREE.Group(), body: null, models: [], wheels: [], shado
       if (archY(z) > 0 && y < archY(z) + 0.075 && ax > halfW(z) - 0.08) return BLACK;
       if (z > ZN - 0.42 && n[2] > 0.1) {
         const yt = yTop(z);
-        if (S.lights === "swept" && y > yt - 0.15 && y < yt - 0.015 && ax > 0.26 && ax < 0.76 && n[2] > 0.15) return (y > yt - 0.12 && y < yt - 0.04 && ax > 0.32 && ax < 0.68) ? LAMP : BLACK;
-        if (S.lights === "rect" && y > yt - 0.17 && y < yt - 0.03 && ax > 0.24 && ax < 0.72 && n[2] > 0.3) return (y > yt - 0.14 && y < yt - 0.06 && ax > 0.3 && ax < 0.66) ? LAMP : BLACK;
-        if (S.lights === "strip" && y > yt - 0.09 && y < yt - 0.015 && ax > 0.22 && ax < 0.8 && n[2] > 0.15) return (y > yt - 0.065 && y < yt - 0.035) ? LAMP : BLACK;
         if (S.lights === "popup" && y > yt - 0.1 && y < yt - 0.03 && ax < 0.58 && n[2] > 0.5) return BLACK;          // thin intake slot under the pop-ups
         if (y < yt - 0.14 && y > 0.39 && ax < 0.42 && n[2] > 0.6) return BLACK;
         if (y < 0.4 && n[2] > 0.5 && ax < 0.62) return BLACK;
@@ -1469,6 +1464,17 @@ const car = { root: new THREE.Group(), body: null, models: [], wheels: [], shado
       const mg = new THREE.Mesh(new THREE.PlaneGeometry(0.16, 0.08), mirrorGlass); mg.position.set(s * xm, ym + 0.015, zm - 0.145); mg.rotation.y = Math.PI; B.add(mg); }
     // lights that are parts rather than painted on
     const yN = yTop(NZ);
+    // headlights as parts set into the nose: a dark recess and a warm lens, flat on the bodywork where it sits (found by
+    // walking back from the nose until the body section holds the point), instead of lamp-coloured triangles cut out of the
+    // shell, which came out as jagged slivers
+    const lensM = new THREE.MeshBasicMaterial({ color: 0xe6dfc6 }), recessM = lam(0x141414);
+    const surfZ = (x, y) => { for (let z = ZN; z > ZN - 0.8; z -= 0.004) if (yTop(z) >= y && yBot(z) <= y && halfW(z) >= Math.abs(x)) return z; return ZN - 0.8; };
+    const lamp = (x, y, w, h) => { const z = surfZ(x, y), e = 0.03;
+      const n = new THREE.Vector3(-(surfZ(x + e, y) - surfZ(x - e, y)) / (2 * e), -(surfZ(x, y + e) - surfZ(x, y - e)) / (2 * e), 1).normalize();
+      for (const [m, sw, sh, off] of [[recessM, w + 0.04, h + 0.04, 0.012], [lensM, w, h, 0.018]]) { const q = new THREE.Mesh(new THREE.PlaneGeometry(sw, sh), m);
+        q.position.set(x, y, z).addScaledVector(n, off); q.lookAt(q.position.clone().add(n)); B.add(q); } };
+    if (S.lights === "swept" || S.lights === "rect" || S.lights === "strip") { const [w, h, dy] = S.lights === "strip" ? [0.36, 0.035, 0.05] : S.lights === "rect" ? [0.26, 0.08, 0.09] : [0.26, 0.065, 0.075];
+      for (const sx of [-1, 1]) lamp(sx * 0.46, yTop(ZN - 0.03) - dy, w, h); }
     if (S.lights === "popup") for (const s of [-1, 1]) { const pz = NZ - 0.12, py = yTop(pz);
       const box = extrude([[pz + 0.12, py - 0.02], [pz + 0.1, py + 0.09], [pz - 0.1, py + 0.07], [pz - 0.12, py - 0.02]], 0.36, black); box.position.x = s * 0.5; B.add(box);
       const face = new THREE.Mesh(new THREE.PlaneGeometry(0.3, 0.07), lampOn); face.position.set(s * 0.5, py + 0.035, pz + 0.115); face.rotation.x = -0.18; B.add(face); }
