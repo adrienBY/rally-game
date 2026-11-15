@@ -39,8 +39,8 @@ impl Game {
     pub(crate) fn online_tick(&mut self, w: &World, dt: f64) {
         if !net::active() { return; }
         let map = self.rt.map.clone(); let racing = self.race.online && self.state == State::Drive;
-        let name = self.ps.name.clone();   // a new name reaches the room with the next presence message
-        let pending = net::with(|s| { s.map = map.clone(); s.racing = racing; if !name.is_empty() { s.name = name; } s.poll(); s.start_in.clone() }).flatten();
+        let name = self.ps.name.clone(); let mycar = self.ps.car as u8;   // name and car reach the room with the next presence message
+        let pending = net::with(|s| { s.map = map.clone(); s.racing = racing; s.car = mycar; if !name.is_empty() { s.name = name; } s.poll(); s.start_in.clone() }).flatten();
         // guests follow the host's stage while waiting, so it is already built when the race starts
         if pending.is_none() && self.state == State::Title && self.loading.is_none() {
             if let Some(Some(hm)) = net::with(|s| if s.is_host { None } else { s.host_id.and_then(|h| s.peers.get(&h)).map(|p| p.map.clone()).filter(|m| !m.is_empty()) }) {
@@ -81,7 +81,9 @@ impl Game {
     fn online_begin(&mut self, w: &World, st: Start) {
         let me = net::with(|s| s.me).unwrap_or(0);
         let names: Vec<(u32, String)> = net::with(|s| s.peers.values().map(|p| (p.id, p.name.clone())).collect()).unwrap_or_default();
+        let carsof: Vec<(u32, usize)> = net::with(|s| s.peers.values().map(|p| (p.id, p.car as usize)).collect()).unwrap_or_default();
         if self.state == State::Drive { self.to_title(); }
+        self.gar.open = false;
         self.close_settings();
         self.state = State::Drive; self.lap = 1; self.started = false; self.g_t = 0.0; self.flags = [false; 3]; self.car_audio_on = true;
         let np = self.np; let rc = &mut self.race; rc.on = true; rc.online = true; rc.phase = race::Phase::Grid; rc.t = 0.0; rc.done_t = 0.0; rc.note.clear(); rc.cars.clear(); rc.pos = 0; rc.order.clear();
@@ -94,7 +96,8 @@ impl Game {
                 let c = race::mk_car(self, None, i, lat); self.race.player = self.race.cars.len(); self.race.cars.push(c);
             } else {
                 let mut c: RCar = race::mk_car(self, Some(colour % 5), i, lat); colour += 1; race::rc_place(&mut c.car, &self.rt, w, i, lat, 0.0);
-                c.remote = Some(*id); c.name = names.iter().find(|n| n.0 == *id).map(|n| n.1.clone()).unwrap_or_else(|| "PLAYER".into()); self.race.cars.push(c);
+                c.remote = Some(*id); c.name = names.iter().find(|n| n.0 == *id).map(|n| n.1.clone()).unwrap_or_else(|| "PLAYER".into());
+                c.model = carsof.iter().find(|n| n.0 == *id).map(|n| n.1).unwrap_or(0) % super::cars::CARS.len(); self.race.cars.push(c);
             }
         }
         if !self.race.cars.iter().any(|c| c.is_player()) { race::stop(self); self.state = State::Title; self.flash_msg("NOT IN THIS RACE", 2.0); return; }

@@ -16,8 +16,8 @@ pub fn hud(gm: &mut Game) {
     let mut ui: Vec<(&'static str, Rect)> = Vec::new();
     let km_total = gm.stage_km();
     let res = if gm.race.on && gm.race.phase == Phase::Done && gm.race.done_t > 1.2 { race::results(gm) } else { Vec::new() };
-    for k in super::online::KEYS { gm.ui.remove(k); }
-    if gm.ps.online_ui != super::online::OnlineUi::Closed { for k in ["mapF", "mapS", "mapC", "mapL", "mapT", "mapR", "mode"] { gm.ui.remove(k); } }
+    for k in super::online::KEYS { gm.ui.remove(k); } gm.ui.remove("garage");
+    if gm.ps.online_ui != super::online::OnlineUi::Closed || gm.gar.open { for k in ["mapF", "mapS", "mapC", "mapL", "mapT", "mapR", "mode"] { gm.ui.remove(k); } }
     let g = &mut gm.hud; g.clear();
     let (bw, bh, gap) = (22.0 * u, 13.0 * u, 3.0 * u); let mut bx = lw - pr - bw;
     let mut btn = |g: &mut Canvas, ui: &mut Vec<(&'static str, Rect)>, k: &'static str, label: &str, on: bool| {
@@ -26,12 +26,14 @@ pub fn hud(gm: &mut Game) {
         g.tx(label, x + (w - text_w(label, u)) / 2.0, pt + 3.0 * u, u, if on { AMBER } else { INK }); bx = x - gap - bw; };
     let drive = gm.state == State::Drive;
     // settings live on the stage-select screen only, never mid-stage
-    if !drive { btn(g, &mut ui, "set", "SET", gm.set.open); }
+    if !drive && !gm.gar.open { btn(g, &mut ui, "set", "SET", gm.set.open); }
     if drive { btn(g, &mut ui, "cam", "CAM", false); btn(g, &mut ui, "rst", "RST", false); btn(g, &mut ui, "menu", "MENU", false); }
-    for k in ["set", "cam", "rst", "menu"] { gm.ui.remove(k); }
-    if gm.ps.debug { let rec = gm.bench_secs; let l = match rec { Some(s) => format!("REC {}", s), None => "REC".to_string() }; btn(g, &mut ui, "rec", &l, rec.is_some()); }   // temporary benchmark button
-    if gm.ps.debug || gm.tel.is_some() { let l = match &gm.tel { Some(t) => format!("TEL {}:{:02}", (t.t / 60.0) as u32, (t.t as u32) % 60), None => "TEL".to_string() }; btn(g, &mut ui, "tel", &l, gm.tel.is_some()); }
-    if gm.state == State::Title && gm.ps.online_ui != super::online::OnlineUi::Closed && !portrait {
+    for k in ["set", "cam", "rst", "menu", "rec", "tel"] { gm.ui.remove(k); }
+    if gm.ps.debug && !gm.gar.open { let rec = gm.bench_secs; let l = match rec { Some(s) => format!("REC {}", s), None => "REC".to_string() }; btn(g, &mut ui, "rec", &l, rec.is_some()); }   // temporary benchmark button
+    if (gm.ps.debug || gm.tel.is_some()) && !gm.gar.open { let l = match &gm.tel { Some(t) => format!("TEL {}:{:02}", (t.t / 60.0) as u32, (t.t as u32) % 60), None => "TEL".to_string() }; btn(g, &mut ui, "tel", &l, gm.tel.is_some()); }
+    if gm.state == State::Title && gm.gar.open && !portrait {
+        super::garage::draw(&mut gm.gar, &gm.ps, gm.time, g, lw, lh, u, pl, pr, pt, pb);
+    } else if gm.state == State::Title && gm.ps.online_ui != super::online::OnlineUi::Closed && !portrait {
         g.rect_c(0.0, 0.0, lw, lh, rgba(6, 9, 6, 0.42));
         super::online::draw(&gm.ps, &gm.rt.map, g, &mut ui, lw, lh, u, pt + 16.0 * u);
     } else if gm.state == State::Title {
@@ -62,6 +64,12 @@ pub fn hud(gm: &mut Game) {
             g.tx(&ml, mx2 + 6.0 * u, my2 + 3.0 * u, u, if rm { INK } else { rgba(233, 236, 226, 0.85) });
             { let (ox, oy) = (mx2 + mw2 + gp, my2); ui.push(("online", Rect { x: ox, y: oy, w: ow, h: mh }));
               g.panel(ox, oy, ow, mh, u, if room.is_some() { rgba(243, 207, 98, 0.3) } else { PANEL }, Some(if room.is_some() { AMBER } else { EDGE })); g.tx(&ol, ox + 6.0 * u, oy + 3.0 * u, u, if room.is_some() { AMBER } else { INK }); }
+            // the garage, top left: your car's name, tap to pick another
+            { let car = &super::cars::CARS[gm.ps.car.min(super::cars::CARS.len() - 1)]; let lab = "GARAGE"; let cw = text_w(car.name, u).max(text_w(lab, u) + 12.0 * u) + 12.0 * u; let (gx, gy, gh) = (pl, pt, 22.0 * u);
+              ui.push(("garage", Rect { x: gx, y: gy, w: cw, h: gh })); let glow = 0.5 + 0.5 * (now / 400.0).sin();
+              g.panel(gx, gy, cw, gh, u, PANEL, Some(rgba(243, 207, 98, (0.55 + 0.35 * glow) as f32))); g.rect_c(gx + u, gy + u, 2.0 * u, gh - 2.0 * u, AMBER);
+              g.tx(lab, gx + 6.0 * u, gy + 3.0 * u, u, AMBER); g.arrow(gx + 6.0 * u + text_w(lab, u) + 6.0 * u + glow * u, gy + 6.5 * u, 1.0, 3.0 * u, u, AMBER);
+              g.tx(car.name, gx + 6.0 * u, gy + 12.0 * u, u, INK); }
             let c1 = "SOUNDS CC0: KENNEY, LANDEPLAGE, HARGISSSOUND, THREADBARE, RUBBERDUCK, FELIX BLUME";
             if text_w(c1, u) < lw - 10.0 { g.text(c1, (lw - text_w(c1, u)) / 2.0, lh - pb - 8.0 * u, u, rgba(233, 236, 226, 0.5), None); }
         }

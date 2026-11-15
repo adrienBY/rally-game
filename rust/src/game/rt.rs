@@ -6,7 +6,8 @@ use serde_json::Value;
 pub struct Node { pub parent: i32, pub pre: M, pub p: [f64; 3], pub r: [f64; 3], pub yxz: bool, pub s: [f64; 3], pub name: String }
 pub struct Boat { pub x: f64, pub z: f64, pub h: f64, pub v: f64, pub sail: bool, pub ph: f64, pub sc: f64 }
 pub struct Cull { pub ids: Vec<usize>, pub c: [f64; 3], pub r: f64, pub d: f64 }
-pub struct RgPart { pub obj: usize, pub src: Vec<(usize, M)> }
+/// one instanced piece of the rivals' cars: which body it belongs to (None: the wheels, shared) and whether it takes the team colour
+pub struct RgPart { pub obj: usize, pub src: Vec<(usize, M)>, pub model: Option<usize>, pub tint: bool }
 
 pub struct Rt {
     pub map: String, pub map_id: i32, pub np: usize, pub gxh: i32, pub gzh: i32,
@@ -19,6 +20,8 @@ pub struct Rt {
     pub nodes: Vec<Node>, pub objn: Vec<(usize, usize, M)>,
     pub rg_parts: Vec<RgPart>, pub rg_shadow: Option<usize>,
     pub shadow_obj: Option<usize>, pub glit: Vec<usize>, pub cull: Vec<Cull>,
+    /// your car's bodies: the scene objects of each (one is shown, the wheels are shared)
+    pub car_models: Vec<Vec<usize>>,
     pub boats: Vec<Boat>, pub boat_ims: Option<[usize; 4]>,
     pub snow: Option<(usize, usize, Vec<f32>, Vec<f32>)>, pub dust: Option<(usize, usize)>,
     pub saves: Vec<(String, String)>,
@@ -46,7 +49,7 @@ pub fn parse(pkt: &[u8]) -> Result<Rt, String> {
     let rg_parts = j["rg"]["parts"].as_array().cloned().unwrap_or_default().iter().filter_map(|p| {
         let obj = id(&p["obj"])?;
         let src = p["src"].as_array()?.iter().filter_map(|s| { let a = s.as_array()?; Some((a.first()?.as_u64()? as usize, from_slice(&arr(a.get(1)?)))) }).collect();
-        Some(RgPart { obj, src }) }).collect();
+        Some(RgPart { obj, src, model: p["model"].as_i64().filter(|m| *m >= 0).map(|m| m as usize), tint: p["tint"].as_i64() == Some(1) }) }).collect();
     let cull = j["cull"].as_array().cloned().unwrap_or_default().iter().map(|c| { let a = c.as_array().cloned().unwrap_or_default();
         Cull { ids: a.first().and_then(|x| x.as_array()).map(|l| l.iter().filter_map(id).collect()).unwrap_or_default(),
             c: [a.get(1).map(f).unwrap_or(0.0), a.get(2).map(f).unwrap_or(0.0), a.get(3).map(f).unwrap_or(0.0)], r: a.get(4).map(f).unwrap_or(0.0), d: a.get(5).map(f).unwrap_or(0.0) } }).collect();
@@ -69,7 +72,7 @@ pub fn parse(pkt: &[u8]) -> Result<Rt, String> {
         vil: j["vil"].as_array().map(|a| (a[0].as_i64().unwrap_or(0), a[1].as_i64().unwrap_or(0))),
         obstacles: j["obstacles"].as_array().cloned().unwrap_or_default().iter().map(|o| { let a = arr(o); [a[0], a[1], a[2], a.get(3).copied().unwrap_or(0.0)] }).collect(),
         split, nodes, objn, rg_parts, rg_shadow: id(&j["rg"]["shadow"]),
-        shadow_obj: id(&j["car"]["shadow"]), glit: j["glit"].as_array().map(|a| a.iter().filter_map(id).collect()).unwrap_or_default(), cull,
+        shadow_obj: id(&j["car"]["shadow"]), car_models: j["car"]["models"].as_array().cloned().unwrap_or_default().iter().map(|l| l.as_array().map(|a| a.iter().filter_map(id).collect()).unwrap_or_default()).collect(), glit: j["glit"].as_array().map(|a| a.iter().filter_map(id).collect()).unwrap_or_default(), cull,
         boats, boat_ims, snow, dust,
         shade: arr(&j["shade"]).iter().map(|&v| v as u8).collect(), shade_tint: { let t = arr(&j["shadeTint"]); if t.len() == 3 { [t[0], t[1], t[2]] } else { [1.0; 3] } },
         tiles: j["tiles"].as_array().cloned().unwrap_or_default().iter().map(|t| { let a = arr(t); (a[0] as usize, a[1] as usize, a[2] as usize, [a[3], a[4], a[5]]) }).collect(),

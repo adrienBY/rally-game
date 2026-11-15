@@ -12,7 +12,7 @@ const src = readFileSync(join(D, "rally_template.html"), "utf8");
 const cut = (a, b) => { const i = src.indexOf(a), j = src.indexOf(b, i); if (i < 0 || j < 0) throw new Error("marker " + a); return src.slice(i, j); };
 const helpers = [cut("function hash2(", "/* ================= map:"), cut("function canvasTex(", "const leafTex"), cut("/* ================= pixel font", "/* ================= wind sway")].join("\n");
 const carBlock = cut("/* ================= the car", "/* ================= dust");
-const out = process.argv[2] || "/tmp/car_preview.png", W = 220, H = 124, K = 3;
+const out = process.argv[2] || "/tmp/car_preview.png", only = process.argv[3], W = 220, H = 124, K = 3;
 const dir = "/tmp/carprev"; mkdirSync(dir, { recursive: true });
 copyFileSync(join(D, "../android/app/src/main/assets/three.module.min.js"), join(dir, "three.module.min.js"));
 writeFileSync(join(dir, "index.html"), `<!doctype html><html><body style="margin:0;background:#283828">
@@ -28,19 +28,19 @@ ${helpers}
 ${carBlock}
 console.log("PARTS " + JSON.stringify(car.body.children.filter(m => m.isMesh).map(m => [m.material.type, m.material.vertexColors ? "vc" : (m.material.color && m.material.color.getHexString()), m.geometry.attributes.position.count])));
 for (const w of car.wheels) w.pivot.position.y = 0.235;   // suspension at rest, as in the game
-const views = [[0, 2.6, -6.4, 0, 0.9, 0], [4.2, 1.9, 4.6, 0, 0.7, 0.2], [6.5, 0.9, 0, 0, 0.7, 0], [-3.8, 2.4, -4.6, 0, 0.8, -0.3]];
 const r = new THREE.WebGLRenderer({ antialias: false, preserveDrawingBuffer: true }); r.outputColorSpace = THREE.LinearSRGBColorSpace;
 const grid = document.getElementById("grid");
 const shot = (v, w, h, k) => { r.setSize(w, h, false); const cam = new THREE.PerspectiveCamera(46, w / h, 0.1, 100); cam.position.set(v[0], v[1], v[2]); cam.lookAt(v[3], v[4], v[5]);
   r.setClearColor(0x9fb0a8); r.render(scene, cam); const im = new Image(); im.src = r.domElement.toDataURL(); im.style.cssText = "width:" + w * k + "px;height:" + h * k + "px;image-rendering:pixelated"; grid.appendChild(im); };
-for (const v of views) shot(v, ${W}, ${H}, ${K});
-shot([3.6, 1.5, 3.9, 0, 0.75, 0.1], ${W * K}, ${H * K}, 1); shot([0.01, 7.5, 0.01, 0, 0, 0], ${W * K}, ${H * K}, 1);
-shot([0.9, 1.0, 5.2, 0, 0.6, 0], ${W * K}, ${H * K}, 1); shot([-0.9, 1.4, -5.2, 0, 0.8, 0], ${W * K}, ${H * K}, 1);
+const only = new URLSearchParams(location.search).get("m");
+for (let m = 0; m < car.models.length; m++) { if (only !== null && +only !== m) continue; setCarModel(m);
+  shot([-3.6, 1.9, -4.8, 0, 0.75, -0.2], ${W}, ${H}, ${K}); shot([3.7, 1.5, 4.0, 0, 0.7, 0.1], ${W * K}, ${H * K}, 1);
+  if (only !== null) { shot([6.4, 0.9, 0, 0, 0.7, 0], ${W * K}, ${H * K}, 1); shot([0.01, 7.5, 0.01, 0, 0, 0], ${W * K}, ${H * K}, 1); } }
 document.title = "done";
 </script></body></html>`);
 const b = await chromium.launch({ executablePath: "/usr/bin/google-chrome", args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"] });
-const p = await b.newPage({ viewport: { width: W * K * 2 + 4, height: H * K * 4 + 12 } });
+const p = await b.newPage({ viewport: { width: W * K * 2 + 4, height: H * K * 5 + 20 } });
 p.on("pageerror", e => console.log("pageerror", e.message)); p.on("console", m => { if (m.type() === "error" || m.text().startsWith("PARTS")) console.log(m.text()); });
 await p.route("http://carprev/**", (rt) => { const f = join(dir, new URL(rt.request().url()).pathname); rt.fulfill({ body: readFileSync(f), contentType: f.endsWith(".js") ? "text/javascript" : "text/html" }); });
-await p.goto("http://carprev/index.html"); await p.waitForFunction(() => document.title === "done", null, { timeout: 60000 });
+await p.goto("http://carprev/index.html" + (only !== undefined ? "?m=" + only : "")); await p.waitForFunction(() => document.title === "done", null, { timeout: 60000 });
 await p.screenshot({ path: out, fullPage: true }); await b.close(); console.log("saved", out);
