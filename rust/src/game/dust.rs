@@ -14,7 +14,11 @@
 //!    the rear corners roll it up and outwards (the curl you see behind a sliding car)
 //!  * each wheel drags the air round with its tread: smoke at the tyre is spun up the back of the wheel and thrown forward
 //!    over the arch, faster when the wheel is spinning
-//! plus the stage wind (gusting) and a few sines of position and time as turbulence.
+//! plus the stage wind (gusting, stronger higher up) and turbulence from a curl-noise eddy field: divergence-free, shared by
+//! every particle (so neighbouring dust swirls together like a fluid instead of jittering on its own), stronger for older,
+//! more spread-out puffs, refreshed per particle every third frame. Dust that lands spreads out along the ground.
+//! The renderer adds the puffs up into a density layer, blurs it and shades the result as one cloud, so draw order does not
+//! matter and thousands of small puffs merge into a continuous volume.
 //! Rates follow tyre physics: more speed, more slip and more load throw more; far cars emit fewer, bigger puffs; past 160 m none.
 //! Everything lives in flat arrays sent to the GPU as one point cloud; the shader draws soft, sun-lit, pixel-noise puffs.
 use crate::physics::Car;
@@ -24,7 +28,7 @@ pub const DUST: u8 = 0; pub const GRIT: u8 = 1; pub const SMOKE: u8 = 2; pub con
 /// per kind: relaxation time to the air (s), gravity (m/s2), growth (m per sqrt s), base alpha, how much the wake moves it
 const TAU: [f32; 5] = [0.32, 3.0, 0.45, 0.28, 2.2];
 const GRAV: [f32; 5] = [-0.22, -9.8, 0.4, -0.35, -9.8];
-const GROW: [f32; 5] = [1.8, 0.0, 2.3, 1.5, 0.0];
+const GROW: [f32; 5] = [1.35, 0.0, 1.8, 1.15, 0.0];
 const WAKE: [f32; 5] = [1.0, 0.15, 0.9, 1.0, 0.2];
 
 /// what kind of stage this is (sets the surfaces and colours)
@@ -54,21 +58,35 @@ fn body_sdf(x: f32, y: f32, z: f32) -> (f32, [f32; 3]) {
 }
 const WHEEL_Y: f32 = 0.24; const TYRE_R: f32 = 0.31;
 
+/// Curl of a vector potential made of two octaves of plane waves A_k = sin(a_k . p + w_k t): a divergence-free swirl field
+/// (no sources or sinks, so dust is stirred, never bunched up or torn apart), about unit strength. 6 cosines per call.
+fn curl(x: f32, y: f32, z: f32, t: f32) -> [f32; 3] {
+    let mut o = [0.0f32; 3];
+    for (k, sc) in [(1.0f32, 1.0f32), (2.3, 0.45)] {
+        let (a1, a2, a3) = ([0.31 * k, 0.83 * k, 0.47 * k], [0.71 * k, 0.29 * k, 0.61 * k], [0.53 * k, 0.67 * k, 0.37 * k]);
+        let c1 = (a1[0] * x + a1[1] * y + a1[2] * z + 0.9 * t * k).cos(); let c2 = (a2[0] * x + a2[1] * y + a2[2] * z - 0.7 * t * k + 1.7).cos();
+        let c3 = (a3[0] * x + a3[1] * y + a3[2] * z + 1.1 * t * k + 3.1).cos();
+        let s = sc / k;   // the same speed scale at both octaves
+        o[0] += (a3[1] * c3 - a2[2] * c2) * s; o[1] += (a1[2] * c1 - a3[0] * c3) * s; o[2] += (a2[0] * c2 - a1[1] * c1) * s;
+    }
+    [o[0] * 1.6, o[1] * 1.6, o[2] * 1.6]
+}
+
 pub struct Dust {
     pub n: usize, pub pos: Vec<f32>, pub col: Vec<f32>, pub a: Vec<f32>, pub s: Vec<f32>,
-    vel: Vec<[f32; 3]>, age: Vec<f32>, life: Vec<f32>, s0: Vec<f32>, a0: Vec<f32>, kind: Vec<u8>, gy: Vec<f32>, seed: Vec<f32>,
+    vel: Vec<[f32; 3]>, turb: Vec<[f32; 3]>, age: Vec<f32>, life: Vec<f32>, s0: Vec<f32>, a0: Vec<f32>, kind: Vec<u8>, gy: Vec<f32>, seed: Vec<f32>,
     head: usize, pub live: usize, was: bool, rng: u64, frame: u32,
-    /// back-to-front order and the arrays sent to the GPU in that order
-    order: Vec<(f32, u32)>, out_pos: Vec<f32>, out_col: Vec<f32>, out_a: Vec<f32>, out_s: Vec<f32>,
+    /// the live puffs, packed for the GPU
+    out_pos: Vec<f32>, out_col: Vec<f32>, out_a: Vec<f32>, out_s: Vec<f32>,
     /// wind direction (unit, x z) and the time
     wdir: [f32; 2], t: f32,
 }
 
 impl Dust {
     pub fn new(n: usize, seed: u64) -> Dust {
-        let mut d = Dust { n, pos: vec![0.0; n * 3], col: vec![0.0; n * 3], a: vec![0.0; n], s: vec![0.0; n], vel: vec![[0.0; 3]; n], age: vec![0.0; n], life: vec![0.0; n],
+        let mut d = Dust { n, pos: vec![0.0; n * 3], col: vec![0.0; n * 3], a: vec![0.0; n], s: vec![0.0; n], vel: vec![[0.0; 3]; n], turb: vec![[0.0; 3]; n], age: vec![0.0; n], life: vec![0.0; n],
             s0: vec![0.0; n], a0: vec![0.0; n], kind: vec![0; n], gy: vec![0.0; n], seed: vec![0.0; n], head: 0, live: 0, was: true, rng: seed | 1, frame: 0, wdir: [1.0, 0.0], t: 0.0,
-            order: Vec::with_capacity(n), out_pos: vec![0.0; n * 3], out_col: vec![0.0; n * 3], out_a: vec![0.0; n], out_s: vec![0.0; n] };
+            out_pos: vec![0.0; n * 3], out_col: vec![0.0; n * 3], out_a: vec![0.0; n], out_s: vec![0.0; n] };
         let ang = d.f() * std::f32::consts::TAU; d.wdir = [ang.cos(), ang.sin()]; d
     }
     fn f(&mut self) -> f32 { self.rng ^= self.rng << 13; self.rng ^= self.rng >> 7; self.rng ^= self.rng << 17; (self.rng >> 40) as f32 / (1u64 << 24) as f32 }
@@ -103,14 +121,16 @@ impl Dust {
                 else if road { (if env.sand { 1.35 } else { 1.0 }, 0.0) } else if env.sand { (1.2, 0.15) } else if env.lush { (0.4, 0.65) } else { (0.8, 0.4) };
             let back = [-sh, -ch];   // behind the car
             // fine dust: speed and slip lift it, load presses more out
-            let rate = loose * (0.26 * sp + 1.7 * slip) * lk * front * lod;
-            let n = self.count(rate.min(20.0) * dt);
+            let rate = loose * (0.62 * sp + 4.0 * slip) * lk * front * lod;
+            let n = self.count(rate.min(55.0) * dt);
             for _ in 0..n {
                 let (fine, kind) = if env.snow { (POWDER, POWDER) } else { (DUST, DUST) }; let _ = fine;
                 let up = self.r(0.5, 1.5) + slip * 0.05; let side = self.r(-0.7, 0.7);
                 let v = [c.vx as f32 * 0.32 + back[0] * slip * 0.25 + ch * side, up, c.vz as f32 * 0.32 + back[1] * slip * 0.25 - sh * side];
-                let p = [wx + back[0] * 0.3 + self.r(-0.15, 0.15), gy + 0.15, wz + back[1] * 0.3 + self.r(-0.15, 0.15)];
-                let size = self.r(0.7, 1.15) * big * if env.snow { 0.9 } else { 1.0 }; let life = self.r(1.2, 2.4) * if env.sand { 1.3 } else { 1.0 };
+                // spread along where the wheel went during this frame, so the stream is continuous, not dotted
+                let tq = self.r(0.0, 1.0) * dt;
+                let p = [wx + back[0] * 0.3 + self.r(-0.15, 0.15) - c.vx as f32 * tq, gy + 0.15, wz + back[1] * 0.3 + self.r(-0.15, 0.15) - c.vz as f32 * tq];
+                let size = self.r(0.42, 0.72) * big * if env.snow { 0.9 } else { 1.0 }; let life = self.r(1.2, 2.4) * if env.sand { 1.3 } else { 1.0 };
                 let bright = self.r(0.88, 1.08) * if env.snow { 1.05 } else { 1.0 };
                 let al = env.alpha * self.r(0.8, 1.1); self.emit(kind, p, v, size, life, al, bright, earth, gy);
             }
@@ -128,10 +148,10 @@ impl Dust {
             }
             // tyre smoke on tarmac
             if tarmac && slip > 2.2 {
-                let n = self.count(((slip - 2.2) * 5.5 * lk * lod).min(30.0) * dt);
+                let n = self.count(((slip - 2.2) * 12.0 * lk * lod).min(70.0) * dt);
                 for _ in 0..n {
                     let v = [c.vx as f32 * 0.25 + self.r(-0.5, 0.5), self.r(0.3, 0.9), c.vz as f32 * 0.25 + self.r(-0.5, 0.5)];
-                    let (sz, lf, br) = (self.r(0.5, 0.8) * big, self.r(1.6, 2.6), self.r(1.15, 1.3)); self.emit(SMOKE, [wx, gy + 0.2, wz], v, sz, lf, 0.36 * (0.5 + (slip - 2.2) / 8.0).min(1.0), br, 0.0, gy);
+                    let (sz, lf, br) = (self.r(0.35, 0.6) * big, self.r(1.6, 2.6), self.r(1.15, 1.3)); self.emit(SMOKE, [wx, gy + 0.2, wz], v, sz, lf, 0.36 * (0.5 + (slip - 2.2) / 8.0).min(1.0), br, 0.0, gy);
                 }
             }
         }
@@ -162,9 +182,11 @@ impl Dust {
             let heavy = kd == GRIT as usize || kd == CHUNK as usize;
             // the air here: wind and turbulence (grows as the puff ages; a few sines, different for every particle)
             let mut air = [wind[0], 0.0, wind[1]];
-            // billowing: rolls that grow with the puff, with a gentle lift (warm, stirred air) so clouds tower rather than smear
-            if !heavy { let ta = 0.35 + self.age[i] * 0.9; let ph = sd * 40.0;
-                air[0] += (y * 1.3 + t * 1.7 + ph).sin() * ta; air[1] += ((x * 0.9 + z * 0.7 + t * 1.3 + ph).sin() * 0.8 + 0.35) * ta * 0.7; air[2] += (y * 1.1 - t * 1.9 + ph * 1.3).cos() * ta; }
+            // wind grows with height above the ground (shear); eddies from the curl-noise field, a gentle lift so clouds tower
+            let hk = 0.55 + 0.45 * ((y - self.gy[i]) / 3.0).clamp(0.0, 1.0); air[0] *= hk; air[2] *= hk;
+            if !heavy { if (i as u32 + self.frame) % 3 == 0 { self.turb[i] = curl(x, y, z, t); }
+                let ta = 0.45 + self.age[i] * 1.1; let tb = self.turb[i];
+                air[0] += tb[0] * ta; air[1] += (tb[1] * 0.75 + 0.3) * ta; air[2] += tb[2] * ta; }
             let mut tau = TAU[kd]; let v = &mut self.vel[i];
             // each nearby car's flow field, worked out in its own frame (x right, y up, z forward)
             for b in bodies {
@@ -207,7 +229,8 @@ impl Dust {
             if heavy || (i as u32 + self.frame) % 4 == 0 { self.gy[i] = w.height(nx as f64, nz as f64) as f32; }
             let floor = self.gy[i] + if heavy { 0.05 } else { self.s[i] * 0.22 };
             if ny < floor { if heavy { self.life[i] = 0.0; self.a[i] = 0.0; if sd < 0.3 { puffs.push(([nx, floor + 0.1, nz], self.col[i * 3 + 1], self.gy[i])); } continue; }
-                ny = floor; if v[1] < 0.0 { v[1] = 0.0; } }
+                // dust hitting the ground spreads out along it instead of stopping dead
+                ny = floor; if v[1] < 0.0 { let lost = -v[1]; let hs = (v[0] * v[0] + v[2] * v[2]).sqrt().max(0.3); v[0] += v[0] / hs * lost * 0.45; v[2] += v[2] / hs * lost * 0.45; v[1] = 0.0; } }
             self.pos[i * 3] = nx; self.pos[i * 3 + 1] = ny; self.pos[i * 3 + 2] = nz;
             // spreading and thinning (the same dust over a bigger puff, seen through its depth); a quick fade in so puffs never pop
             let s = self.s0[i] + GROW[kd] * self.age[i].sqrt(); self.s[i] = s;
@@ -217,16 +240,14 @@ impl Dust {
         for (p, earth, gy) in puffs { let snow = earth <= 0.0; self.emit(if snow { POWDER } else { DUST }, p, [0.0, 0.5, 0.0], 0.35, 0.9, 0.3, 0.95, earth, gy); }
         self.live = live;
     }
-    /// send the cloud to the GPU, far to near (alpha blending then builds up a proper volume); skipped while nothing is alive
-    pub fn upload(&mut self, r: &mut crate::render::Renderer, obj: usize, cam: [f64; 3], fwd: [f64; 3]) {
+    /// send the live puffs to the GPU (the dust layer adds them up, so their order does not matter); skipped while nothing is alive
+    pub fn upload(&mut self, r: &mut crate::render::Renderer, obj: usize) {
         if self.live > 0 || self.was {
-            self.order.clear();
-            for i in 0..self.n { if self.a[i] > 0.0 { let d = (self.pos[i * 3] - cam[0] as f32) * fwd[0] as f32 + (self.pos[i * 3 + 1] - cam[1] as f32) * fwd[1] as f32 + (self.pos[i * 3 + 2] - cam[2] as f32) * fwd[2] as f32; self.order.push((-d, i as u32)); } }
-            self.order.sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-            for (j, &(_, i)) in self.order.iter().enumerate() { let i = i as usize;
+            let mut j = 0;
+            for i in 0..self.n { if self.a[i] <= 0.0 { continue; }
                 self.out_pos[j * 3..j * 3 + 3].copy_from_slice(&self.pos[i * 3..i * 3 + 3]); self.out_col[j * 3..j * 3 + 3].copy_from_slice(&self.col[i * 3..i * 3 + 3]);
-                self.out_a[j] = self.a[i]; self.out_s[j] = self.s[i]; }
-            for j in self.order.len()..self.n { self.out_a[j] = 0.0; self.out_s[j] = 0.0; }
+                self.out_a[j] = self.a[i]; self.out_s[j] = self.s[i]; j += 1; }
+            for k in j..self.n { self.out_a[k] = 0.0; self.out_s[k] = 0.0; }
             r.set_attr(obj, "position", &self.out_pos); r.set_attr(obj, "aA", &self.out_a); r.set_attr(obj, "aS", &self.out_s); r.set_attr(obj, "color", &self.out_col);
         }
         self.was = self.live > 0;
@@ -236,6 +257,12 @@ impl Dust {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn eddies_are_divergence_free() {
+        let e = 1e-3; for &(x, y, z) in &[(0.3f32, 1.2f32, -4.0f32), (12.0, 0.5, 7.7), (-30.0, 3.0, 2.2)] {
+            let dv = (curl(x + e, y, z, 1.0)[0] - curl(x - e, y, z, 1.0)[0] + curl(x, y + e, z, 1.0)[1] - curl(x, y - e, z, 1.0)[1] + curl(x, y, z + e, 1.0)[2] - curl(x, y, z - e, 1.0)[2]) / (2.0 * e);
+            assert!(dv.abs() < 2e-2, "divergence {dv}"); }
+    }
     #[test]
     fn grit_falls_dust_spreads() {
         let n = 64; let w = crate::world::World { map: crate::world::Map::Forest, gxh: 32, gzh: 32, gnx: n, gnz: n, pd: vec![0.0; n * n], pi: vec![0; n * n], h: vec![0.0; n * n] };

@@ -29,7 +29,7 @@ fn main() {
         let cattrs = [0x3098, 3, 0x3038]; let ctx = create_ctx(dpy, cfg, std::ptr::null_mut(), cattrs.as_ptr());
         assert!(make_current(dpy, std::ptr::null_mut(), std::ptr::null_mut(), ctx) != 0);
         let gl = glow::Context::from_loader_function(|n| loader.get(n));
-        let mut r = Renderer::new(gl).expect("renderer"); r.no_hud = std::env::var("NOHUD").is_ok();
+        let mut r = Renderer::new(gl).expect("renderer"); r.no_hud = std::env::var("NOHUD").is_ok(); r.no_dust = std::env::var("NODUST").is_ok();
         r.load_scene(&std::fs::read(&a[1]).unwrap()).expect("scene");
         let rtb = std::fs::read(&a[2]).unwrap(); let rt = fogwood_core::game::rt::parse(&rtb).expect("rt");
         // the stage's world, as the page would have built it through the bridge

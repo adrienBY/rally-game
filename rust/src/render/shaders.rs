@@ -145,41 +145,66 @@ uniform vec3 uColor; uniform float uOpacity; uniform vec3 uFogColor; uniform flo
 void main() { vec3 c = uColor; float f = 1.0 - exp(-uFogDensity * uFogDensity * vFogDepth * vFogDepth); fragColor = vec4(mix(c, uFogColor, f), uOpacity); }
 "#;
 
-/// Dust, gravel and smoke puffs. color = (brightness, earth, seed) per particle (all zero: plain white, no noise; the soft FX
-/// particles use this). Each puff is drawn as a lit sphere: its normal comes from the point coordinate, bent by blocky value
-/// noise (pixel-art billows), lit by the scene's hemisphere and sun, with a dense core and a soft rim; the game sorts the puffs
-/// back to front, so overlapping ones read as one thick, rolling volume.
+/// Dust, gravel and smoke, first pass: every puff adds its density (alpha) and lit, fogged colour (rgb, weighted by density)
+/// into the dust layer, additively, depth-tested against the scene but writing no depth. Order does not matter, so the CPU
+/// never sorts. color = (brightness, earth, seed) per particle (all zero: plain white, no noise).
 pub const DUST_VS: &str = r#"#version 300 es
 precision highp float;
 layout(location=0) in vec3 position; layout(location=3) in vec3 color; layout(location=9) in float aA; layout(location=10) in float aS;
 uniform mat4 uModel; uniform mat4 uView; uniform mat4 uProj; uniform float uScale; uniform float uDens; uniform vec3 uDirDir;
-out float vA; out float vF; out vec3 vC; out vec3 vL; out vec3 vUp;
-void main() { vec4 mv = uView * uModel * vec4(position, 1.0); gl_Position = uProj * mv; gl_PointSize = min(aS * uScale / max(0.5, -mv.z), 200.0); vA = aA;
-  float d = -mv.z; vF = 1.0 - exp(-uDens * uDens * d * d);
-  vC = dot(color, color) < 1e-6 ? vec3(1.0, 0.0, 0.0) : color;
-  vL = normalize(mat3(uView) * uDirDir); vUp = normalize(mat3(uView) * vec3(0.0, 1.0, 0.0)); }
+uniform vec3 uHemiSky; uniform vec3 uHemiGround; uniform vec3 uDirColor; uniform vec3 uCol; uniform vec3 uFog;
+out float vA; out vec3 vRgb; out float vSeed;
+void main() { vec4 mv = uView * uModel * vec4(position, 1.0); gl_Position = uProj * mv; gl_PointSize = min(aS * uScale / max(0.5, -mv.z), 160.0); vA = aA;
+  float d = -mv.z; float fogk = 1.0 - exp(-uDens * uDens * d * d);
+  vA *= smoothstep(1.5, 6.5, d);   // dust right at the lens would just wash the screen out
+  vec3 c = dot(color, color) < 1e-6 ? vec3(1.0, 0.0, 0.0) : color; vSeed = c.z;
+  // lit like a thin scattering medium: sky and ground light from all round, the sun on top, nothing sphere-like
+  vec3 base = mix(uCol, vec3(0.38, 0.31, 0.22), c.y) * c.x;
+  vec3 lit = base * (mix(uHemiGround, uHemiSky, 0.62) * 0.46 + uDirColor * (0.32 + 0.12 * max(uDirDir.y, 0.0)));
+  vRgb = mix(lit, uFog, fogk); }
 "#;
 pub const DUST_FS: &str = r#"#version 300 es
 precision highp float;
-uniform vec3 uFog; uniform vec3 uCol; uniform vec3 uHemiSky; uniform vec3 uHemiGround; uniform vec3 uDirColor;
-in float vA; in float vF; in vec3 vC; in vec3 vL; in vec3 vUp; out vec4 fragColor;
+uniform float uDensScale; in float vA; in vec3 vRgb; in float vSeed; out vec4 fragColor;
 float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
 void main() {
-  vec2 p = (gl_PointCoord - 0.5) * 2.0; p.y = -p.y; float r2 = dot(p, p); if (r2 > 1.0) discard;
-  float seed = vC.z * 97.0; bool tex = vC.z > 0.0;
-  float n1 = tex ? hash(floor(gl_PointCoord * 5.0) + seed) : 0.5, n2 = tex ? hash(floor(gl_PointCoord * 9.0) + seed + 3.1) : 0.5;
-  float n = n1 * 0.65 + n2 * 0.35;
-  // billowy edge: the rim is eaten by the noise, the core stays solid
-  float edge = 1.0 - r2 * (0.75 + 0.5 * n); if (edge < 0.04) discard;
-  vec3 nrm = normalize(vec3(p + (vec2(n1, n2) - 0.5) * 0.6, sqrt(max(1.0 - r2, 0.0)) + 0.15));
-  float sun = max(dot(nrm, vL), 0.0) * 0.8 + 0.2 * max(dot(nrm, vL) + 0.5, 0.0);   // a little wrap: light bleeds through thin smoke
-  vec3 amb = mix(uHemiGround, uHemiSky, dot(nrm, vUp) * 0.5 + 0.5);
-  vec3 base = mix(uCol, vec3(0.38, 0.31, 0.22), vC.y) * vC.x;
-  // thick dust shades itself: the underside and the dense core get less light
-  float self_sh = 0.72 + 0.28 * (dot(nrm, vUp) * 0.5 + 0.5);
-  vec3 col = base * (amb * 0.42 + uDirColor * sun * 0.36) * self_sh * (0.82 + 0.18 * n);
-  float a = clamp(vA * pow(edge, 0.8) * 1.5, 0.0, 1.0); if (a < 0.03) discard; a = floor(a * 8.0 + 0.6) / 8.0;
-  fragColor = vec4(mix(col, uFog, vF), a); }
+  vec2 p = (gl_PointCoord - 0.5) * 2.0; float r2 = dot(p, p); if (r2 > 1.0) discard;
+  float n = vSeed > 0.0 ? hash(floor(gl_PointCoord * 4.0) + vSeed * 97.0) * 0.6 + hash(floor(gl_PointCoord * 8.0) + vSeed * 53.0) * 0.4 : 0.5;
+  float d = pow(1.0 - r2, 1.6) * (0.45 + 0.9 * n) * vA * uDensScale;
+  fragColor = vec4(vRgb * d, d); }
+"#;
+/// separable 9-tap gaussian in 5 bilinear fetches, along uSrc (1,0 or 0,1), uTexel = 1 / source size
+pub const BLUR_FS: &str = r#"#version 300 es
+precision highp float;
+uniform sampler2D tScene; uniform vec2 uTexel; uniform vec2 uSrc; in vec2 vUv; out vec4 fragColor;
+void main() { vec2 o1 = uSrc * uTexel * 1.3846154, o2 = uSrc * uTexel * 3.2307692;
+  fragColor = texture(tScene, vUv) * 0.2270270 + (texture(tScene, vUv + o1) + texture(tScene, vUv - o1)) * 0.3162162 + (texture(tScene, vUv + o2) + texture(tScene, vUv - o2)) * 0.0702703; }
+"#;
+/// Dust, last pass: the blurred layer (plus a little of the sharp one for grain) becomes one continuous cloud over the scene.
+/// Opacity from the optical depth (1 - e^-density): thin edges are haze, the core goes nearly solid. The cloud is shaded as a
+/// whole: dense parts shadow themselves, edges facing the sun (from the density gradient) catch light, thin dust glows when
+/// the sun is behind it. Alpha in steps for the pixel look.
+pub const DCOMP_FS: &str = r#"#version 300 es
+precision highp float;
+uniform sampler2D tDust; uniform sampler2D tSharp; uniform vec2 uTexel; uniform vec2 uSun; uniform float uSunVis; uniform vec3 uDirColor; uniform float uDensScale; uniform vec2 uSrc;
+in vec2 vUv; out vec4 fragColor;
+void main() {
+  // never more dust than the sharp, depth-tested layer has here: the blur must not smear dust over a car or tree in front
+  vec4 b = texture(tDust, vUv) / uDensScale, s = texture(tSharp, vUv) / uDensScale;
+  float D = min(mix(b.a, s.a, 0.25), s.a * 1.6); if (D < 0.004) discard;
+  vec3 col = (b.a > 1e-4 ? b.rgb / b.a : s.rgb / max(s.a, 1e-4));
+  float gx = texture(tDust, vUv + vec2(uTexel.x, 0.0)).a - texture(tDust, vUv - vec2(uTexel.x, 0.0)).a;
+  float gy = texture(tDust, vUv + vec2(0.0, uTexel.y)).a - texture(tDust, vUv - vec2(0.0, uTexel.y)).a;
+  vec2 grad = vec2(gx, gy) / uDensScale; vec2 sd = normalize(uSun - vUv + vec2(0.0, 0.6));
+  // edge light only on the cloud's own edges: where something in front cut the dust off, the sharp layer is much thinner
+  float own = clamp(s.a / max(b.a, 1e-3), 0.0, 1.0);
+  float rim = clamp(dot(-grad, sd) * 3.5, -0.5, 0.8) * own * own;
+  float thick = 1.0 - exp(-D * 3.4);
+  col *= mix(1.1, 0.66, smoothstep(0.12, 1.1, D)) * (0.9 + 0.26 * rim);
+  vec2 asp = vec2(uSrc.x / uSrc.y, 1.0); float near = uSunVis * smoothstep(0.75, 0.0, length((vUv - uSun) * asp));
+  col += uDirColor * 0.22 * near * (1.0 - thick);
+  float a = floor(thick * 16.0 + 0.5) / 16.0; if (a <= 0.0) discard;
+  fragColor = vec4(col, a); }
 "#;
 
 pub const POST_VS: &str = r#"#version 300 es
