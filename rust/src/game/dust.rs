@@ -40,7 +40,7 @@ pub const DUST: u8 = 0; pub const GRIT: u8 = 1; pub const SMOKE: u8 = 2; pub con
 #[inline] pub fn is_speck(k: u8) -> bool { k == GRIT || k == CHUNK || k == SPRAY }
 /// per kind: relaxation time to the air (s), gravity (m/s2), growth (m per sqrt s), base alpha, how much the wake moves it
 const TAU: [f32; 6] = [0.32, 3.0, 0.45, 0.3, 2.2, 0.35];
-const GRAV: [f32; 6] = [-0.06, -9.8, 0.4, -0.3, -9.8, -9.8];
+const GRAV: [f32; 6] = [-0.2, -9.8, 0.4, -0.35, -9.8, -9.8];
 const GROW: [f32; 6] = [1.2, 0.0, 1.6, 1.0, 0.0, 0.0];
 const WAKE: [f32; 6] = [1.0, 0.15, 0.9, 1.0, 0.2, 0.5];
 
@@ -201,25 +201,27 @@ impl Dust {
             if env.snow {
                 // snow: only a thin mist of fine powder (no white grain specks)
                 let rate = loose * (0.45 * sp + 3.0 * slip + 1.5 * vl.abs()) * lk * front * lod;
-                // the plume: fine powder lifted off the grains and by the wheel's air, hanging for a few seconds in a sunlit fan
-                let n = self.count((rate * 0.4).min(25.0) * dt);
-                for _ in 0..n { let mut v = tread(self, 0.2, 0.3, 1.1); v[1] += self.r(0.8, 2.2); let tq = self.r(0.0, 1.0) * dt;
-                    let p = [wx + back[0] * 0.5 + self.r(-0.2, 0.2) - c.vx as f32 * tq, gy + 0.25, wz + back[1] * 0.5 + self.r(-0.2, 0.2) - c.vz as f32 * tq];
-                    let (al, sz, lf, br) = (env.alpha * self.r(0.7, 1.0), self.r(0.16, 0.28) * big, self.r(1.2, 2.4), self.r(1.0, 1.1)); self.emit(POWDER, p, v, sz, lf, al, br, 0.0, gy); }
+                // a low veil of powder that stays on the ground behind the wheels: many wide, faint puffs laid end to end along
+                // the wheel's path, so they merge into one continuous trail instead of separate blobs
+                let n = self.count((rate * 0.8).min(45.0) * dt);
+                for _ in 0..n { let side = self.r(-0.4, 0.4); let tq = self.r(0.0, 1.0) * dt;
+                    let v = [c.vx as f32 * 0.3 + lat[0] * 0.2 + ch * side, self.r(0.05, 0.3), c.vz as f32 * 0.3 + lat[1] * 0.2 - sh * side];
+                    let p = [wx + back[0] * 0.4 + self.r(-0.15, 0.15) - c.vx as f32 * tq, gy + 0.1, wz + back[1] * 0.4 + self.r(-0.15, 0.15) - c.vz as f32 * tq];
+                    let (al, sz, lf, br) = (env.alpha * self.r(0.8, 1.0), self.r(0.4, 0.65) * big, self.r(1.2, 2.4), self.r(1.0, 1.1)); self.emit(POWDER, p, v, sz, lf, al, br, 0.0, gy); }
             } else {
                 // fine dust: lifted at the contact patch and by the wheel's own air, then handed to the wake and the wind; it hangs
                 // for seconds (fine powder settles at a few cm/s), spreading and thinning, longer on dry ground
-                let rate = loose * (0.45 * sp + 2.5 * slip) * lk * front * lod;
+                let rate = loose * (0.7 * sp + 3.5 * slip) * lk * front * lod;
                 let n = self.count(rate.min(80.0) * dt);
                 for _ in 0..n {
                     // the wheel's own air and the wake throw it up a car's height or two
-                    let up = self.r(0.7, 1.8) + sp * 0.085 + slip * 0.1; let side = self.r(-0.7, 0.7);
+                    let up = self.r(0.05, 0.35) + slip * 0.02; let side = self.r(-0.5, 0.5);
                     let v = [c.vx as f32 * 0.32 + back[0] * slip * 0.25 + ch * side + lat[0] * 0.3, up, c.vz as f32 * 0.32 + back[1] * slip * 0.25 - sh * side + lat[1] * 0.3];
                     // spread along where the wheel went during this frame, so the stream is continuous, not dotted
                     let tq = self.r(0.0, 1.0) * dt;
                     let p = [wx + back[0] * 0.3 + self.r(-0.15, 0.15) - c.vx as f32 * tq, gy + 0.15, wz + back[1] * 0.3 + self.r(-0.15, 0.15) - c.vz as f32 * tq];
-                    let size = self.r(0.2, 0.36) * big; let life = self.r(2.6, 4.6) * env.dry;
-                    let (al, br) = (env.alpha * self.r(0.8, 1.1), self.r(0.88, 1.08)); self.emit(DUST, p, v, size, life, al, br, earth, gy);
+                    let size = self.r(0.4, 0.65) * big; let life = self.r(2.6, 4.6) * env.dry;
+                    let (al, br) = (env.alpha * self.r(0.8, 1.0), self.r(0.88, 1.08)); self.emit(DUST, p, v, size, life, al, br, earth, gy);
                 }
             }
             // stones / snow clumps: flung by the tread, many more with wheelspin, mostly from the driven rear; specks on arcs
@@ -284,8 +286,10 @@ impl Dust {
             // wind grows with height above the ground (shear); eddies from the curl-noise field, a gentle lift so clouds tower
             let hk = 0.55 + 0.45 * ((y - self.gy[i]) / 3.0).clamp(0.0, 1.0); air[0] *= hk; air[2] *= hk;
             if !heavy { if (i as u32 + self.frame) % 3 == 0 { self.turb[i] = curl(x, y, z, t); }
-                let ta = 0.45 + self.age[i] * 1.1; let tb = self.turb[i];
-                air[0] += tb[0] * ta; air[1] += (tb[1] * 0.75 + 0.3) * ta; air[2] += tb[2] * ta;
+                // ground-hugging dust and snow: gentle eddies that spread it sideways and barely lift it, so the trail stays one piece
+                let low = kd == DUST as usize || kd == POWDER as usize;
+                let ta = if low { 0.2 + self.age[i] * 0.3 } else { 0.45 + self.age[i] * 1.1 }; let tb = self.turb[i];
+                air[0] += tb[0] * ta; air[1] += if low { tb[1] * 0.2 * ta } else { (tb[1] * 0.75 + 0.3) * ta }; air[2] += tb[2] * ta;
                 // the spinning air the cars left behind
                 if self.vlive > 0 { let u = self.vort_at(x, y, z, usize::MAX); let wk = WAKE[kd]; air[0] += u[0] * wk; air[1] += u[1] * wk; air[2] += u[2] * wk; } }
             let mut tau = TAU[kd]; let v = &mut self.vel[i];
@@ -301,7 +305,7 @@ impl Dust {
                 if behind > -0.5 && behind < 6.5 && spd > 1.0 {
                     let fall = (1.0 - behind.max(0.0) / 6.5).powf(1.8);
                     let wf = fall * (-lx * lx / 1.4).exp() * (-(ly - 0.6) * (ly - 0.6) / 1.2).exp() * wk;
-                    al[0] += cv[0] * 0.42 * wf - lx * spd * 0.04 * wf; al[2] += cv[2] * 0.42 * wf; al[1] += spd * 0.1 * wf;
+                    al[0] += cv[0] * 0.42 * wf - lx * spd * 0.04 * wf; al[2] += cv[2] * 0.42 * wf; al[1] += spd * if kd == DUST as usize || kd == POWDER as usize { 0.01 } else { 0.1 } * wf;
                 }
                 // wheels: air in contact with the tread turns with it
                 if !heavy { for &(wx, wz, om) in &b.wheels {
@@ -326,7 +330,7 @@ impl Dust {
             let (nx, mut ny, nz) = (x + v[0] * dt, y + v[1] * dt, z + v[2] * dt);
             // the ground: stones stop (with a small puff), dust rolls along it; heights refreshed every 4th frame for dust
             if ballistic || (i as u32 + self.frame) % 4 == 0 { self.gy[i] = w.height(nx as f64, nz as f64) as f32; }
-            let floor = self.gy[i] + if ballistic { 0.04 } else { self.s[i] * if kd == DUST as usize || kd == POWDER as usize { 0.5 } else { 0.22 } };   // a cloud sits on the ground and towers as it spreads
+            let floor = self.gy[i] + if ballistic { 0.04 } else { self.s[i] * if kd == DUST as usize || kd == POWDER as usize { 0.15 } else { 0.22 } };   // dust and snow lie low: half sunk in the ground, a flat trail
             if ny < floor { if ballistic { self.life[i] = 0.0; self.a[i] = 0.0; if sd < if kd == SPRAY as usize { 0.06 } else { 0.3 } { puffs.push(([nx, floor + 0.1, nz], kd != GRIT as usize, self.gy[i])); } continue; }
                 // dust hitting the ground spreads out along it instead of stopping dead
                 ny = floor; if v[1] < 0.0 { let lost = -v[1]; let hs = (v[0] * v[0] + v[2] * v[2]).sqrt().max(0.3); v[0] += v[0] / hs * lost * 0.45; v[2] += v[2] / hs * lost * 0.45; v[1] = 0.0; } }
