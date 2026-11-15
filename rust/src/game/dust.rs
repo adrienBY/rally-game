@@ -24,7 +24,7 @@ pub const DUST: u8 = 0; pub const GRIT: u8 = 1; pub const SMOKE: u8 = 2; pub con
 /// per kind: relaxation time to the air (s), gravity (m/s2), growth (m per sqrt s), base alpha, how much the wake moves it
 const TAU: [f32; 5] = [0.32, 3.0, 0.45, 0.28, 2.2];
 const GRAV: [f32; 5] = [-0.22, -9.8, 0.4, -0.35, -9.8];
-const GROW: [f32; 5] = [2.1, 0.0, 2.3, 1.7, 0.0];
+const GROW: [f32; 5] = [1.8, 0.0, 2.3, 1.5, 0.0];
 const WAKE: [f32; 5] = [1.0, 0.15, 0.9, 1.0, 0.2];
 
 /// what kind of stage this is (sets the surfaces and colours)
@@ -103,14 +103,14 @@ impl Dust {
                 else if road { (if env.sand { 1.35 } else { 1.0 }, 0.0) } else if env.sand { (1.2, 0.15) } else if env.lush { (0.4, 0.65) } else { (0.8, 0.4) };
             let back = [-sh, -ch];   // behind the car
             // fine dust: speed and slip lift it, load presses more out
-            let rate = loose * (0.5 * sp + 2.6 * slip) * lk * front * lod;
-            let n = self.count(rate.min(34.0) * dt);
+            let rate = loose * (0.26 * sp + 1.7 * slip) * lk * front * lod;
+            let n = self.count(rate.min(20.0) * dt);
             for _ in 0..n {
                 let (fine, kind) = if env.snow { (POWDER, POWDER) } else { (DUST, DUST) }; let _ = fine;
                 let up = self.r(0.5, 1.5) + slip * 0.05; let side = self.r(-0.7, 0.7);
                 let v = [c.vx as f32 * 0.32 + back[0] * slip * 0.25 + ch * side, up, c.vz as f32 * 0.32 + back[1] * slip * 0.25 - sh * side];
                 let p = [wx + back[0] * 0.3 + self.r(-0.15, 0.15), gy + 0.15, wz + back[1] * 0.3 + self.r(-0.15, 0.15)];
-                let size = self.r(0.7, 1.15) * big * if env.snow { 0.9 } else { 1.0 }; let life = self.r(1.6, 3.2) * if env.sand { 1.3 } else { 1.0 };
+                let size = self.r(0.7, 1.15) * big * if env.snow { 0.9 } else { 1.0 }; let life = self.r(1.2, 2.4) * if env.sand { 1.3 } else { 1.0 };
                 let bright = self.r(0.88, 1.08) * if env.snow { 1.05 } else { 1.0 };
                 let al = env.alpha * self.r(0.8, 1.1); self.emit(kind, p, v, size, life, al, bright, earth, gy);
             }

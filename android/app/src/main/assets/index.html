@@ -1549,7 +1549,9 @@ const dMat = new THREE.ShaderMaterial({
   fragmentShader: `uniform vec3 uFog; uniform vec3 uCol; varying float vA; varying float vF;
     void main(){ vec2 p = gl_PointCoord-0.5; if(dot(p,p)>0.25) discard; gl_FragColor = vec4(mix(uCol,uFog,vF), vA); }`
 });
-const dust = new THREE.Points(dGeo, dMat); dust.frustumCulled = false; scene.add(dust); dMat.userData.kind = "dust";
+// drawn after every other transparent object (glass, rims, foliage cards...): the depth buffer then hides dust behind them,
+// instead of those parts showing through the cloud
+const dust = new THREE.Points(dGeo, dMat); dust.frustumCulled = false; dust.renderOrder = 10; scene.add(dust); dMat.userData.kind = "dust";
 function emitDust(x, y, z, vx, vy, vz, size) { const i = dHead; dHead = (dHead + 1) % DN;
   dPos[i * 3] = x; dPos[i * 3 + 1] = y; dPos[i * 3 + 2] = z; dV[i * 3] = vx; dV[i * 3 + 1] = vy; dV[i * 3 + 2] = vz; dAge[i] = 0; dLife[i] = rr(1.2, 2.4); dS[i] = size; }
 
