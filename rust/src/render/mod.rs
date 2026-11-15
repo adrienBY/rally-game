@@ -418,7 +418,7 @@ impl Renderer {
             gl.draw_arrays(glow::POINTS, 0, g.count); }
         gl.bind_vertex_array(None); gl.depth_mask(true); gl.disable(glow::DEPTH_TEST); gl.disable(glow::BLEND);
         gl.vertex_attrib_4_f32(3, 1.0, 1.0, 1.0, 1.0);
-        // 2. blur at half resolution: H then V, twice
+        // 2. blur at half resolution: H then V, twice (the puffs are small enough that the curls survive it)
         let (hw, hh) = ((lw + 1) / 2, (lh + 1) / 2); gl.bind_vertex_array(Some(self.quad_vao)); gl.viewport(0, 0, hw, hh);
         let p = &self.dblur; gl.use_program(Some(p.prog)); gl.active_texture(glow::TEXTURE0); gl.uniform_1_i32(p.u(U!("tScene")), 0);
         let passes = [(t.td, 1.0 / lw as f32, 1.0 / lh as f32, [1.0f32, 0.0], 0usize), (t.tb[0], 1.0 / hw as f32, 1.0 / hh as f32, [0.0, 1.0], 1),

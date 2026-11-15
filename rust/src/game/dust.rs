@@ -10,8 +10,12 @@
 //! The air around each car is modelled cheaply but physically (in the car's frame, within 10 m):
 //!  * the body is a solid (a rounded box): air cannot go through it, so it slides along the surface and smoke wraps round the
 //!    car; next to the skin it is dragged along with the car (boundary layer); a particle that ends up inside is pushed out
-//!  * behind it the wake: low pressure drags air after the car and pulls it in towards the middle, and two vortices shed from
-//!    the rear corners roll it up and outwards (the curl you see behind a sliding car)
+//!  * behind it the wake: low pressure drags air after the car and pulls it in towards the middle
+//! Swirl that outlives the car: every car sheds vortex blobs (short pieces of spinning air) into the air behind it, from the
+//! rear corners (the two trailing vortices), over the tail (the roll that tumbles dust up and over), and from the trailing
+//! side when it slides (the mushroom). Blobs stay where they were dropped, drift with the wind, push each other, slide out
+//! along the ground (their mirror image under it), slowly weaken and spread; every light particle near one is turned by it.
+//! Found through a small hash grid, so each particle only looks at the few blobs around it.
 //!  * each wheel drags the air round with its tread: smoke at the tyre is spun up the back of the wheel and thrown forward
 //!    over the arch, faster when the wheel is spinning
 //! plus the stage wind (gusting, stronger higher up) and turbulence from a curl-noise eddy field: divergence-free, shared by
@@ -28,8 +32,29 @@ pub const DUST: u8 = 0; pub const GRIT: u8 = 1; pub const SMOKE: u8 = 2; pub con
 /// per kind: relaxation time to the air (s), gravity (m/s2), growth (m per sqrt s), base alpha, how much the wake moves it
 const TAU: [f32; 5] = [0.32, 3.0, 0.45, 0.28, 2.2];
 const GRAV: [f32; 5] = [-0.22, -9.8, 0.4, -0.35, -9.8];
-const GROW: [f32; 5] = [1.35, 0.0, 1.8, 1.15, 0.0];
+const GROW: [f32; 5] = [1.05, 0.0, 1.6, 0.95, 0.0];
 const WAKE: [f32; 5] = [1.0, 0.15, 0.9, 1.0, 0.2];
+
+/// a piece of spinning air left behind by a car: centre, its own drift, unit axis, circulation (m2/s), core radius, length
+#[derive(Clone, Copy, Default)]
+struct Vort { p: [f32; 3], v: [f32; 3], ax: [f32; 3], g: f32, rc0: f32, rc: f32, len: f32, age: f32, gy: f32 }
+/// blobs kept, how long they last, how fast they weaken (s), how fast the core spreads (m2/s), reach (m), grid cell, buckets
+const NV: usize = 256; const V_LIFE: f32 = 3.2; const V_DECAY: f32 = 1.6; const V_NU: f32 = 0.09; const V_REACH: f32 = 3.2;
+const VCELL: f32 = 4.0; const VBUCK: usize = 512;
+/// the air a blob turns at r (from its centre): Lamb-Oseen-like core, compact both across and along the axis
+#[inline]
+fn vort_u(b: &Vort, rx: f32, ry: f32, rz: f32) -> [f32; 3] {
+    let al = rx * b.ax[0] + ry * b.ax[1] + rz * b.ax[2]; let q = al * al / (b.len * b.len); if q >= 4.0 { return [0.0; 3]; }
+    let (px, py, pz) = (rx - al * b.ax[0], ry - al * b.ax[1], rz - al * b.ax[2]); let r2 = px * px + py * py + pz * pz;
+    let rr = V_REACH * V_REACH; if r2 >= rr { return [0.0; 3]; }
+    let fa = 1.0 - q * 0.25; let fr = 1.0 - r2 / rr;
+    let k = b.g * 0.159_155 / (r2 + b.rc * b.rc) * fa * fa * fr * fr;
+    [(b.ax[1] * pz - b.ax[2] * py) * k, (b.ax[2] * px - b.ax[0] * pz) * k, (b.ax[0] * py - b.ax[1] * px) * k]
+}
+#[inline]
+fn vcell(x: f32, z: f32) -> (i32, i32) { ((x / VCELL).floor() as i32, (z / VCELL).floor() as i32) }
+#[inline]
+fn vbucket(c: (i32, i32)) -> usize { ((c.0 as u32).wrapping_mul(73_856_093) ^ (c.1 as u32).wrapping_mul(19_349_663)) as usize & (VBUCK - 1) }
 
 /// what kind of stage this is (sets the surfaces and colours)
 #[derive(Clone, Copy, Default)]
@@ -59,14 +84,15 @@ fn body_sdf(x: f32, y: f32, z: f32) -> (f32, [f32; 3]) {
 const WHEEL_Y: f32 = 0.24; const TYRE_R: f32 = 0.31;
 
 /// Curl of a vector potential made of two octaves of plane waves A_k = sin(a_k . p + w_k t): a divergence-free swirl field
-/// (no sources or sinks, so dust is stirred, never bunched up or torn apart), about unit strength. 6 cosines per call.
+/// (no sources or sinks, so dust is stirred, never bunched up or torn apart), about unit strength; the last octave is the
+/// small, quick eddies (1-3 m) that make cloud edges billow. 9 cosines per call.
 fn curl(x: f32, y: f32, z: f32, t: f32) -> [f32; 3] {
     let mut o = [0.0f32; 3];
-    for (k, sc) in [(1.0f32, 1.0f32), (2.3, 0.45)] {
+    for (k, sc) in [(1.0f32, 1.0f32), (2.3, 0.45), (5.2, 0.42)] {
         let (a1, a2, a3) = ([0.31 * k, 0.83 * k, 0.47 * k], [0.71 * k, 0.29 * k, 0.61 * k], [0.53 * k, 0.67 * k, 0.37 * k]);
         let c1 = (a1[0] * x + a1[1] * y + a1[2] * z + 0.9 * t * k).cos(); let c2 = (a2[0] * x + a2[1] * y + a2[2] * z - 0.7 * t * k + 1.7).cos();
         let c3 = (a3[0] * x + a3[1] * y + a3[2] * z + 1.1 * t * k + 3.1).cos();
-        let s = sc / k;   // the same speed scale at both octaves
+        let s = sc / k;   // speed set by sc alone
         o[0] += (a3[1] * c3 - a2[2] * c2) * s; o[1] += (a1[2] * c1 - a3[0] * c3) * s; o[2] += (a2[0] * c2 - a1[1] * c1) * s;
     }
     [o[0] * 1.6, o[1] * 1.6, o[2] * 1.6]
@@ -80,13 +106,18 @@ pub struct Dust {
     out_pos: Vec<f32>, out_col: Vec<f32>, out_a: Vec<f32>, out_s: Vec<f32>,
     /// wind direction (unit, x z) and the time
     wdir: [f32; 2], t: f32,
+    /// vortex blobs, the next slot, how many are alive; the grid (bucket starts, blob indices, each blob's cell)
+    vort: Vec<Vort>, vhead: usize, pub vlive: usize, vstart: Vec<u32>, vitems: Vec<u16>, vcellof: Vec<(i32, i32)>,
+    /// where the camera is (far cars shed no blobs)
+    pub cam: [f32; 3],
 }
 
 impl Dust {
     pub fn new(n: usize, seed: u64) -> Dust {
         let mut d = Dust { n, pos: vec![0.0; n * 3], col: vec![0.0; n * 3], a: vec![0.0; n], s: vec![0.0; n], vel: vec![[0.0; 3]; n], turb: vec![[0.0; 3]; n], age: vec![0.0; n], life: vec![0.0; n],
             s0: vec![0.0; n], a0: vec![0.0; n], kind: vec![0; n], gy: vec![0.0; n], seed: vec![0.0; n], head: 0, live: 0, was: true, rng: seed | 1, frame: 0, wdir: [1.0, 0.0], t: 0.0,
-            out_pos: vec![0.0; n * 3], out_col: vec![0.0; n * 3], out_a: vec![0.0; n], out_s: vec![0.0; n] };
+            out_pos: vec![0.0; n * 3], out_col: vec![0.0; n * 3], out_a: vec![0.0; n], out_s: vec![0.0; n],
+            vort: vec![Vort::default(); NV], vhead: 0, vlive: 0, vstart: vec![0; VBUCK + 1], vitems: vec![0; NV], vcellof: vec![(0, 0); NV], cam: [0.0; 3] };
         let ang = d.f() * std::f32::consts::TAU; d.wdir = [ang.cos(), ang.sin()]; d
     }
     fn f(&mut self) -> f32 { self.rng ^= self.rng << 13; self.rng ^= self.rng >> 7; self.rng ^= self.rng << 17; (self.rng >> 40) as f32 / (1u64 << 24) as f32 }
@@ -130,7 +161,7 @@ impl Dust {
                 // spread along where the wheel went during this frame, so the stream is continuous, not dotted
                 let tq = self.r(0.0, 1.0) * dt;
                 let p = [wx + back[0] * 0.3 + self.r(-0.15, 0.15) - c.vx as f32 * tq, gy + 0.15, wz + back[1] * 0.3 + self.r(-0.15, 0.15) - c.vz as f32 * tq];
-                let size = self.r(0.42, 0.72) * big * if env.snow { 0.9 } else { 1.0 }; let life = self.r(1.2, 2.4) * if env.sand { 1.3 } else { 1.0 };
+                let size = self.r(0.32, 0.56) * big * if env.snow { 0.9 } else { 1.0 }; let life = self.r(1.2, 2.4) * if env.sand { 1.3 } else { 1.0 };
                 let bright = self.r(0.88, 1.08) * if env.snow { 1.05 } else { 1.0 };
                 let al = env.alpha * self.r(0.8, 1.1); self.emit(kind, p, v, size, life, al, bright, earth, gy);
             }
@@ -173,6 +204,8 @@ impl Dust {
     pub fn step(&mut self, w: &World, bodies: &[Body], gust: f32, dt: f32) {
         self.t += dt; self.frame = self.frame.wrapping_add(1); let t = self.t;
         let wind = [self.wdir[0] * (0.5 + gust * 2.4), self.wdir[1] * (0.5 + gust * 2.4)];
+        for b in bodies { self.shed(b, dt); }
+        self.step_vortices(w, wind, dt);
         let mut live = 0; let mut puffs: Vec<([f32; 3], f32, f32)> = Vec::new();
         for i in 0..self.n {
             if self.life[i] <= 0.0 { self.a[i] = 0.0; continue; }
@@ -186,7 +219,9 @@ impl Dust {
             let hk = 0.55 + 0.45 * ((y - self.gy[i]) / 3.0).clamp(0.0, 1.0); air[0] *= hk; air[2] *= hk;
             if !heavy { if (i as u32 + self.frame) % 3 == 0 { self.turb[i] = curl(x, y, z, t); }
                 let ta = 0.45 + self.age[i] * 1.1; let tb = self.turb[i];
-                air[0] += tb[0] * ta; air[1] += (tb[1] * 0.75 + 0.3) * ta; air[2] += tb[2] * ta; }
+                air[0] += tb[0] * ta; air[1] += (tb[1] * 0.75 + 0.3) * ta; air[2] += tb[2] * ta;
+                // the spinning air the cars left behind
+                if self.vlive > 0 { let u = self.vort_at(x, y, z, usize::MAX); let wk = WAKE[kd]; air[0] += u[0] * wk; air[1] += u[1] * wk; air[2] += u[2] * wk; } }
             let mut tau = TAU[kd]; let v = &mut self.vel[i];
             // each nearby car's flow field, worked out in its own frame (x right, y up, z forward)
             for b in bodies {
@@ -195,14 +230,12 @@ impl Dust {
                 let tol = |vx: f32, vz: f32| (vx * b.ch - vz * b.sh, vx * b.sh + vz * b.ch); let tow = |lx: f32, lz: f32| (lx * b.ch + lz * b.sh, -lx * b.sh + lz * b.ch);
                 let (cvx, cvz) = tol(b.vx, b.vz); let (ax, az) = tol(air[0], air[2]); let mut al = [ax, air[1], az]; let cv = [cvx, 0.0, cvz];
                 let wk = WAKE[kd]; let spd = b.sp.min(40.0);
-                // wake: dragged after the car, pulled in to the middle, a little upwash; two corner vortices roll it up and out
+                // wake: dragged after the car, pulled in to the middle, a little upwash (the vortices are shed blobs, below)
                 let behind = -lz - BZ - 0.1;
                 if behind > -0.5 && behind < 6.5 && spd > 1.0 {
                     let fall = (1.0 - behind.max(0.0) / 6.5).powf(1.8);
                     let wf = fall * (-lx * lx / 1.4).exp() * (-(ly - 0.6) * (ly - 0.6) / 1.2).exp() * wk;
                     al[0] += cv[0] * 0.42 * wf - lx * spd * 0.04 * wf; al[2] += cv[2] * 0.42 * wf; al[1] += spd * 0.05 * wf;
-                    for s in [-1.0f32, 1.0] { let (rx, ry) = (lx - s * 0.85, ly - 0.9); let r2 = rx * rx + ry * ry + 0.18; let g = spd * 0.11 * fall * wk / r2;
-                        al[0] += -s * ry * g; al[1] += s * rx * g; }
                 }
                 // wheels: air in contact with the tread turns with it
                 if !heavy { for &(wx, wz, om) in &b.wheels {
@@ -239,6 +272,74 @@ impl Dust {
         }
         for (p, earth, gy) in puffs { let snow = earth <= 0.0; self.emit(if snow { POWDER } else { DUST }, p, [0.0, 0.5, 0.0], 0.35, 0.9, 0.3, 0.95, earth, gy); }
         self.live = live;
+    }
+    fn add_vort(&mut self, p: [f32; 3], v: [f32; 3], ax: [f32; 3], g: f32, rc0: f32, len: f32, gy: f32) {
+        let i = self.vhead; self.vhead = (self.vhead + 1) % NV;
+        self.vort[i] = Vort { p, v, ax, g, rc0, rc: rc0, len, age: 0.0, gy };
+    }
+    /// what a moving car leaves in the air this frame
+    fn shed(&mut self, b: &Body, dt: f32) {
+        let sp = b.sp.min(40.0); let (dx, dz) = (b.x - self.cam[0], b.z - self.cam[2]);
+        if dx * dx + dz * dz > 150.0 * 150.0 { return; }
+        let (cvx, _) = (b.vx * b.ch - b.vz * b.sh, b.vx * b.sh + b.vz * b.ch);   // sideways speed, car frame
+        let fwd = [b.sh, 0.0, b.ch]; let right = [b.ch, 0.0, -b.sh];
+        let at = |lx: f32, ly: f32, lz: f32, tq: f32| [b.x + lx * b.ch + lz * b.sh - b.vx * tq, b.y + ly, b.z - lx * b.sh + lz * b.ch - b.vz * tq];
+        let gy = b.y;   // refreshed from the terrain within a few frames
+        let carry = [b.vx * 0.35, 0.0, b.vz * 0.35];
+        if sp > 4.0 {
+            // trailing vortices off the rear corners (right one turns +forward), and the roll over the tail
+            let rate = (sp * 0.45).min(11.0); let len = (sp / rate * 0.7).max(1.0);
+            let n = self.count(rate * dt);
+            for _ in 0..n { let tq = self.f() * dt; let g = 0.69 * sp * (1.0 + 0.04 * cvx.abs());
+                for s in [-1.0f32, 1.0] { let p = at(s * 0.82, 0.85, -BZ - 0.15, tq); self.add_vort(p, carry, [fwd[0] * s, 0.0, fwd[2] * s], g, 0.32, len, gy); }
+                let p = at(0.0, 1.15, -BZ - 0.5, tq); self.add_vort(p, carry, [-right[0], 0.0, -right[2]], 0.33 * sp, 0.4, len.max(1.3), gy); }
+        }
+        // sliding: air spills over the trailing side and rolls up (the mushroom cloud off a drifting car)
+        let lat = cvx.abs();
+        if lat > 2.5 {
+            let n = self.count(((lat - 2.5) * 2.2).min(10.0) * dt); let sg = cvx.signum();
+            for _ in 0..n { let tq = self.f() * dt; let lz = self.r(-1.6, 1.4); let p = at(-sg * 0.95, 1.0, lz, tq);
+                self.add_vort(p, carry, [fwd[0] * sg, 0.0, fwd[2] * sg], 0.8 * lat.min(25.0), 0.35, 1.3, gy); }
+        }
+    }
+    /// sort the live blobs into the grid
+    fn build_vgrid(&mut self) {
+        for c in self.vstart.iter_mut() { *c = 0; }
+        let mut n = 0;
+        for i in 0..NV { if self.vort[i].g <= 0.0 { continue; } n += 1; let c = vcell(self.vort[i].p[0], self.vort[i].p[2]); self.vcellof[i] = c; self.vstart[vbucket(c) + 1] += 1; }
+        for k in 0..VBUCK { self.vstart[k + 1] += self.vstart[k]; }
+        let mut fill = self.vstart.clone();
+        for i in 0..NV { if self.vort[i].g <= 0.0 { continue; } let k = vbucket(self.vcellof[i]); self.vitems[fill[k] as usize] = i as u16; fill[k] += 1; }
+        self.vlive = n;
+    }
+    /// the air all blobs near (x, y, z) turn, skipping blob `skip`
+    fn vort_at(&self, x: f32, y: f32, z: f32, skip: usize) -> [f32; 3] {
+        let mut u = [0.0f32; 3]; let c = vcell(x, z);
+        for dz in -1..=1 { for dx in -1..=1 { let cc = (c.0 + dx, c.1 + dz); let k = vbucket(cc);
+            for &j in &self.vitems[self.vstart[k] as usize..self.vstart[k + 1] as usize] { let j = j as usize;
+                if j == skip || self.vcellof[j] != cc { continue; } let b = &self.vort[j];
+                let d = vort_u(b, x - b.p[0], y - b.p[1], z - b.p[2]); u[0] += d[0]; u[1] += d[1]; u[2] += d[2]; } } }
+        u
+    }
+    /// blobs move with the wind and with each other, slide out along the ground, weaken and spread
+    fn step_vortices(&mut self, w: &World, wind: [f32; 2], dt: f32) {
+        self.build_vgrid(); if self.vlive == 0 { return; }
+        let mut vel = [[0.0f32; 3]; NV];
+        for i in 0..NV { let b = self.vort[i]; if b.g <= 0.0 { continue; }
+            let mut u = self.vort_at(b.p[0], b.p[1], b.p[2], i);
+            // its mirror image under the ground (horizontal spin flips): a pair near the ground slides apart along it
+            let h = b.p[1] - b.gy; if h < 3.0 { let im = Vort { ax: [-b.ax[0], b.ax[1], -b.ax[2]], p: [b.p[0], b.gy - h, b.p[2]], ..b };
+                let d = vort_u(&im, 0.0, 2.0 * h, 0.0); u[0] += d[0]; u[1] += d[1]; u[2] += d[2]; }
+            let hk = 0.55 + 0.45 * (h / 3.0).clamp(0.0, 1.0);
+            vel[i] = [u[0] * 0.6 + wind[0] * hk, u[1] * 0.6, u[2] * 0.6 + wind[1] * hk]; }
+        let rel = 1.0 - (-dt / 0.5f32).exp(); let decay = (-dt / V_DECAY).exp();
+        for i in 0..NV { let b = &mut self.vort[i]; if b.g <= 0.0 { continue; }
+            b.age += dt; if b.age > V_LIFE { b.g = 0.0; continue; }
+            for q in 0..3 { b.v[q] += (vel[i][q] - b.v[q]) * rel; b.p[q] += b.v[q] * dt; }
+            if (i as u32 + self.frame) % 4 == 0 { b.gy = w.height(b.p[0] as f64, b.p[2] as f64) as f32; }
+            let floor = b.gy + b.rc * 0.8; if b.p[1] < floor { b.p[1] = floor; b.v[1] = b.v[1].max(0.0); }
+            b.g *= decay; b.rc = (b.rc0 * b.rc0 + 4.0 * V_NU * b.age).sqrt(); }
+        self.build_vgrid();
     }
     /// send the live puffs to the GPU (the dust layer adds them up, so their order does not matter); skipped while nothing is alive
     pub fn upload(&mut self, r: &mut crate::render::Renderer, obj: usize) {
@@ -282,5 +383,20 @@ mod tests {
         let mut f = Dust::new(4, 5); f.emit(SMOKE, [-2.0, 0.8, 0.0], [6.0, 0.0, 0.0], 0.5, 3.0, 0.4, 1.0, 0.0, 0.0);
         let parked = Body { x: 0.0, y: 0.0, z: 0.0, sh: 0.0, ch: 1.0, vx: 0.0, vz: 0.0, sp: 0.0, wheels: [(0.0, 0.0, 0.0); 4] };
         for _ in 0..90 { f.step(&w, &[parked], 0.0, 1.0 / 60.0); let (d, _) = body_sdf(f.pos[0], f.pos[1], f.pos[2]); assert!(d > -0.05, "inside the car: {d}"); }
+    }
+    #[test]
+    fn a_passing_car_leaves_swirl_behind() {
+        let n = 64; let w = crate::world::World { map: crate::world::Map::Forest, gxh: 32, gzh: 32, gnx: n, gnz: n, pd: vec![0.0; n * n], pi: vec![0; n * n], h: vec![0.0; n * n] };
+        // a car drives past at 25 m/s for 0.6 s and is gone; a second later dust put next to its path is still being turned
+        let run = |car: bool| { let mut d = Dust::new(8, 11);
+            for k in 0..36 { let z = -10.0 + 25.0 * k as f32 / 60.0;
+                let b = Body { x: 0.0, y: 0.0, z, sh: 0.0, ch: 1.0, vx: 0.0, vz: 25.0, sp: 25.0, wheels: [(0.0, 0.0, 0.0); 4] };
+                let bs = [b]; d.step(&w, if car { &bs[..] } else { &[] }, 0.0, 1.0 / 60.0); }
+            for _ in 0..60 { d.step(&w, &[], 0.0, 1.0 / 60.0); }
+            let live = d.vlive; d.emit(DUST, [0.4, 0.9, -2.0], [0.0; 3], 0.4, 3.0, 0.4, 1.0, 0.0, 0.0);
+            for _ in 0..20 { d.step(&w, &[], 0.0, 1.0 / 60.0); }
+            let v = d.vel[0]; (live, (v[0] * v[0] + v[1] * v[1]).sqrt()) };
+        let (live, with) = run(true); let (_, without) = run(false);
+        assert!(live > 10, "blobs alive {live}"); assert!(with > without + 0.4, "swirl {with} vs calm {without}");
     }
 }

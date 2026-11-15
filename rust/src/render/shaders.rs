@@ -191,7 +191,7 @@ in vec2 vUv; out vec4 fragColor;
 void main() {
   // never more dust than the sharp, depth-tested layer has here: the blur must not smear dust over a car or tree in front
   vec4 b = texture(tDust, vUv) / uDensScale, s = texture(tSharp, vUv) / uDensScale;
-  float D = min(mix(b.a, s.a, 0.25), s.a * 1.6); if (D < 0.004) discard;
+  float D = min(mix(b.a, s.a, 0.15), s.a * 2.6); if (D < 0.004) discard;
   vec3 col = (b.a > 1e-4 ? b.rgb / b.a : s.rgb / max(s.a, 1e-4));
   float gx = texture(tDust, vUv + vec2(uTexel.x, 0.0)).a - texture(tDust, vUv - vec2(uTexel.x, 0.0)).a;
   float gy = texture(tDust, vUv + vec2(0.0, uTexel.y)).a - texture(tDust, vUv - vec2(0.0, uTexel.y)).a;

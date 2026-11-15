@@ -396,7 +396,7 @@ impl Game {
                   else { [0, 1, 2, 3].map(|k| (o.wh[k].slide as f32, if o.wh[k].fz > 0.0 { o.wh[k].fz as f32 } else { 0.0 })) };
               self.dust.wheels(w, &env, &o, slips, 0.7, cam, dt as f32);
               let mut b = dust::Body::of(&o); if rc.remote.is_some() { for wv in b.wheels.iter_mut() { wv.2 = (o.u / 0.31) as f32; } } bodies.push(b); } }
-          self.dust.step(w, &bodies, gust as f32, dt as f32); }
+          self.dust.cam = [cam[0] as f32, cam[1] as f32, cam[2] as f32]; self.dust.step(w, &bodies, gust as f32, dt as f32); }
         let d_live = self.dust.live;
         self.d_live = d_live; lap!(3);
         self.last_pidx = path_idx(w, self.car.x, self.car.z);
