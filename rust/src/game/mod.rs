@@ -176,7 +176,7 @@ impl Game {
             cam_pos: [0.0; 3], cam_rot: ID, fov_now: 56.0, view: ID, proj: ID, w: 1280.0, h: 720.0, lw: 320, lh: 180, u: 1.0, inset: [0.0; 4], inset_px: [0.0; 4],
             race, ui: HashMap::new(), touches: HashMap::new(), time: 0.0, wind: 0.5, rng: Rng(0x9E3779B97F4A7C15 ^ (mid as u64 + 1)), events: Vec::new(), ps, loading: None,
             node_base, node_world: vec![ID; rt.nodes.len()], obj_last: HashMap::new(), named, cull_vis: vec![true; ncull], glit_op: vec![-1.0; nglit],
-            dust: dust::Dust::new(dn, 0x5EED ^ mid as u64), dust_env: dust::Env { tarmac: mid == 5 || mid == 6, snow: mid == 1, sand: mid == 2, lush: mid == 0, alpha: if mid == 5 || mid == 6 { 0.4 } else if mid == 1 { 0.36 } else { 0.44 } },
+            dust: dust::Dust::new(dn, 0x5EED ^ mid as u64), dust_env: dust::Env { tarmac: mid == 5 || mid == 6, snow: mid == 1, sand: mid == 2, lush: mid == 0, alpha: if mid == 5 || mid == 6 { 0.4 } else if mid == 1 { 0.22 } else if mid == 2 { 0.42 } else { 0.36 } },
             sf_pos, sf_init: false, boats,
             sun_vis: 0.0, expo: 1.0, dim: 1.0, expo_tun: false, sun_uv: [0.5, 0.8],
             hap_t: 0.0, hap_cool: 0.0, aud_wet: 0.0, car_audio_on: false, race_was: false, pop_cool: 0.0, fps_acc: 0.0, fps_n: 0, hud_tick: false, hud: hud::Canvas::new(320, 180),
@@ -396,12 +396,12 @@ impl Game {
                   else { [0, 1, 2, 3].map(|k| (o.wh[k].slide as f32, if o.wh[k].fz > 0.0 { o.wh[k].fz as f32 } else { 0.0 })) };
               self.dust.wheels(w, &env, &o, slips, 0.7, cam, dt as f32);
               let mut b = dust::Body::of(&o); if rc.remote.is_some() { for wv in b.wheels.iter_mut() { wv.2 = (o.u / 0.31) as f32; } } bodies.push(b); } }
-          self.dust.step(w, &bodies, gust as f32, dt as f32); }
+          self.dust.cam = [cam[0] as f32, cam[1] as f32, cam[2] as f32]; self.dust.step(w, &bodies, gust as f32, dt as f32); }
         let d_live = self.dust.live;
         self.d_live = d_live; lap!(3);
         self.last_pidx = path_idx(w, self.car.x, self.car.z);
         self.camera(w, dt); lap!(4);
-        if let Some((obj, _)) = self.rt.dust { let f = [-self.cam_rot[8], -self.cam_rot[9], -self.cam_rot[10]]; self.dust.upload(r, obj, self.cam_pos, f); }
+        if let Some((obj, _)) = self.rt.dust { self.dust.upload(r, obj); }
         if self.race.on { race::gfx(self, r, w); race::audio(self); } else if self.race_was { race::hide(self, r); self.audio_msg(&[8.0, 0.0]); }
         self.race_was = self.race.on; lap!(5);
         self.world_fx(r, w, dt);

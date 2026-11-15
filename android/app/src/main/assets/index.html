@@ -1536,8 +1536,8 @@ function updateSnowfall(dt) {
     if (sfPos[k + 1] < cy - 6) sfPos[k + 1] += 26; else if (sfPos[k + 1] > cy + 20) sfPos[k + 1] -= 26; }
   sfGeo.attributes.position.needsUpdate = true;
 }
-// the app runs its own dust system (game/dust.rs) on this buffer: 1600 particles, plus colour = (brightness, earth, seed) per particle
-const DN = RT_MODE ? 1600 : 420, dPos = new Float32Array(DN * 3), dA = new Float32Array(DN), dS = new Float32Array(DN), dV = new Float32Array(DN * 3), dAge = new Float32Array(DN), dLife = new Float32Array(DN), dCol = new Float32Array(DN * 3);
+// the app runs its own dust system (game/dust.rs) on this buffer: 4000 particles, plus colour = (brightness, earth, seed) per particle
+const DN = RT_MODE ? 4000 : 420, dPos = new Float32Array(DN * 3), dA = new Float32Array(DN), dS = new Float32Array(DN), dV = new Float32Array(DN * 3), dAge = new Float32Array(DN), dLife = new Float32Array(DN), dCol = new Float32Array(DN * 3);
 let dHead = 0;
 const dGeo = new THREE.BufferGeometry();
 dGeo.setAttribute("position", new THREE.BufferAttribute(dPos, 3)); dGeo.setAttribute("aA", new THREE.BufferAttribute(dA, 1)); dGeo.setAttribute("aS", new THREE.BufferAttribute(dS, 1)); if (RT_MODE) dGeo.setAttribute("color", new THREE.BufferAttribute(dCol, 3));
@@ -1549,7 +1549,9 @@ const dMat = new THREE.ShaderMaterial({
   fragmentShader: `uniform vec3 uFog; uniform vec3 uCol; varying float vA; varying float vF;
     void main(){ vec2 p = gl_PointCoord-0.5; if(dot(p,p)>0.25) discard; gl_FragColor = vec4(mix(uCol,uFog,vF), vA); }`
 });
-const dust = new THREE.Points(dGeo, dMat); dust.frustumCulled = false; scene.add(dust); dMat.userData.kind = "dust";
+// drawn after every other transparent object (glass, rims, foliage cards...): the depth buffer then hides dust behind them,
+// instead of those parts showing through the cloud
+const dust = new THREE.Points(dGeo, dMat); dust.frustumCulled = false; dust.renderOrder = 10; scene.add(dust); dMat.userData.kind = "dust";
 function emitDust(x, y, z, vx, vy, vz, size) { const i = dHead; dHead = (dHead + 1) % DN;
   dPos[i * 3] = x; dPos[i * 3 + 1] = y; dPos[i * 3 + 2] = z; dV[i * 3] = vx; dV[i * 3 + 1] = vy; dV[i * 3 + 2] = vz; dAge[i] = 0; dLife[i] = rr(1.2, 2.4); dS[i] = size; }
 

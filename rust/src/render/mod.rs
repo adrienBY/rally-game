@@ -57,23 +57,31 @@ const fn ui(n: &str) -> usize {
 }
 macro_rules! U { ($n:literal) => {{ const I: usize = ui($n); I }} }
 
+/// the dust layer's buffers
+#[derive(Clone, Copy)]
+struct DustTargets { w: i32, h: i32, fd: glow::Framebuffer, td: glow::Texture, fb: [glow::Framebuffer; 2], tb: [glow::Texture; 2], scale: f32 }
+
 pub struct Renderer {
     gl: Gl, scene: Option<GpuScene>, mesh_progs: HashMap<MeshKey, usize>, mesh_list: Vec<Program>, sky: Program, points: Program, dust: Program, post: Program, mask: Program, ray: Program, up: Program,
     rays: Option<(i32, i32, glow::Framebuffer, glow::Texture, glow::Framebuffer, glow::Texture)>,   // quarter-res god-ray mask + rays
+    /// dust layer: full-res density buffer (sharing the scene's depth), two half-res blur buffers, density scale (1 float, 0.3 8-bit)
+    dtg: Option<DustTargets>, dblur: Program, dcomp: Program,
     quad_vao: glow::VertexArray, _quad_buf: glow::Buffer,
     tgt: Option<(i32, i32, glow::Framebuffer, glow::Texture, glow::Renderbuffer, glow::Framebuffer, glow::Texture)>,
     pub frame: FrameState, pub stats: (u32, u32), pub only: Option<Vec<usize>>,
     hud: Option<(glow::Texture, i32, i32)>,
     /// test hook: draw the frame without the HUD
     pub no_hud: bool,
+    /// test hook: skip the dust layer
+    pub no_dust: bool,
     // benchmark: GPU timer queries (GL_EXT_disjoint_timer_query) for the scene and post passes, read back a few frames later
     pub timing: bool, pub frame_id: u64, pub draw_cpu_ms: f32, pub gpu_results: Vec<(u64, f32, f32)>, pub has_timer: bool,
     tq_free: Vec<(glow::Query, glow::Query)>, tq_pending: std::collections::VecDeque<(glow::Query, glow::Query, u64)>, tq_cur: Option<(glow::Query, glow::Query)>, tq_made: usize, tq_post: bool,
 }
 
-const UNIFORMS: [&str; 50] = ["uModel", "uView", "uProj", "uNormalM", "uMapM", "uTime", "uWind", "uColor", "uOpacity", "uMap", "uAlphaTest", "uHemiSky",
+const UNIFORMS: [&str; 53] = ["uModel", "uView", "uProj", "uNormalM", "uMapM", "uTime", "uWind", "uColor", "uOpacity", "uMap", "uAlphaTest", "uHemiSky",
     "uHemiGround", "uHemiDir", "uDirColor", "uDirDir", "uFogColor", "uFogDensity", "uCamPos", "uSpec", "uShin", "uEmissive", "uSun", "uFog", "uTop", "uGlow",
-    "uHalo", "uSize", "uScale", "uDens", "uCol", "tScene", "uSunVis", "uFlash", "uSpeed", "uExpo", "uDim", "uSplitS", "uSplitH", "uTexel", "tHud", "uHudOn", "uSkySun", "uSkyGlow", "uSkyHalo", "tMask", "tRay", "uRayOn", "uSrc", "uZoom"];
+    "uHalo", "uSize", "uScale", "uDens", "uCol", "tScene", "uSunVis", "uFlash", "uSpeed", "uExpo", "uDim", "uSplitS", "uSplitH", "uTexel", "tHud", "uHudOn", "uSkySun", "uSkyGlow", "uSkyHalo", "tMask", "tRay", "uRayOn", "uSrc", "uZoom", "tDust", "tSharp", "uDensScale"];
 
 unsafe fn compile(gl: &Gl, vs: &str, fs: &str) -> Result<Program, String> {
     let p = gl.create_program()?;
@@ -106,7 +114,7 @@ impl Renderer {
     /// Must be called on a thread with a current GLES 3 context.
     pub unsafe fn new(gl: Gl) -> Result<Renderer, String> {
         let sky = compile(&gl, SKY_VS, SKY_FS)?; let points = compile(&gl, POINTS_VS, POINTS_FS)?;
-        let dust = compile(&gl, DUST_VS, DUST_FS)?;
+        let dust = compile(&gl, DUST_VS, DUST_FS)?; let dblur = compile(&gl, POST_VS, BLUR_FS)?; let dcomp = compile(&gl, POST_VS, DCOMP_FS)?;
         let post = compile(&gl, POST_VS, POST_FS)?; let mask = compile(&gl, POST_VS, MASK_FS)?; let ray = compile(&gl, POST_VS, RAY_FS)?; let up = compile(&gl, POST_VS, UPSCALE_FS)?;
         let quad_vao = gl.create_vertex_array()?; let qb = gl.create_buffer()?;
         gl.bind_vertex_array(Some(quad_vao)); gl.bind_buffer(glow::ARRAY_BUFFER, Some(qb));
@@ -114,7 +122,7 @@ impl Renderer {
         gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, f32_bytes(&tri), glow::STATIC_DRAW);
         gl.enable_vertex_attrib_array(11); gl.vertex_attrib_pointer_f32(11, 2, glow::FLOAT, false, 8, 0);
         gl.bind_vertex_array(None);
-        Ok(Renderer { gl, scene: None, mesh_progs: HashMap::new(), mesh_list: Vec::new(), sky, points, dust, post, mask, ray, up, rays: None, quad_vao, _quad_buf: qb, tgt: None, frame: FrameState::default(), stats: (0, 0), only: None, hud: None, no_hud: false,
+        Ok(Renderer { gl, scene: None, mesh_progs: HashMap::new(), mesh_list: Vec::new(), sky, points, dust, post, mask, ray, up, rays: None, dtg: None, dblur, dcomp, quad_vao, _quad_buf: qb, tgt: None, frame: FrameState::default(), stats: (0, 0), only: None, hud: None, no_hud: false, no_dust: false,
             timing: false, frame_id: 0, draw_cpu_ms: 0.0, gpu_results: Vec::new(), has_timer: false, tq_free: Vec::new(), tq_pending: Default::default(), tq_cur: None, tq_made: 0, tq_post: false })
     }
 
@@ -390,6 +398,62 @@ impl Renderer {
         self.draw_cpu_ms = t0.elapsed().as_secs_f32() * 1000.0;
         r
     }
+    /// The dust layer for this frame: particles into the density buffer, blur, composite over the scene (bound back to f1).
+    unsafe fn dust_layer(&mut self, objs: &[usize], lw: i32, lh: i32, f1: glow::Framebuffer) -> Result<(), String> {
+        self.ensure_dust_targets(lw, lh)?;
+        let t = self.dtg.unwrap(); let fr = self.frame; let gl = &self.gl; let s = self.scene.as_ref().unwrap();
+        // 1. density: additive, depth-tested against the scene, no depth writes
+        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(t.fd)); gl.viewport(0, 0, lw, lh);
+        gl.clear_color(0.0, 0.0, 0.0, 0.0); gl.clear(glow::COLOR_BUFFER_BIT);
+        gl.enable(glow::DEPTH_TEST); gl.depth_func(glow::LEQUAL); gl.depth_mask(false); gl.enable(glow::BLEND); gl.blend_equation(glow::FUNC_ADD); gl.blend_func(glow::ONE, glow::ONE);
+        let p = &self.dust; gl.use_program(Some(p.prog));
+        gl.uniform_matrix_4_f32_slice(p.u(U!("uView")), false, &fr.view); gl.uniform_matrix_4_f32_slice(p.u(U!("uProj")), false, &fr.proj);
+        gl.uniform_1_f32(p.u(U!("uScale")), fr.dust_scale); gl.uniform_1_f32(p.u(U!("uDensScale")), t.scale);
+        gl.uniform_3_f32_slice(p.u(U!("uHemiSky")), &s.hemi.0); gl.uniform_3_f32_slice(p.u(U!("uHemiGround")), &s.hemi.1);
+        gl.uniform_3_f32_slice(p.u(U!("uDirColor")), &s.dir.0); gl.uniform_3_f32_slice(p.u(U!("uDirDir")), &s.dir.1);
+        for &i in objs { let o = &s.objs[i]; let m = &s.mats[o.mat]; let g = &s.geos[o.geo]; let Some((dens, fog, col)) = m.dust else { continue };
+            gl.uniform_matrix_4_f32_slice(p.u(U!("uModel")), false, &o.mw); gl.uniform_1_f32(p.u(U!("uDens")), dens);
+            gl.uniform_3_f32_slice(p.u(U!("uFog")), &fog); gl.uniform_3_f32_slice(p.u(U!("uCol")), &col);
+            gl.bind_vertex_array(Some(o.vao)); if o.no_color { gl.vertex_attrib_4_f32(3, 0.0, 0.0, 0.0, 1.0); }
+            gl.draw_arrays(glow::POINTS, 0, g.count); }
+        gl.bind_vertex_array(None); gl.depth_mask(true); gl.disable(glow::DEPTH_TEST); gl.disable(glow::BLEND);
+        gl.vertex_attrib_4_f32(3, 1.0, 1.0, 1.0, 1.0);
+        // 2. blur at half resolution: H then V, twice (the puffs are small enough that the curls survive it)
+        let (hw, hh) = ((lw + 1) / 2, (lh + 1) / 2); gl.bind_vertex_array(Some(self.quad_vao)); gl.viewport(0, 0, hw, hh);
+        let p = &self.dblur; gl.use_program(Some(p.prog)); gl.active_texture(glow::TEXTURE0); gl.uniform_1_i32(p.u(U!("tScene")), 0);
+        let passes = [(t.td, 1.0 / lw as f32, 1.0 / lh as f32, [1.0f32, 0.0], 0usize), (t.tb[0], 1.0 / hw as f32, 1.0 / hh as f32, [0.0, 1.0], 1),
+            (t.tb[1], 1.0 / hw as f32, 1.0 / hh as f32, [1.0, 0.0], 0), (t.tb[0], 1.0 / hw as f32, 1.0 / hh as f32, [0.0, 1.0], 1)];
+        for (src, tx, ty, dir, dst) in passes { gl.bind_framebuffer(glow::FRAMEBUFFER, Some(t.fb[dst])); gl.bind_texture(glow::TEXTURE_2D, Some(src));
+            gl.uniform_2_f32(p.u(U!("uTexel")), tx, ty); gl.uniform_2_f32(p.u(U!("uSrc")), dir[0], dir[1]); gl.draw_arrays(glow::TRIANGLES, 0, 3); }
+        // 3. composite over the scene
+        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(f1)); gl.viewport(0, 0, lw, lh); gl.enable(glow::BLEND); gl.blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
+        let p = &self.dcomp; gl.use_program(Some(p.prog));
+        gl.active_texture(glow::TEXTURE0); gl.bind_texture(glow::TEXTURE_2D, Some(t.tb[1])); gl.uniform_1_i32(p.u(U!("tDust")), 0);
+        gl.active_texture(glow::TEXTURE1); gl.bind_texture(glow::TEXTURE_2D, Some(t.td)); gl.uniform_1_i32(p.u(U!("tSharp")), 1); gl.active_texture(glow::TEXTURE0);
+        gl.uniform_2_f32(p.u(U!("uTexel")), 1.0 / hw as f32, 1.0 / hh as f32); gl.uniform_2_f32(p.u(U!("uSun")), fr.sun[0], fr.sun[1]); gl.uniform_1_f32(p.u(U!("uSunVis")), fr.sun_vis);
+        gl.uniform_3_f32_slice(p.u(U!("uDirColor")), &s.dir.0); gl.uniform_1_f32(p.u(U!("uDensScale")), t.scale); gl.uniform_2_f32(p.u(U!("uSrc")), lw as f32, lh as f32);
+        gl.draw_arrays(glow::TRIANGLES, 0, 3); gl.bind_vertex_array(None); gl.disable(glow::BLEND);
+        Ok(())
+    }
+    /// the dust layer's buffers: half-float if the GPU can render to it (dense clouds add up past 1), else 8-bit with a scale
+    unsafe fn ensure_dust_targets(&mut self, lw: i32, lh: i32) -> Result<(), String> {
+        if let Some(t) = &self.dtg { if t.w == lw && t.h == lh { return Ok(()); } }
+        let gl = &self.gl; let rb = self.tgt.unwrap().4;
+        if let Some(t) = self.dtg.take() { gl.delete_framebuffer(t.fd); gl.delete_texture(t.td); for k in 0..2 { gl.delete_framebuffer(t.fb[k]); gl.delete_texture(t.tb[k]); } }
+        let (hw, hh) = ((lw + 1) / 2, (lh + 1) / 2);
+        let mk = |w: i32, h: i32, f16: bool| -> Result<(glow::Framebuffer, glow::Texture), String> { let t = gl.create_texture()?; gl.bind_texture(glow::TEXTURE_2D, Some(t));
+            if f16 { gl.tex_image_2d(glow::TEXTURE_2D, 0, glow::RGBA16F as i32, w, h, 0, glow::RGBA, glow::HALF_FLOAT, None); } else { gl.tex_image_2d(glow::TEXTURE_2D, 0, glow::RGBA8 as i32, w, h, 0, glow::RGBA, glow::UNSIGNED_BYTE, None); }
+            for (k, v) in [(glow::TEXTURE_MIN_FILTER, glow::LINEAR), (glow::TEXTURE_MAG_FILTER, glow::LINEAR), (glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE), (glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE)] { gl.tex_parameter_i32(glow::TEXTURE_2D, k, v as i32); }
+            let f = gl.create_framebuffer()?; gl.bind_framebuffer(glow::FRAMEBUFFER, Some(f)); gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(t), 0); Ok((f, t)) };
+        let mut f16 = true; let (mut fd, mut td) = mk(lw, lh, true)?;
+        gl.framebuffer_renderbuffer(glow::FRAMEBUFFER, glow::DEPTH_ATTACHMENT, glow::RENDERBUFFER, Some(rb));
+        if gl.check_framebuffer_status(glow::FRAMEBUFFER) != glow::FRAMEBUFFER_COMPLETE { gl.delete_framebuffer(fd); gl.delete_texture(td); f16 = false;
+            let r = mk(lw, lh, false)?; fd = r.0; td = r.1; gl.framebuffer_renderbuffer(glow::FRAMEBUFFER, glow::DEPTH_ATTACHMENT, glow::RENDERBUFFER, Some(rb));
+            if gl.check_framebuffer_status(glow::FRAMEBUFFER) != glow::FRAMEBUFFER_COMPLETE { return Err("dust framebuffer incomplete".into()); } }
+        let (f0, t0) = mk(hw, hh, f16)?; let (f1, t1) = mk(hw, hh, f16)?;
+        self.dtg = Some(DustTargets { w: lw, h: lh, fd, td, fb: [f0, f1], tb: [t0, t1], scale: if f16 { 1.0 } else { 0.3 } });
+        Ok(())
+    }
     unsafe fn draw_inner(&mut self, screen: Option<glow::Framebuffer>, w: i32, h: i32) -> Result<(), String> {
         let fr = self.frame; let tq = self.tq_cur;
         if self.scene.is_none() || !fr.valid || fr.lw < 8 || fr.lh < 8 {
@@ -406,7 +470,7 @@ impl Renderer {
         gl.enable(glow::DEPTH_TEST); gl.depth_func(glow::LEQUAL);
         let pv = mul(&fr.proj, &fr.view); let planes = frustum(&pv);
         // visibility + sort keys
-        let mut opaque: Vec<(i32, f32, usize)> = vec![]; let mut transp: Vec<(i32, f32, usize)> = vec![];
+        let mut opaque: Vec<(i32, f32, usize)> = vec![]; let mut transp: Vec<(i32, f32, usize)> = vec![]; let mut dusts: Vec<usize> = vec![];
         for (i, o) in s.objs.iter().enumerate() {
             if !o.vis || (o.kind == ObjKind::Inst && o.count <= 0) { continue; }
             if let Some(only) = &self.only { if !only.contains(&i) { continue; } }
@@ -415,7 +479,7 @@ impl Renderer {
             if o.cull && !sphere_visible(&planes, c, r) { continue; }
             let vz = transform_point(&fr.view, c)[2];
             let m = &s.mats[o.mat];
-            if m.transparent { transp.push((o.ro, vz, i)); } else { opaque.push((o.ro, -vz, i)); }
+            if m.kind == MatKind::Dust { dusts.push(i); } else if m.transparent { transp.push((o.ro, vz, i)); } else { opaque.push((o.ro, -vz, i)); }
         }
         opaque.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)));
         transp.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)));
@@ -499,6 +563,8 @@ impl Renderer {
             calls += 1;
         } }
         gl.bind_vertex_array(None); gl.disable(glow::BLEND); gl.disable(glow::POLYGON_OFFSET_FILL); gl.disable(glow::CULL_FACE); gl.depth_mask(true);
+        if !dusts.is_empty() && !self.no_dust { self.dust_layer(&dusts, lw, lh, f1)?; }
+        let gl = &self.gl;
         let post_q = if let Some((_, b)) = tq { gl.end_query(0x88BF); gl.begin_query(0x88BF, b); true } else { false };   // benchmark: scene pass done, post + upscale next
         gl.disable(glow::DEPTH_TEST);
         let rays_on = fr.sun_vis > 0.01;
