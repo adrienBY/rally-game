@@ -50,6 +50,7 @@ import javax.microedition.khronos.opengles.GL10
  */
 class MainActivity : Activity() {
     private lateinit var web: WebView
+    private val updater by lazy { Updater(this) }
     private lateinit var root: FrameLayout
     private lateinit var assetLoader: WebViewAssetLoader
     /** the stage the page was last asked to build (to rebuild it if the page's process dies) */
@@ -283,6 +284,7 @@ class MainActivity : Activity() {
 
         web = makeWeb(nativeGl)
         if (NativeCore.loaded) audio.start()
+        updater.check()   // a newer build on GitHub? offer it
         root.addView(web, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         if (rtMode) web.visibility = View.INVISIBLE   // builds stages only; never drawn, never touched
         setContentView(root)
@@ -375,7 +377,7 @@ class MainActivity : Activity() {
         web.onPause(); glView?.onPause(); audio.stop(); super.onPause()
     }
     override fun onResume() {
-        super.onResume(); web.onResume(); glView?.onResume(); hideBars(); if (NativeCore.loaded) audio.start()
+        super.onResume(); web.onResume(); glView?.onResume(); hideBars(); if (NativeCore.loaded) audio.start(); updater.resume()
         if (!rtMode) web.evaluateJavascript("window.__appPause && window.__appPause(false)", null)
         startLoop(); main.removeCallbacks(thermalTick); main.post(thermalTick)
     }
