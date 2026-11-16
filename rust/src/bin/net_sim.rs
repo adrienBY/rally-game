@@ -8,6 +8,7 @@
 //!   yshk   the same for height (m/s2)
 //!   pkt/s, B/s  car traffic per stream, and MB an hour for a whole 4- and 8-player room (both directions, all headers)
 //! Env: SECS (90), LAT ms (60), JIT ms (25), LOSS (0.02), TCP=1 (broker relay: in order, stalls on loss), TICKJIT ms (4),
+//!      STAMPJIT ms (0: when in the frame the sender reads its clock; RAWSTAMP=1 stamps with that reading as before),
 //!      PLAYERS (4: sets the send-rate cap), THR=pos,head,speed[,height,body], STIFF (fade speed x), ACC=1 (acceleration
 //!      percentiles, shown vs real), DRV=1 (driver log), SPIKE=1 (list big jumps).
 use fogwood_core::net::proto::{self, CarSnap};
@@ -61,7 +62,7 @@ fn rms(v: &[f64]) -> f64 { (v.iter().map(|x| x * x).sum::<f64>() / v.len().max(1
 fn main() {
     let maps: Vec<String> = { let a: Vec<String> = std::env::args().skip(1).collect(); if a.is_empty() { vec!["lakes".into(), "snow".into(), "touge".into()] } else { a } };
     let secs = env("SECS", 90.0); let lat = env("LAT", 60.0) / 1000.0; let jit = env("JIT", 25.0) / 1000.0; let loss = env("LOSS", 0.02); let tcp = env("TCP", 0.0) > 0.0;
-    let tickjit = env("TICKJIT", 4.0) / 1000.0; let dt = 1.0 / 60.0;
+    let tickjit = env("TICKJIT", 4.0) / 1000.0; let dt = 1.0 / 60.0; let stampjit = env("STAMPJIT", 0.0) / 1000.0;
     println!("link: {:.0} ms +/- {:.0} ms, {:.0}% loss, {}   frame-timing jitter {:.0} ms", lat * 1000.0, jit * 1000.0, loss * 100.0, if tcp { "broker relay (TCP)" } else { "direct (UDP)" }, tickjit * 1000.0);
     println!("{:7} {:4} {:>13} {:>14} {:>13} {:>6} {:>6} {:>7} {:>7}", "map", "", "err m rms/p99", "shake p50/p99", "yshk p50/p99", "pkt/s", "B/s", "MB/h 4p", "MB/h 8p");
     for map in &maps {
@@ -103,11 +104,13 @@ fn main() {
             let mut net_rng = Rng(12345); let v1 = ver == "v1";
             // send: (arrival, seq, bytes)
             let mut flight: Vec<(f64, Vec<u8>)> = Vec::new(); let mut pol = Policy::default(); let mut thr = Thresholds::default(); if let Ok(v) = std::env::var("THR") { let q: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect(); thr.pos = q[0]; thr.head = q[1]; thr.speed = q[2]; if q.len() > 3 { thr.height = q[3]; thr.body = q[4]; } } let mut v1s = V1::default();
-            let mut seq = 0u8; let mut tcp_last = 0.0f64; let (mut pkts, mut bytes) = (0usize, 0usize);
+            let mut seq = 0u8; let mut tcp_last = 0.0f64; let mut stamp = smooth::ViewClock::default(); let (mut pkts, mut bytes) = (0usize, 0usize);
             // rate: a 4-player all-direct room under the budget
             let players = env("PLAYERS", 4.0); let rate = ((fogwood_core::net::BUDGET - 250.0) / (2.0 * (players - 1.0) * (proto::CAR3_LEN as f64 + 28.0))).clamp(4.0, 24.0) as f32; let beat = (3.0 / rate).clamp(0.4, 0.75);
             for (f, c) in truth.iter().enumerate() {
-                let t = f as f64 * dt; let mut s = snap_of(c); s.t = t;
+                // the sender's clock is read at a varying moment of each frame (STAMPJIT); the current netcode stamps on a
+                // vsync-paced clock locked to it instead
+                let t = f as f64 * dt; let mut s = snap_of(c); let raw = t + net_rng.f() * stampjit; s.t = if v1 || std::env::var("RAWSTAMP").is_ok() { raw } else { stamp.advance(raw, dt) };
                 let send = if v1 { v1s.due(&s) } else { s.a = pol.accel(s.u, dt as f32); pol.due(&s, g, &thr, rate, beat) };
                 if !send { continue; }
                 seq = seq.wrapping_add(1); let b = if v1 { proto::car2(7, seq, &s) } else { proto::car3(7, seq, &s) };

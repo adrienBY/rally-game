@@ -44,6 +44,9 @@ slides) and reports how often the tyres would smoke on the tarmac and how many p
 
 Online netcode check (no phones needed): `cargo run --release --bin net_sim` drives a car round each stage, sends it
 through a simulated link and reports how far off and how smooth the other player's car looks, plus data per hour.
+`cargo run --release --bin net_contact` races two phones door to door through the link and reports how contacts come
+across: how many real touches each victim's phone felt and how late, pushes with no real touch, and how much the other
+car is thrown about on screen around a contact (old netcode vs current).
 
 After editing the game: `python3 web/build.py` (rebuilds `web/dist/*.html` and the app's `assets/index.html`).
 

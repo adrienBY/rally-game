@@ -16,6 +16,16 @@ pub type Ground<'a> = Option<&'a dyn Fn(f32, f32) -> f32>;
 
 /// flags bit: the car is in the air (it flies ballistically instead of following the ground)
 pub const AIR: u8 = 1;
+/// flags bits 1-4: the owner's contact counter (mod 16). It moves on when the owner's phone starts settling a contact
+/// with another player's car and whenever a bump message from another phone reaches it (taken or not: either way its
+/// states now carry its own answer to that contact), so a receiver knows from which state on the bump is included.
+pub fn epoch(flags: u8) -> u8 { (flags >> 1) & 15 }
+pub fn with_epoch(flags: u8, e: u8) -> u8 { (flags & AIR) | (e & 15) << 1 }
+/// how long a bump we showed on another player's car is kept on their incoming states, waiting for their own phone's
+/// states to include it (s; normally a round trip)
+const PEND_LIFE: f64 = 0.8;
+/// a gap this long (s) without touching ends a contact
+const EPISODE_GAP: f64 = 0.3;
 const G: f32 = 9.81;
 /// body height above the ground at rest (the physics keeps the car's reference point ~7.5 cm above the terrain)
 const REST: f32 = 0.075;
@@ -100,8 +110,18 @@ pub struct Track {
     pub delay: f32, last_t: f64,
     /// most delay allowed (0: DELAY_CAP; negative: draw at the present, the old behaviour)
     pub cap: f32,
-    /// close to our car: drawn at the present (contacts need the true position more than smoothness)
-    pub near: bool,
+    /// how close to our car (0: far, 1: close): close cars are drawn at the present (contacts need the true position
+    /// more than smoothness). It eases in over a 25 m band, so the switch never visibly speeds the car up.
+    pub near: f32,
+    /// bumps this phone showed on the car (when, push), not yet in the owner's states; whether the owner's states have
+    /// taken the current contact in (then only its phone moves the car); when we last pushed it
+    pend: Vec<(f64, [f32; 5])>, acked: bool, last_nudge: f64,
+    /// the owner's contact counter in the newest state, and the time of the first state where it last moved on
+    ep_last: Option<u8>, ep_change_t: f64,
+    /// the moment the car was last drawn at (host clock, delay included)
+    shown_t: f64,
+    /// the netcode before contact counters (net_contact compares): bumps only on states already here, a hard 25 m switch
+    pub legacy: bool,
     /// the state the current offsets are measured from
     base: Option<CarSnap>,
     /// offsets, their rates and accelerations when the last state was taken in, when that was (view clock), how fast they fade
@@ -123,14 +143,29 @@ pub const FREE: f32 = 0.06;
 impl Track {
     pub fn push(&mut self, c: CarSnap) { self.push_at(c, c.t); }
     /// a state that arrived at host time `arrival`
-    pub fn push_at(&mut self, c: CarSnap, arrival: f64) {
+    pub fn push_at(&mut self, mut c: CarSnap, arrival: f64) {
+        // a bump we showed: once the owner's contact counter moves on, its states carry the bump (their phone settled it
+        // or took our push); until then every new state gets it too, so the car doesn't slide back and then get shoved again
+        let e = epoch(c.flags);
+        if self.ep_last.map(|p| p != e).unwrap_or(false) { self.ep_change_t = c.t;
+            // their phone took up a contact around here: the pushes we showed up to just after it are in this state
+            // (their own answer); for the rest of this contact their phone moves the car
+            if !self.legacy { self.pend.retain(|p| p.0 > c.t + 0.1); if self.shown_t - self.last_nudge <= EPISODE_GAP { self.acked = true; } } }
+        self.ep_last = Some(e);
+        self.pend.retain(|p| c.t - p.0 < PEND_LIFE);
+        for (t, d) in &self.pend {
+            // no answer for a while (a lost message, an older build): the shown push fades out over a few states
+            // rather than vanishing from one state to the next
+            let k = (((PEND_LIFE - (c.t - *t)) / 0.4).min(1.0)) as f32; let age = soft_age((*t - c.t) as f32);
+            c.vx += d[0] * k; c.vz += d[1] * k; c.r += d[2] * k; c.x += (d[3] - d[0] * age) * k; c.z += (d[4] - d[1] * age) * k; c.h -= d[2] * age * k;
+        }
         self.latest = Some(c);
         let k = self.queue.iter().position(|q| q.t > c.t).unwrap_or(self.queue.len()); self.queue.insert(k, c);
         while self.queue.len() > 24 { self.queue.pop_front(); }
         self.late.push_back(((arrival - c.t) as f32).clamp(0.0, 2.0)); while self.late.len() > 40 { self.late.pop_front(); }
     }
     /// lateness the prediction covers on its own (a fast link is drawn at the present: contacts stay exact)
-    fn free(&self) -> f32 { std::env::var("FW_FREE").ok().and_then(|v| v.parse().ok()).unwrap_or(FREE) }
+    fn free(&self) -> f32 { static F: std::sync::OnceLock<f32> = std::sync::OnceLock::new(); *F.get_or_init(|| std::env::var("FW_FREE").ok().and_then(|v| v.parse().ok()).unwrap_or(FREE)) }
     /// the delay the lateness asks for: its 90th percentile plus a frame
     fn want_delay(&self) -> f32 {
         let cap = if self.cap > 0.0 { self.cap } else if self.cap < 0.0 { return 0.0 } else { DELAY_CAP };
@@ -139,14 +174,24 @@ impl Track {
         (v[((v.len() - 1) as f32 * 0.9) as usize] + 0.017 - self.free()).clamp(0.0, cap)
     }
 
-    /// A bump this phone resolved: the push applies at once (like it does to an AI car), velocity included.
-    pub fn nudge(&mut self, d: [f32; 5], now: f64) {
-        let now = now - self.delay as f64;
+    /// A bump this phone resolved, at the moment the car was last drawn: the push shows at once (like it does on an AI
+    /// car), velocity included, and stays on the states still to come until the owner's own states include the contact.
+    /// Once they do, the owner's phone moves the car for the rest of that contact: false, nothing was applied.
+    pub fn nudge(&mut self, d: [f32; 5]) -> bool {
+        let now = self.shown_t;
+        // a new contact: if their phone has just taken one up itself, it is already answering this one
+        if now - self.last_nudge > EPISODE_GAP { self.pend.clear(); self.acked = self.ep_change_t > 0.0 && self.ep_change_t >= now - EPISODE_GAP; }
+        self.last_nudge = now;
+        if self.acked && !self.legacy { return false; }
         for c in [self.latest.as_mut(), self.base.as_mut()].into_iter().flatten().chain(self.queue.iter_mut()) {
             let age = soft_age((now - c.t) as f32);
             c.vx += d[0]; c.vz += d[1]; c.r += d[2]; c.x += d[3] - d[0] * age; c.z += d[4] - d[1] * age; c.h -= d[2] * age;
         }
+        if self.pend.len() < 64 && !self.legacy { self.pend.push((now, d)); }
+        true
     }
+    /// in a contact the owner's phone has already taken in: this phone must not move the car (it would twitch back next frame)
+    pub fn owned(&self) -> bool { !self.legacy && self.acked && self.shown_t - self.last_nudge <= EPISODE_GAP }
 
     /// The car as shown at host time `t` (call once per frame, with a smoothly advancing `t`).
     pub fn sample(&mut self, t: f64, g: Ground) -> Option<CarSnap> {
@@ -154,8 +199,10 @@ impl Track {
         // the delay eases toward what the link needs: at most 6% faster or 4% slower than real time, so the car never
         // visibly speeds up or brakes because of it
         let dtv = if self.last_t > 0.0 { (t - self.last_t).clamp(0.0, 0.1) as f32 } else { 0.0 }; self.last_t = t;
-        let want = if self.near { 0.0 } else { self.want_delay() }; self.delay += (want - self.delay).clamp(if self.near { -0.25 * dtv } else { -0.04 * dtv }, 0.06 * dtv);
-        let t = t - self.delay as f64;
+        // (closing in, it may catch up a little quicker: at most 10%)
+        let want = self.want_delay() * (1.0 - self.near.clamp(0.0, 1.0)); let down = if self.near <= 0.0 { 0.04 } else if self.legacy { 0.25 } else { 0.1 };
+        self.delay += (want - self.delay).clamp(-down * dtv, 0.06 * dtv);
+        let t = t - self.delay as f64; self.shown_t = t;
         // the newest state already due at that moment (the next ones wait for their turn)
         let k = self.queue.iter().rposition(|q| q.t <= t + 1e-4).unwrap_or(0);
         for _ in 0..k { self.queue.pop_front(); }
@@ -295,4 +342,33 @@ mod tests {
         assert!(worst_jump < 0.05, "jump {worst_jump}"); assert!(worst_acc < 25.0, "accel {worst_acc}");
         assert!((prev.x - 0.6).abs() < 0.02, "settled at {}", prev.x);
     }
+    /// a bump shown here stays on the car while the owner's states don't include it yet (no sliding back, no second
+    /// shove), and the owner's states take over once its contact counter moves on
+    #[test]
+    fn bumps_hold_until_the_owner_answers() {
+        let mut tr = Track::default(); tr.near = 1.0; let dt = 1.0 / 60.0; let mut last_tx = -1.0; let mut ep = 0u8; let mut pushed_at = None;
+        let mut worst_after = 0.0f32;
+        for f in 0..150 {
+            let t = f as f64 * dt;
+            // the owner answers 0.15 s after the contact: from then on its states carry a 2 m/s sideways push
+            let answered = pushed_at.map(|p: f64| t - 0.05 >= p + 0.15).unwrap_or(false); if answered { ep = 1; }
+            if t - last_tx >= 0.1 { last_tx = t; let ts = t - 0.05; let side = pushed_at.filter(|_| answered).map(|p| -2.0 * (ts - p) as f32).unwrap_or(0.0);
+                tr.push_at(CarSnap { t: ts, x: side, z: 20.0 * ts as f32, vz: 20.0, vx: if answered { -2.0 } else { 0.0 }, flags: with_epoch(0, ep), ..Default::default() }, t); }
+            let s = tr.sample(t, None).unwrap();
+            if f == 60 { assert!(tr.nudge([-2.0, 0.0, 0.0, 0.0, 0.0])); pushed_at = Some(t); }
+            if let Some(p) = pushed_at { if t > p + 0.05 { let want = -2.0 * (t - p) as f32; worst_after = worst_after.max((s.x - want).abs()); assert!(s.vx < -1.0, "slid back at {t:.3}: vx {}", s.vx); } }
+            if f == 110 { assert!(tr.owned() || t - tr.last_nudge > EPISODE_GAP); }
+        }
+        assert!(worst_after < 0.12, "off the pushed line by {worst_after}");
+    }
+    /// their phone already took up the contact: this phone doesn't push their car at all
+    #[test]
+    fn owner_first_means_hands_off() {
+        let mut tr = Track::default(); tr.near = 1.0;
+        tr.push_at(CarSnap { t: 0.9, z: 18.0, vz: 20.0, flags: with_epoch(0, 3), ..Default::default() }, 0.95);
+        tr.push_at(CarSnap { t: 0.95, z: 19.0, vz: 20.0, flags: with_epoch(0, 4), ..Default::default() }, 1.0);
+        tr.sample(1.0, None); assert!(!tr.nudge([-2.0, 0.0, 0.0, 0.0, 0.0])); assert!(tr.owned());
+        assert!(tr.sample(1.02, None).unwrap().vx.abs() < 1e-6);
+    }
+
 }

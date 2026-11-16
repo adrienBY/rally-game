@@ -17,12 +17,12 @@ const TILES: [(&str, &str, &str); 6] = [("on_st0", "FOREST", "GRAVEL"), ("on_st1
 fn short_name(m: &str) -> &'static str { MAPS.iter().position(|x| x.0 == m).map(|k| TILES[k].1).unwrap_or("STAGE") }
 fn stage_name(m: &str) -> &'static str { MAPS.iter().find(|x| x.0 == m).map(|x| x.1).unwrap_or("STAGE") }
 
-fn snap_of(c: &Car) -> CarSnap {
+fn snap_of(c: &Car, epoch: u8) -> CarSnap {
     CarSnap { t: 0.0, x: c.x as f32, y: c.y as f32, z: c.z as f32, h: c.h as f32, vx: c.vx as f32, vy: c.vy as f32, vz: c.vz as f32, r: c.r as f32, pitch: c.pitch as f32, roll: c.roll as f32,
         steer: c.steer as f32, u: c.u as f32, gear: c.gear as i8, rpm: c.rpm.clamp(0.0, 65000.0) as u16, d: [c.wh[0].d as f32, c.wh[1].d as f32, c.wh[2].d as f32, c.wh[3].d as f32],
         ang: [c.wh[0].ang as f32, c.wh[1].ang as f32, c.wh[2].ang as f32, c.wh[3].ang as f32],
         // airborne for more than a moment: receivers fly the car on a ballistic arc instead of gluing it to the ground
-        flags: if c.contacts == 0.0 && c.air_t > 0.06 { net::smooth::AIR } else { 0 }, a: 0.0 }
+        flags: net::smooth::with_epoch(if c.contacts == 0.0 && c.air_t > 0.06 { net::smooth::AIR } else { 0 }, epoch), a: 0.0 }
 }
 fn apply(c: &mut Car, s: &CarSnap, w: &World, dt: f64) {
     c.x = s.x as f64; c.y = s.y as f64; c.z = s.z as f64; c.h = s.h as f64; c.vx = s.vx as f64; c.vy = s.vy as f64; c.vz = s.vz as f64; c.r = s.r as f64;
@@ -53,34 +53,44 @@ impl Game {
             else if self.loading.is_none() { net::with(|s| s.start_in = None); self.online_begin(w, st); }
         }
         if self.race.online && self.state == State::Drive {
-            let mine = snap_of(&self.car);
+            let mine = snap_of(&self.car, self.race.epoch);
             let ids: Vec<(usize, u32)> = self.race.cars.iter().enumerate().filter_map(|(k, c)| c.remote.map(|id| (k, id))).collect();
             // both phones predict cars over the same terrain (the stage grids are identical everywhere)
             let ground = |x: f32, z: f32| w.height(x as f64, z as f64) as f32; let g: net::smooth::Ground = Some(&ground);
-            // cars within 25 m: drawn at the present and our states go out more precisely (contacts happen there)
-            let near: Vec<(u32, bool)> = ids.iter().map(|(k, id)| { let c = &self.race.cars[*k].car; (*id, (c.x - self.car.x).hypot(c.z - self.car.z) < 25.0) }).collect();
-            let any_near = near.iter().any(|n| n.1);
-            let snaps = net::with(|s| { for (id, n) in &near { s.set_near(*id, *n); } s.send_car(mine, dt, g, any_near); s.advance_view(dt); ids.iter().map(|(k, id)| (*k, s.remote(*id, g))).collect::<Vec<_>>() }).unwrap_or_default();
+            // closer than 40 m a car eases onto the present, fully there by 15 m, and our states go out more precisely
+            // within 30 m (contacts happen there)
+            let near: Vec<(u32, f32, bool)> = ids.iter().map(|(k, id)| { let c = &self.race.cars[*k].car; let d = (c.x - self.car.x).hypot(c.z - self.car.z);
+                let q = ((40.0 - d) / 25.0).clamp(0.0, 1.0); (*id, (q * q * (3.0 - 2.0 * q)) as f32, d < 30.0) }).collect();
+            let any_near = near.iter().any(|n| n.2);
+            // bumps: the pushes we gave other cars this phone settled last frame (summed per car) are shown on their cars
+            // and sent to their phones
+            let hits = std::mem::take(&mut self.race.hits);
+            let mut sum: Vec<(u32, [f64; 5], f64)> = Vec::new();
+            for (id, d, imp) in hits { match sum.iter_mut().find(|x| x.0 == id) { Some(x) => { for q in 0..5 { x.1[q] += d[q]; } x.2 = x.2.max(imp); } None => sum.push((id, d, imp)) } }
+            if std::env::var("FW_DEBUG").is_ok() { for (id, d, imp) in &sum { eprintln!("hit-out t={:.2} to {:08x} dv=({:.2},{:.2}) dr={:.2} imp={:.2}", self.race.t, id, d[0], d[1], d[2], imp); } }
+            let (snaps, owned, incoming) = net::with(|s| {
+                for (id, d, imp) in &sum { s.bump(*id, d.map(|v| v as f32), *imp as f32); }
+                for (id, n, _) in &near { s.set_near(*id, *n); } s.send_car(mine, dt, g, any_near); s.advance_view(dt);
+                (ids.iter().map(|(k, id)| (*k, s.remote(*id, g))).collect::<Vec<_>>(), ids.iter().map(|(k, id)| (*k, s.owned(*id))).collect::<Vec<_>>(), s.take_hits())
+            }).unwrap_or_default();
             for (k, sn) in snaps { if let Some(sn) = sn { let mut c = self.race.cars[k].car; apply(&mut c, &sn, w, dt); self.race.cars[k].car = c; } }
+            for (k, o) in owned { self.race.cars[k].owned = o; }
+            // pushes other phones gave our car: taken (in the race step, with the other contacts) unless this phone settled
+            // that contact itself a moment ago
+            for (from, d, imp) in incoming {
+                let Some(k) = self.race.cars.iter().position(|c| c.remote == Some(from)) else { continue };
+                if std::env::var("FW_DEBUG").is_ok() { eprintln!("hit-in t={:.2} from {:08x} dv=({:.2},{:.2}) imp={:.2} local={:.2}s ago", self.race.t, from, d[0], d[1], imp, self.race.t - self.race.cars[k].contact_t); }
+                // either way our states from now on carry our own answer to that contact: say so (see net::smooth::epoch)
+                self.race.epoch = self.race.epoch.wrapping_add(1) & 15;
+                if self.race.t - self.race.cars[k].contact_t < 0.35 { continue; }
+                self.race.net_hits.push((k, d.map(|v| v as f64), imp as f64));
+            }
             // dropped out: their car silent for 3 s (cars report at least every 0.75 s; this also covers going back to the menu) or gone from the room
             let silence: Vec<(usize, Option<f64>)> = net::with(|s| ids.iter().map(|(k, id)| (*k, s.car_silence(*id))).collect()).unwrap_or_default();
             let names: Vec<(u32, String)> = net::with(|s| s.peers.values().map(|p| (p.id, p.name.clone())).collect()).unwrap_or_default();
             for c in self.race.cars.iter_mut() { if let Some(n) = c.remote.and_then(|id| names.iter().find(|n| n.0 == id)) { if n.1 != "?" && n.1 != c.name { c.name = n.1.clone(); } } }
             for (k, q) in silence { let gone = q.map(|t| t > 3.0).unwrap_or(true); let c = &mut self.race.cars[k];
                 if gone && !c.left { c.left = true; if !c.finished { let m = format!("{} DROPPED OUT", c.name.to_uppercase()); self.flash_msg(&m, 2.0); } } else if !gone && c.left { c.left = false; } }
-            // bumps: send the pushes we gave other cars (summed per car), apply the pushes others gave ours
-            let hits = std::mem::take(&mut self.race.hits);
-            let mut sum: Vec<(u32, [f64; 5], f64)> = Vec::new();
-            for (id, d, imp) in hits { match sum.iter_mut().find(|x| x.0 == id) { Some(x) => { for q in 0..5 { x.1[q] += d[q]; } x.2 = x.2.max(imp); } None => sum.push((id, d, imp)) } }
-            if std::env::var("FW_DEBUG").is_ok() { for (id, d, imp) in &sum { eprintln!("hit-out t={:.2} to {:08x} dv=({:.2},{:.2}) dr={:.2} imp={:.2}", self.race.t, id, d[0], d[1], d[2], imp); } }
-            // each phone settles its own car's bumps (race::contacts); the other car's share is only shown here
-            let incoming = net::with(|s| { for (id, d, _) in &sum { s.nudge(*id, d.map(|v| v as f32)); } s.hits_in.clear(); Vec::<(u32, [f32; 5], f32)>::new() }).unwrap_or_default();
-            for (from, d, imp) in incoming {
-                if !self.race.cars.iter().any(|c| c.remote == Some(from)) { continue; }
-                if std::env::var("FW_DEBUG").is_ok() { eprintln!("hit-in t={:.2} from {:08x} dv=({:.2},{:.2}) imp={:.2}", self.race.t, from, d[0], d[1], imp); }
-                let car = &mut self.car; car.vx += d[0] as f64; car.vz += d[1] as f64; car.r += d[2] as f64; car.x += d[3] as f64; car.z += d[4] as f64;
-                if imp > 0.3 { car.impact = car.impact.max(imp as f64); self.car_hit = self.car_hit.max(imp as f64); }
-            }
         }
     }
 
@@ -93,7 +103,7 @@ impl Game {
         self.close_settings();
         self.state = State::Drive; self.lap = 1; self.started = false; self.g_t = 0.0; self.flags = [false; 3]; self.car_audio_on = true;
         let np = self.np; let rc = &mut self.race; rc.on = true; rc.online = true; rc.phase = race::Phase::Grid; rc.t = 0.0; rc.done_t = 0.0; rc.note.clear(); rc.cars.clear(); rc.pos = 0; rc.order.clear();
-        rc.laps = st.laps.max(1) as i64; rc.go_at = st.go_at; rc.me_id = me; rc.hits.clear();
+        rc.laps = st.laps.max(1) as i64; rc.go_at = st.go_at; rc.me_id = me; rc.hits.clear(); rc.net_hits.clear(); net::with(|s| s.take_hits());
         let mut colour = 0usize;
         for (id, k) in &st.slots {
             let (i, lat) = if std::env::var("FW_OVERLAP").is_ok() { let (i, _) = race::slot(np, 0); (i, -0.6 + *k as f64 * 1.2) } else { race::slot(np, *k as usize) };   // FW_OVERLAP: test hook, cars start touching
