@@ -1,0 +1,16 @@
+name: wasm std (dev helper)
+on: { workflow_dispatch: {}, push: { branches: [wasm-port], paths: [".github/workflows/wasm-std.yml"] } }
+permissions: { contents: write }
+jobs:
+  std:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dtolnay/rust-toolchain@1.97.0
+        with: { targets: wasm32-unknown-unknown }
+      - run: |
+          rustc --version
+          D=$(rustc --print sysroot)/lib/rustlib
+          tar -C $D -cJf wasm32-std.tar.xz wasm32-unknown-unknown
+          ls -l wasm32-std.tar.xz
+      - uses: softprops/action-gh-release@v2
+        with: { tag_name: dev-wasm-std, name: dev wasm std, prerelease: true, files: wasm32-std.tar.xz }
