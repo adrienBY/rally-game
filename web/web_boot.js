@@ -47,7 +47,12 @@ const fallback = () => { const s = document.createElement("script"); s.type = "m
   const live = new Set();   // pointers down: the first one also clears anything whose lift was lost (3)
   addEventListener("blur", () => { live.clear(); fw.web_touch(5, 0, 0, 0); });
   document.addEventListener("visibilitychange", () => { if (document.hidden) { live.clear(); fw.web_touch(5, 0, 0, 0); } });
-  const start = () => { if (!sound) { sound = true; window.__audioOn = true; try { window.__SHARED && window.__SHARED.start(); } catch (_) {} } };
+  // iPhone: Web Audio is silenced by the ring/silent switch unless the page plays as media: ask for the playback session
+  // (iOS 17+), and for older versions keep a silent <audio> loop going, which switches the page to the media category
+  const unmute = () => { try { if (navigator.audioSession) navigator.audioSession.type = "playback"; } catch (_) {}
+    try { const el = document.createElement("audio"); el.setAttribute("playsinline", ""); el.loop = true;
+      el.src = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA="; el.volume = 0.01; el.play().catch(() => {}); window.__fwSilent = el; } catch (_) {} };
+  const start = () => { if (!sound) { sound = true; unmute(); window.__audioOn = true; try { window.__SHARED && window.__SHARED.start(); } catch (_) {} } };
   const send = (a, id, x, y) => { if (a === 0) { if (live.size === 0) a = 3; live.add(id); } else if (a === 2) live.delete(id); fw.web_touch(a, id, x * d(), y * d()); };
   // fingers: Touch Events with preventDefault, so Safari never turns a press into a scroll, zoom, selection or
   // edge gesture (it cancels the touch when it does: steering and pedals let go by themselves)

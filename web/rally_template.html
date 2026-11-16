@@ -1179,13 +1179,13 @@ if (RAMP.i >= 0) {
     g.fillStyle = "#8e3b2a"; g.fillRect(9, 0, 1, 32); g.fillRect(22, 0, 1, 32); });
   const baleMat = new THREE.MeshLambertMaterial({ map: strawTex });
   const chevI = [], postI = [], baleI = [];
-  for (let i = 0; i < NP; i += 5) {
-    if (VCURVE[i] > 19 || tunAt(i) || inVillage(i)) continue;
+  for (let i = 0; i < NP; i += 7) {
+    if (VCURVE[i] > 17 || tunAt(i) || inVillage(i)) continue;
     const a = TAN[(i + NP - 10) % NP], b = TAN[(i + 10) % NP], turn = a[0] * b[1] - a[1] * b[0], side = turn > 0 ? -1 : 1;
     const p = PATH[i], tn = TAN[i], x = p[0] - tn[1] * (ROAD + 1.7) * side, z = p[1] + tn[0] * (ROAD + 1.7) * side;
     tmpO.position.set(x, height(x, z) + 1.1, z); tmpO.rotation.set(0, Math.atan2(-tn[0], -tn[1]), 0); tmpO.scale.set(side < 0 ? -1 : 1, 1, 1); tmpO.updateMatrix(); chevI.push(tmpO.matrix.clone());
     tmpO.position.set(x, height(x, z) + 0.45, z); tmpO.rotation.set(0, 0, 0); tmpO.scale.set(1, 1, 1); tmpO.updateMatrix(); postI.push(tmpO.matrix.clone());
-    if (!SNOW && VCURVE[i] < 13 && i % 15 === 0) for (let q = -1; q <= 1; q++) {
+    if (!SNOW && VCURVE[i] < 13 && i % 14 === 0) for (let q = -1; q <= 1; q++) {
       const k2 = (i + q * 3 + NP) % NP, pp = PATH[k2], tt = TAN[k2], bx = pp[0] - tt[1] * (ROAD + 1.0) * side, bz = pp[1] + tt[0] * (ROAD + 1.0) * side;
       tmpO.position.set(bx, height(bx, bz) + 0.6, bz); tmpO.rotation.set(0, Math.atan2(tt[0], tt[1]) + Math.PI / 2, 0); tmpO.scale.set(1, 1, 1); tmpO.updateMatrix(); baleI.push(tmpO.matrix.clone());
       obstacles.push({ x: bx, z: bz, r: 0.6, m: 3 }); }
@@ -1210,12 +1210,12 @@ if (RAMP.i >= 0) {
       tmpO.position.set(x, gy + 0.95, z); tmpO.rotation.set(0, 0, 0); tmpO.scale.set(1, 1, 1); tmpO.updateMatrix(); poleI.push(tmpO.matrix.clone()); obstacles.push({ x, z, r: 0.12 }); };
     let lastBend = -999;
     for (let i = 30; i < NP; i += 3) {   // the start of every tight bend gets an arrow 50 m before it (and another 25 m before the really tight ones)
-      if (VCURVE[i] > 14 || VCURVE[(i + NP - 20) % NP] < 18 || i - lastBend < 90) continue;
+      if (VCURVE[i] > 10 || VCURVE[(i + NP - 20) % NP] < 18 || i - lastBend < 160) continue;   // only the really tight bends, one sign each
       const a = TAN[(i + NP - 2) % NP], b = TAN[(i + 18) % NP], left = a[0] * b[1] - a[1] * b[0] > 0;
-      for (const d of VCURVE[i] < 10 ? [50, 25] : [50]) { const k = (i - d + NP) % NP; if (tunAt(k) || inVillage(k)) continue; place(bendI, k, 1, !left); place(bendI, k, -1, !left); }
+      const k = (i - 45 + NP) % NP; if (!tunAt(k) && !inVillage(k)) place(bendI, k, left ? -1 : 1, !left);   // on the outside of the bend
       lastBend = i; }
-    for (const j of JUMPS) for (const d of [70, 35]) { const k = (j.i - d + NP) % NP; if (tunAt(k)) continue; place(jumpI, k, 1, false); place(jumpI, k, -1, false); }
-    if (RAMP.i >= 0) for (const d of [80, 40]) { const k = (RAMP.i - RAMP.L - d + NP) % NP; place(jumpI, k, 1, false); place(jumpI, k, -1, false); }
+    for (const j of JUMPS) { const k = (j.i - 55 + NP) % NP; if (!tunAt(k)) place(jumpI, k, 1, false); }   // one sign per jump
+    if (RAMP.i >= 0) { const k = (RAMP.i - RAMP.L - 60 + NP) % NP; place(jumpI, k, 1, false); }
     if (bendI.length) instanced(dGeo, bendM, bendI, white(bendI.length), 320);
     if (jumpI.length) instanced(dGeo, jumpM, jumpI, white(jumpI.length), 320);
     if (poleI.length) instanced(poleG, postM, poleI, white(poleI.length), 320);
