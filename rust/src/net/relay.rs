@@ -10,7 +10,7 @@ use std::sync::mpsc::{channel, Receiver};
 
 /// the relay (Cloudflare Worker, relay-cf/): clients connect to URL/<room code>. FW_RELAY overrides on desktop builds:
 /// a ws:// or wss:// base URL, or "udp:host:port" for the UDP relay in rust/relay.
-pub const URL: &str = "wss://fogwood-relay.adrienby.workers.dev/ws";
+pub const URL: &str = "wss://fogwood-relay.adrien-paul-bonnay.workers.dev/ws";
 /// keep-alive / re-join interval (s), and how long without a word before the relay counts as down
 const JOIN_EVERY: f64 = 4.0;
 const DOWN_AFTER: f64 = 9.0;
