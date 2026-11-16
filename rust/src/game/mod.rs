@@ -151,7 +151,7 @@ pub struct Game {
     shadow_op: f32, pub flash: f64, pub speed_k: f64, clock: web_time::Instant, pub last_pidx: usize,
     /// test hook: the demo driver drives your car too
     pub auto: bool,
-    tile_lod: Vec<usize>, fps30: Option<bool>, pub shade_dim: f64,
+    tile_lod: Vec<usize>, fps30: Option<bool>, hay_t: f64, pub shade_dim: f64,
     /// benchmark: ms spent in each part of the last tick (physics, race, sound, fx, camera, rivals, world, hud) and whether the HUD was uploaded
     pub prof: [f32; 8], pub hud_uploaded: bool, pub bench_req: bool, pub bench_secs: Option<u32>, pub d_live: usize,
     /// driving telemetry (TEL button) and a note for its next row
@@ -204,7 +204,7 @@ impl Game {
             sf_pos, sf_init: false, boats,
             sun_vis: 0.0, expo: 1.0, dim: 1.0, expo_tun: false, sun_uv: [0.5, 0.8],
             hap_t: 0.0, hap_cool: 0.0, aud_wet: 0.0, car_audio_on: false, race_was: false, pop_cool: 0.0, fps_acc: 0.0, fps_n: 0, hud_tick: false, hud: hud::Canvas::new(320, 180),
-            shadow_op: -1.0, flash: 0.0, speed_k: 0.0, clock: web_time::Instant::now(), last_pidx: 0, auto: false, tile_lod: Vec::new(), fps30: None, shade_dim: 1.0, prof: [0.0; 8], hud_uploaded: false, bench_req: false, bench_secs: None, d_live: 0, tel: None, tel_note: String::new(), set: Default::default(), rt,
+            shadow_op: -1.0, flash: 0.0, speed_k: 0.0, clock: web_time::Instant::now(), last_pidx: 0, auto: false, tile_lod: Vec::new(), fps30: None, hay_t: 0.0, shade_dim: 1.0, prof: [0.0; 8], hud_uploaded: false, bench_req: false, bench_secs: None, d_live: 0, tel: None, tel_note: String::new(), set: Default::default(), rt,
         };
         if let Some(e) = bridge::lock().as_ref() { g.place_at(&e.world, 6); }
         g
@@ -429,6 +429,10 @@ impl Game {
                 { let (env, c) = (self.dust_env, self.car); self.dust.landing(w, &env, &c, v as f32); } }
             self.car.land_v = 0.0; }
         if self.car.impact > 2.5 { self.shake = (self.car.impact / 10.0).min(1.0); }
+        // straw bales: a soft shove, a light buzz, hay everywhere
+        if self.car.hay > 1.0 { let c = self.car; self.dust.hay(w, &c, dt as f32); self.shake = self.shake.max((c.hay / 60.0).min(0.25));
+            if self.hay_t <= 0.0 && self.state == State::Drive { self.buzz("land", ((c.hay - 1.0) / 20.0).clamp(0.15, 0.6)); self.hay_t = 0.4; } }
+        self.hay_t -= dt;
         if self.state == State::Drive {
             self.hap_cool = (self.hap_cool - dt).max(0.0);
             if self.car.impact > 1.5 && self.hap_cool <= 0.0 { let s = clamp(self.car.impact / 9.0, 0.25, 1.0); self.buzz("impact", s); self.hap_cool = 0.12; }

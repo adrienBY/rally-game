@@ -270,6 +270,24 @@ impl Dust {
             else { let (sz, lf, br) = (self.r(0.35, 0.6), self.r(2.0, 3.6) * env.dry, self.r(0.9, 1.05)); self.emit(DUST, p, vel, sz, lf, env.alpha, br, 0.2, gy); } }
     }
 
+    /// A car ploughing into straw bales: loose strands and clumps thrown up and forward, tumbling down, and a faint
+    /// pale chaff haze. `dt`: this frame; the faster the car, the more straw flies.
+    pub fn hay(&mut self, w: &World, c: &Car, dt: f32) {
+        let sp = c.hay as f32; let n = ((sp * 5.0 + 20.0) * dt * 60.0 / 10.0).clamp(1.0, 14.0) as usize;
+        let (sh, ch) = ((c.h as f32).sin(), (c.h as f32).cos()); let gy = w.height(c.x, c.z) as f32;
+        const STRAW: [[f32; 3]; 4] = [[0.86, 0.72, 0.38], [0.78, 0.62, 0.30], [0.93, 0.83, 0.52], [0.66, 0.52, 0.26]];
+        for _ in 0..n {
+            let off = self.r(-1.0, 1.4); let side = self.r(-0.9, 0.9);
+            let p = [c.x as f32 + sh * off + ch * side, gy + self.r(0.4, 1.1), c.z as f32 + ch * off - sh * side];
+            let k = (sp * self.r(0.25, 0.6)).min(9.0);
+            let v = [c.vx as f32 * 0.35 + self.r(-1.0, 1.0) * k * 0.5 + sh * k * 0.4, self.r(1.5, 4.0) + k * 0.25, c.vz as f32 * 0.35 + self.r(-1.0, 1.0) * k * 0.5 + ch * k * 0.4];
+            let rgb = STRAW[(self.f() * 4.0) as usize % 4]; let (sz, lf) = (self.r(0.04, 0.11), self.r(1.6, 3.2));
+            self.speck(CHUNK, p, v, sz, lf, rgb, gy);
+        }
+        if self.f() < 0.5 { let p = [c.x as f32 + sh * 1.2, gy + 0.6, c.z as f32 + ch * 1.2]; let v = [c.vx as f32 * 0.3, self.r(0.4, 1.0), c.vz as f32 * 0.3];
+            let (sz, lf) = (self.r(0.5, 0.9), self.r(1.2, 2.2)); self.emit(DUST, p, v, sz, lf, 0.35, 1.15, 0.05, gy); }
+    }
+
     /// move everything: air (wind, the cars' flow fields, turbulence), drag, gravity, ground, growth and thinning
     pub fn step(&mut self, w: &World, bodies: &[Body], gust: f32, dt: f32) {
         self.t += dt; self.frame = self.frame.wrapping_add(1); let t = self.t;

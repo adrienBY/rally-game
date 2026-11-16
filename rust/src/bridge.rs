@@ -39,7 +39,10 @@ pub fn with_grid<R>(f: impl FnOnce(&[u8]) -> R) -> Option<R> { ENGINE.lock().unw
 
 /// "x,z,r,x,z,r,..."
 pub fn set_obstacles(csv: &str) -> i32 {
-    let v = parse_csv(csv); let list: Vec<Obstacle> = v.chunks_exact(3).map(|c| Obstacle { x: c[0], z: c[1], r: c[2] }).collect();
+    // "v4;x,z,r,m,..." carries the material (3: straw bale, soft); plain "x,z,r,..." the older way
+    let list: Vec<Obstacle> = match csv.strip_prefix("v4;") {
+        Some(rest) => parse_csv(rest).chunks_exact(4).map(|c| Obstacle { x: c[0], z: c[1], r: c[2], soft: c[3] == 3.0 }).collect(),
+        None => parse_csv(csv).chunks_exact(3).map(|c| Obstacle { x: c[0], z: c[1], r: c[2], soft: false }).collect() };
     let n = list.len() as i32;
     if let Some(e) = ENGINE.lock().unwrap().as_mut() { e.obstacles = Obstacles::new(&list); n } else { -1 }
 }

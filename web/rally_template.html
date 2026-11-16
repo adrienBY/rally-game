@@ -1172,15 +1172,20 @@ if (RAMP.i >= 0) {
     for (const ox of [3, 13, 23]) for (let r = 0; r < 12; r++) g.fillRect(ox + Math.abs(r - 6), 2 + r, 3, 1); });
   const chevMat = new THREE.MeshLambertMaterial({ map: chev, side: THREE.DoubleSide }), boardGeo = new THREE.PlaneGeometry(1.6, 0.8);
   const baleGeo = new THREE.CylinderGeometry(0.62, 0.62, 1.2, 10); baleGeo.rotateZ(Math.PI / 2);
-  const baleMat = new THREE.MeshLambertMaterial({ color: 0xc7a75a, map: groundTex });
+  // straw: strands running round the bale in a few golden shades, darker gaps, two twine bands
+  const strawTex = textTex(32, 32, (g) => { const C = ["#d9b866", "#c9a453", "#e6c97d", "#b8914a", "#a07c3c"];
+    for (let y = 0; y < 32; y++) for (let x = 0; x < 32; ) { const L = 2 + ((x * 7 + y * 13) % 5); g.fillStyle = C[(x * 3 + y * 5 + ((x * y) % 7)) % 5]; g.fillRect(x, y, L, 1); x += L; }
+    g.fillStyle = "#7a5a2a"; for (let k = 0; k < 40; k++) g.fillRect((k * 11) % 32, (k * 17) % 32, 2, 1);
+    g.fillStyle = "#8e3b2a"; g.fillRect(9, 0, 1, 32); g.fillRect(22, 0, 1, 32); });
+  const baleMat = new THREE.MeshLambertMaterial({ map: strawTex });
   const chevI = [], postI = [], baleI = [];
-  for (let i = 0; i < NP; i += 7) {
-    if (VCURVE[i] > 17 || tunAt(i) || inVillage(i)) continue;
+  for (let i = 0; i < NP; i += 5) {
+    if (VCURVE[i] > 19 || tunAt(i) || inVillage(i)) continue;
     const a = TAN[(i + NP - 10) % NP], b = TAN[(i + 10) % NP], turn = a[0] * b[1] - a[1] * b[0], side = turn > 0 ? -1 : 1;
     const p = PATH[i], tn = TAN[i], x = p[0] - tn[1] * (ROAD + 1.7) * side, z = p[1] + tn[0] * (ROAD + 1.7) * side;
     tmpO.position.set(x, height(x, z) + 1.1, z); tmpO.rotation.set(0, Math.atan2(-tn[0], -tn[1]), 0); tmpO.scale.set(side < 0 ? -1 : 1, 1, 1); tmpO.updateMatrix(); chevI.push(tmpO.matrix.clone());
     tmpO.position.set(x, height(x, z) + 0.45, z); tmpO.rotation.set(0, 0, 0); tmpO.scale.set(1, 1, 1); tmpO.updateMatrix(); postI.push(tmpO.matrix.clone());
-    if (!SNOW && VCURVE[i] < 13 && i % 14 === 0) for (let q = -1; q <= 1; q++) {
+    if (!SNOW && VCURVE[i] < 13 && i % 15 === 0) for (let q = -1; q <= 1; q++) {
       const k2 = (i + q * 3 + NP) % NP, pp = PATH[k2], tt = TAN[k2], bx = pp[0] - tt[1] * (ROAD + 1.0) * side, bz = pp[1] + tt[0] * (ROAD + 1.0) * side;
       tmpO.position.set(bx, height(bx, bz) + 0.6, bz); tmpO.rotation.set(0, Math.atan2(tt[0], tt[1]) + Math.PI / 2, 0); tmpO.scale.set(1, 1, 1); tmpO.updateMatrix(); baleI.push(tmpO.matrix.clone());
       obstacles.push({ x: bx, z: bz, r: 0.6, m: 3 }); }
@@ -1188,6 +1193,33 @@ if (RAMP.i >= 0) {
   const white = (n) => Array.from({ length: n }, () => new THREE.Color(1, 1, 1));
   instanced(boardGeo, chevMat, chevI, white(chevI.length), 320); instanced(new THREE.BoxGeometry(0.08, 1.1, 0.08), postM, postI, white(postI.length), 320);
   if (baleI.length) instanced(baleGeo, baleMat, baleI, white(baleI.length), 320);
+  { // warning signs (yellow diamonds, pictograms, no words): a bend arrow ahead of tight bends, a crest with a flying car before jumps
+    const sign = (draw) => textTex(32, 32, (g) => { g.fillStyle = "#151515"; g.fillRect(0, 0, 32, 32); g.fillStyle = "#f2c230"; g.fillRect(2, 2, 28, 28); g.fillStyle = "#151515"; draw(g); });
+    const bendTex = sign((g) => { // an arrow coming up and turning left (mirrored for right-handers)
+      g.fillRect(18, 13, 3, 13); g.fillRect(12, 11, 9, 3);
+      for (let r = 0; r <= 6; r++) g.fillRect(6 + r, 12 - r, 1, 1 + 2 * r); });
+    const jumpTex = sign((g) => { // a crest with a car leaping off it
+      for (let x = 4; x < 28; x++) { const h = Math.round(7 * Math.exp(-((x - 13) ** 2) / 30)); g.fillRect(x, 25 - h, 1, h + 2); }
+      g.fillRect(17, 8, 9, 3); g.fillRect(19, 6, 5, 2); g.fillRect(17, 11, 2, 2); g.fillRect(24, 11, 2, 2); });
+    const bendM = new THREE.MeshLambertMaterial({ map: bendTex, side: THREE.DoubleSide }), jumpM = new THREE.MeshLambertMaterial({ map: jumpTex, side: THREE.DoubleSide });
+    const dGeo = new THREE.PlaneGeometry(1.15, 1.15), poleG = new THREE.BoxGeometry(0.08, 1.9, 0.08);
+    const bendI = [], jumpI = [], poleI = [];
+    const place = (list, i, side, mirror) => { const p = PATH[i], tn = TAN[i], x = p[0] - tn[1] * (ROAD + 1.9) * side, z = p[1] + tn[0] * (ROAD + 1.9) * side, gy = height(x, z);
+      if (pathDist(x, z) < ROAD + 0.8) return;
+      tmpO.position.set(x, gy + 2.0, z); tmpO.rotation.set(0, Math.atan2(-tn[0], -tn[1]), Math.PI / 4); tmpO.scale.set(mirror ? -1 : 1, 1, 1); tmpO.updateMatrix(); list.push(tmpO.matrix.clone());
+      tmpO.position.set(x, gy + 0.95, z); tmpO.rotation.set(0, 0, 0); tmpO.scale.set(1, 1, 1); tmpO.updateMatrix(); poleI.push(tmpO.matrix.clone()); obstacles.push({ x, z, r: 0.12 }); };
+    let lastBend = -999;
+    for (let i = 30; i < NP; i += 3) {   // the start of every tight bend gets an arrow 50 m before it (and another 25 m before the really tight ones)
+      if (VCURVE[i] > 14 || VCURVE[(i + NP - 20) % NP] < 18 || i - lastBend < 90) continue;
+      const a = TAN[(i + NP - 2) % NP], b = TAN[(i + 18) % NP], left = a[0] * b[1] - a[1] * b[0] > 0;
+      for (const d of VCURVE[i] < 10 ? [50, 25] : [50]) { const k = (i - d + NP) % NP; if (tunAt(k) || inVillage(k)) continue; place(bendI, k, 1, !left); place(bendI, k, -1, !left); }
+      lastBend = i; }
+    for (const j of JUMPS) for (const d of [70, 35]) { const k = (j.i - d + NP) % NP; if (tunAt(k)) continue; place(jumpI, k, 1, false); place(jumpI, k, -1, false); }
+    if (RAMP.i >= 0) for (const d of [80, 40]) { const k = (RAMP.i - RAMP.L - d + NP) % NP; place(jumpI, k, 1, false); place(jumpI, k, -1, false); }
+    if (bendI.length) instanced(dGeo, bendM, bendI, white(bendI.length), 320);
+    if (jumpI.length) instanced(dGeo, jumpM, jumpI, white(jumpI.length), 320);
+    if (poleI.length) instanced(poleG, postM, poleI, white(poleI.length), 320);
+  }
   { // edge marker posts every 20 m: they whip past and sell the speed
     const pg = new THREE.BoxGeometry(0.11, 1.0, 0.11); pg.translate(0, 0.5, 0);
     const cg = new THREE.BoxGeometry(0.115, 0.22, 0.115); cg.translate(0, 0.86, 0);
@@ -2002,8 +2034,8 @@ window.__merged = mergeStatic();
 /* obstacle grid (every prop above has registered its collider by now) */
 const OB = new Map(), OC = 8, okey = (i, j) => i * 4096 + j;
 for (const o of obstacles) { const k = okey(Math.floor(o.x / OC), Math.floor(o.z / OC)); if (!OB.has(k)) OB.set(k, []); OB.get(k).push(o); }
-if (gridsNative) { try { const oc = new Array(obstacles.length * 3); obstacles.forEach((o, i) => { oc[i * 3] = o.x; oc[i * 3 + 1] = o.z; oc[i * 3 + 2] = o.r; });
-  physNative = NATIVE.obstacles(oc.join(",")) >= 0; } catch (e) { console.warn("native physics off", e); } }
+if (gridsNative) { try { const oc = new Array(obstacles.length * 4); obstacles.forEach((o, i) => { oc[i * 4] = o.x; oc[i * 4 + 1] = o.z; oc[i * 4 + 2] = o.r; oc[i * 4 + 3] = o.m || 0; });
+  physNative = NATIVE.obstacles("v4;" + oc.join(",")) >= 0; /* the material rides along: straw bales (3) are soft */ } catch (e) { console.warn("native physics off", e); } }
 
 /* ================= post: god rays + HUD + grade + dither ================= */
 const postScene = new THREE.Scene(), postCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);

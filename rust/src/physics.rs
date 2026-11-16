@@ -70,7 +70,7 @@ pub struct Wheel { pub lx: f64, pub lz: f64, pub f: bool, pub w: f64, pub ang: f
 pub struct Car {
     pub x: f64, pub z: f64, pub h: f64, pub vx: f64, pub vz: f64, pub r: f64, pub steer: f64, pub gear: f64, pub rpm: f64, pub shift_t: f64, pub rev_t: f64,
     pub y: f64, pub vy: f64, pub pitch: f64, pub roll: f64, pub pr: f64, pub rr: f64, pub ax_f: f64, pub ay_f: f64, pub u: f64, pub vl: f64, pub slide: f64,
-    pub on_road: bool, pub contacts: f64, pub air_t: f64, pub land_v: f64, pub last_air: f64, pub landed: bool, pub impact: f64, pub clutch: f64,
+    pub on_road: bool, /** speed into straw bales this step (hay flies) */ pub hay: f64, pub contacts: f64, pub air_t: f64, pub land_v: f64, pub last_air: f64, pub landed: bool, pub impact: f64, pub clutch: f64,
     pub p_t: f64, pub p_b: f64, pub hb_t: f64,
     pub wh: [Wheel; 4],
 }
@@ -83,7 +83,7 @@ pub struct Input { pub throttle: f64, pub brake: f64, pub hb: bool, pub steer: f
 struct Ctl { throttle: f64, brake: f64, hb: bool, steer: f64 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct Obstacle { pub x: f64, pub z: f64, pub r: f64 }
+pub struct Obstacle { pub x: f64, pub z: f64, pub r: f64, /** straw: gives way and brakes the car instead of bouncing it */ pub soft: bool }
 
 pub struct Obstacles { cells: HashMap<i64, Vec<Obstacle>> }
 const OC: f64 = 8.0;
@@ -281,7 +281,7 @@ impl Car {
     }
 
     fn collide(&mut self, world: &World, obs: &Obstacles, t: &Tune) {
-        self.impact = 0.0;
+        self.impact = 0.0; self.hay = 0.0;
         let sh = sin(self.h); let ch = cos(self.h); let m = M; let iz = t.iz;
         for off in [1.35, 0.0, -1.35] {
             let cr = 0.9; let cx = self.x + sh * off; let cz = self.z + ch * off; let bi = (cx / OC).floor(); let bj = (cz / OC).floor();
@@ -289,7 +289,16 @@ impl Car {
                 let Some(l) = obs.cells.get(&okey(bi + i as f64, bj + j as f64)) else { continue };
                 for o in l {
                     let dx = cx - o.x; let dz = cz - o.z; let rr = o.r + cr; let d2 = dx * dx + dz * dz; if d2 >= rr * rr || d2 < 1e-8 { continue; }
-                    let d = d2.sqrt(); let nx = dx / d; let nz = dz / d; self.x += nx * (rr - d); self.z += nz * (rr - d);
+                    let d = d2.sqrt(); let nx = dx / d; let nz = dz / d;
+                    if o.soft {
+                        // a straw bale: the car sinks in, the straw soaks up the speed (no bounce), and it brakes everything touching it
+                        let pen = rr - d; let give = 0.45; let push = pen * 0.3 + (pen - give).max(0.0); self.x += nx * push; self.z += nz * push;
+                        let vn = self.vx * nx + self.vz * nz; if vn < 0.0 { self.vx -= nx * vn * 0.3; self.vz -= nz * vn * 0.3; }
+                        let sp = self.vx.hypot(self.vz); self.vx *= 0.986; self.vz *= 0.986; self.r *= 0.94;
+                        self.hay = self.hay.max(sp); self.impact = self.impact.max((-vn * 0.1).max(0.0));
+                        continue;
+                    }
+                    self.x += nx * (rr - d); self.z += nz * (rr - d);
                     let px = o.x + nx * o.r - self.x; let pz = o.z + nz * o.r - self.z;
                     let vpx = self.vx + self.r * pz; let vpz = self.vz - self.r * px; let vn = vpx * nx + vpz * nz; if vn >= 0.0 { continue; }
                     let crn = pz * nx - px * nz; let jn = -1.25 * vn / (1.0 / m + crn * crn / iz);
