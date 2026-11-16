@@ -47,12 +47,21 @@ const fallback = () => { const s = document.createElement("script"); s.type = "m
   const live = new Set();   // pointers down: the first one also clears anything whose lift was lost (3)
   addEventListener("blur", () => { live.clear(); fw.web_touch(5, 0, 0, 0); });
   document.addEventListener("visibilitychange", () => { if (document.hidden) { live.clear(); fw.web_touch(5, 0, 0, 0); } });
-  const ptr = (a0) => (e) => { e.preventDefault(); let a = a0;
-    if (a === 0) { if (live.size === 0) a = 3; live.add(e.pointerId); } else if (a === 2) live.delete(e.pointerId); if (!sound) { sound = true; window.__audioOn = true; try { window.__SHARED && window.__SHARED.start(); } catch (_) {} }
-    if (a0 === 0) try { cv.setPointerCapture(e.pointerId); } catch (_) {}
-    fw.web_touch(a, e.pointerId & 0xffff, e.clientX * d(), e.clientY * d()); };
-  cv.addEventListener("pointerdown", ptr(0)); cv.addEventListener("pointermove", (e) => { if (e.buttons || e.pointerType === "touch") ptr(1)(e); });
-  cv.addEventListener("pointerup", ptr(2)); cv.addEventListener("pointercancel", ptr(2));
+  const start = () => { if (!sound) { sound = true; window.__audioOn = true; try { window.__SHARED && window.__SHARED.start(); } catch (_) {} } };
+  const send = (a, id, x, y) => { if (a === 0) { if (live.size === 0) a = 3; live.add(id); } else if (a === 2) live.delete(id); fw.web_touch(a, id, x * d(), y * d()); };
+  // fingers: Touch Events with preventDefault, so Safari never turns a press into a scroll, zoom, selection or
+  // edge gesture (it cancels the touch when it does: steering and pedals let go by themselves)
+  const tch = (a) => (e) => { e.preventDefault(); start();
+    for (const t of e.changedTouches) send(a, t.identifier & 0xffff, t.clientX, t.clientY); };
+  const opt = { passive: false };
+  cv.addEventListener("touchstart", tch(0), opt); cv.addEventListener("touchmove", tch(1), opt);
+  cv.addEventListener("touchend", (e) => { tch(2)(e); try { const a = window.__SHARED && window.__SHARED.ac; if (a && a.state !== "running") a.resume(); } catch (_) {} }, opt); cv.addEventListener("touchcancel", tch(2), opt);
+  for (const ev of ["gesturestart", "gesturechange", "dblclick"]) document.addEventListener(ev, (e) => e.preventDefault(), opt);
+  // the mouse (computers): pointer events, mouse only
+  const MID = 0x7fff;
+  cv.addEventListener("pointerdown", (e) => { if (e.pointerType !== "mouse") return; e.preventDefault(); start(); try { cv.setPointerCapture(e.pointerId); } catch (_) {} send(0, MID, e.clientX, e.clientY); });
+  cv.addEventListener("pointermove", (e) => { if (e.pointerType === "mouse" && e.buttons) send(1, MID, e.clientX, e.clientY); });
+  for (const ev of ["pointerup", "pointercancel"]) cv.addEventListener(ev, (e) => { if (e.pointerType === "mouse") send(2, MID, e.clientX, e.clientY); });
   addEventListener("keydown", (e) => { if (e.key === "Escape" || e.key === "Backspace") fw.web_back(); });
   // build the first stage
   fallback();

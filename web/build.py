@@ -37,6 +37,7 @@ web = main.replace(CDN, './three.module.min.js')
 k = web.index('<script type="module">')
 web = web[:k] + '<script type="text/fogwood" id="fwmain">' + web[k + len('<script type="module">'):]
 web = web.replace('</body>', '<script type="module" src="web_boot.js"></script></body>')
+web = web.replace('content="width=device-width, initial-scale=1, viewport-fit=cover"', 'content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"', 1)
 open(WEB + 'index.html', 'w').write(web)
 import shutil
 for f in ['three.module.min.js', 'icon-180.png', 'icon-512.png', 'manifest.webmanifest']: shutil.copy(APPA + f, WEB + f)
