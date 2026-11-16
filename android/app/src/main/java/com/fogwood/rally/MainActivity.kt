@@ -102,6 +102,13 @@ class MainActivity : Activity() {
         if (same.isEmpty()) return null
         return same.minByOrNull { kotlin.math.abs(it.refreshRate - hz) }
     }
+    /** frames closer together than this are skipped: half a refresh short of the target interval, so a 60 or 90 Hz
+     *  screen runs every refresh and only a faster one skips (120 Hz -> every other) */
+    @Suppress("DEPRECATION")
+    private fun gapFor(fps: Int): Long {
+        val hz = ((if (Build.VERSION.SDK_INT >= 30) display else windowManager.defaultDisplay)?.refreshRate ?: 60f).coerceIn(30f, 240f)
+        return (1_000_000_000L / fps - 500_000_000L / hz).toLong().coerceAtLeast(1_000_000L)
+    }
     private fun applyMode(id: Int) {
         val lp = window.attributes
         if (lp.preferredDisplayModeId != id) { lp.preferredDisplayModeId = id; window.attributes = lp }
@@ -143,7 +150,7 @@ class MainActivity : Activity() {
     /** events from the native game: "h <kind> <strength>" haptics, "map <name>" build that stage */
     private fun handleEvents(ev: String) {
         for (line in ev.lineSequence()) {
-            if (line == "fps 30") vsync.gap = 29_000_000L else if (line == "fps 60") vsync.gap = 12_500_000L
+            if (line == "fps 30") vsync.gap = gapFor(30) else if (line == "fps 60") vsync.gap = gapFor(60)
             else if (line.startsWith("h ")) { val p = line.split(' '); if (p.size == 3) haptics.play(p[1], p[2].toFloatOrNull() ?: 0.5f) }
             else if (line.startsWith("bench ")) { val path = line.substring(6); main.post { exportBench(path) } }
             else if (line.startsWith("crash ")) { val path = line.substring(6); main.post { exportCrash(path) } }

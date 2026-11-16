@@ -463,7 +463,7 @@ impl Game {
         drop(guard);
         self.hud_uploaded = false; self.hud_frame(r); lap!(7); self.prof = prof;
         self.write_frame(r);
-        let slow = self.state == State::Title || self.ps.saver;   // the menu's film crew runs at 30 fps, the driving at 60 (30 with the battery saver)
+        let slow = self.ps.saver;   // 60 fps everywhere (the menu races and wipes too); 30 with the battery saver
         if self.fps30 != Some(slow) { self.fps30 = Some(slow); self.events.push(if slow { "fps 30".into() } else { "fps 60".into() }); }
         self.ps.saves.flush();
     }
