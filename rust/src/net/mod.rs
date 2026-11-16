@@ -247,10 +247,13 @@ impl Session {
     /// Our car (`dt`: this frame's length). A state goes out when the receivers' prediction from our last packet has
     /// drifted (15 cm, 1.5 degrees, 0.8 m/s, 12 cm of height, ~3.5 degrees of body angle), the gear or air changed, or the
     /// heartbeat is due; never faster than `car_rate` allows. Steady driving costs a few packets a second.
-    pub fn send_car(&mut self, mut c: CarSnap, dt: f64, g: smooth::Ground) {
+    /// `near`: another car is close to ours: the drift thresholds tighten (contacts need the true position)
+    pub fn send_car(&mut self, mut c: CarSnap, dt: f64, g: smooth::Ground, near: bool) {
         let now = self.now(); let th = self.host_now(); c.t = th; c.a = self.policy.accel(c.u, dt as f32);
         let (rate, beat) = self.car_rate();
-        if !self.policy.due(&c, g, &self.thr, rate, beat) { return; }
+        let thr = if near { smooth::Thresholds { pos: self.thr.pos * 0.4, head: self.thr.head * 0.5, speed: self.thr.speed * 0.5, height: self.thr.height, body: self.thr.body } } else { self.thr };
+        let (rate, beat) = if near { ((rate * 1.5).min(30.0), beat.min(0.25)) } else { (rate, beat) };
+        if !self.policy.due(&c, g, &thr, rate, beat) { return; }
         self.car_seq = self.car_seq.wrapping_add(1); let b = car3(self.me, self.car_seq, &c);
         // remember exactly what receivers will decode, so both sides predict from the same numbers
         if let Some((_, _, _, mut q)) = read_car2(&b) { q.t = th; self.policy.sent = Some(q); }
@@ -261,6 +264,13 @@ impl Session {
     }
 
     /// Tell a player's phone about a bump we resolved (their phone owns their car), and show the push here right away.
+    /// a bump we settled for our car: show the other car's share here (its own phone settles its side itself)
+    pub fn nudge(&mut self, id: u32, d: [f32; 5]) {
+        let t = self.view.get().unwrap_or_else(|| self.host_now());
+        if let Some(p) = self.peers.get_mut(&id) { p.track.nudge(d, t); }
+    }
+    /// which peers' cars are near ours (drawn at the present)
+    pub fn set_near(&mut self, id: u32, near: bool) { if let Some(p) = self.peers.get_mut(&id) { p.track.near = near; } }
     pub fn send_hit(&mut self, id: u32, d: [f32; 5], imp: f32) {
         let e = self.env(K_HIT, id); let b = hit(e, d, imp); self.send_to(id, &b);
         let t = self.view.get().unwrap_or_else(|| self.host_now());

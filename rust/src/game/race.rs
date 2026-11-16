@@ -179,8 +179,8 @@ fn contacts(g: &mut Game) {
     for a in 0..n { for b in (a + 1)..n {
         // online: each phone settles only the bumps its own car is part of (other players settle theirs)
         if online && ((a != pl && b != pl) || g.race.cars[a].left || g.race.cars[b].left) { continue; }
-        // between two players, the phone with the lower id settles the bump for both and sends the other its push
-        if online { let o = if a == pl { b } else { a }; if g.race.cars[o].remote.map(|id| id < g.race.me_id).unwrap_or(false) { continue; } }
+        // between two players, each phone settles the bump for its own car at once (no waiting for the other phone);
+        // the other car's push is only shown here, until its own phone's states (which settled it too) arrive
         let (sa0, sb0) = (st[a], st[b]);
         let (dx0, dz0) = (st[a].x - st[b].x, st[a].z - st[b].z); if dx0 * dx0 + dz0 * dz0 > 30.0 || (st[a].y - st[b].y).abs() > 1.6 { continue; }
         let (sa, ca, sb, cb) = (st[a].h.sin(), st[a].h.cos(), st[b].h.sin(), st[b].h.cos()); let mut hit: f64 = 0.0;

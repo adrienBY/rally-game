@@ -100,6 +100,8 @@ pub struct Track {
     pub delay: f32, last_t: f64,
     /// most delay allowed (0: DELAY_CAP; negative: draw at the present, the old behaviour)
     pub cap: f32,
+    /// close to our car: drawn at the present (contacts need the true position more than smoothness)
+    pub near: bool,
     /// the state the current offsets are measured from
     base: Option<CarSnap>,
     /// offsets, their rates and accelerations when the last state was taken in, when that was (view clock), how fast they fade
@@ -152,7 +154,7 @@ impl Track {
         // the delay eases toward what the link needs: at most 6% faster or 4% slower than real time, so the car never
         // visibly speeds up or brakes because of it
         let dtv = if self.last_t > 0.0 { (t - self.last_t).clamp(0.0, 0.1) as f32 } else { 0.0 }; self.last_t = t;
-        let want = self.want_delay(); self.delay += (want - self.delay).clamp(-0.04 * dtv, 0.06 * dtv);
+        let want = if self.near { 0.0 } else { self.want_delay() }; self.delay += (want - self.delay).clamp(if self.near { -0.25 * dtv } else { -0.04 * dtv }, 0.06 * dtv);
         let t = t - self.delay as f64;
         // the newest state already due at that moment (the next ones wait for their turn)
         let k = self.queue.iter().rposition(|q| q.t <= t + 1e-4).unwrap_or(0);
