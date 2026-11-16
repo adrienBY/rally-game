@@ -1,4 +1,4 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="Fogwood"><meta name="theme-color" content="#0b100b"><link rel="apple-touch-icon" href="icon-180.png"><link rel="manifest" href="manifest.webmanifest"><title>Fogwood Rally</title>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="Fogwood"><meta name="theme-color" content="#0b100b"><link rel="icon" href="icon-180.png"><link rel="apple-touch-icon" href="icon-180.png"><link rel="manifest" href="manifest.webmanifest"><title>Fogwood Rally</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <style>
 /* Layout: a single full-bleed low-res canvas. Scene and HUD are drawn at the same resolution and pass through one dither filter. */
@@ -45,6 +45,7 @@ const RT_MODE = typeof location !== "undefined" && /[?&]rt=1/.test(location.sear
 const SND_IDS = RT_MODE ? { wind: [0, 1], birds: [1, 1], engine: [2, 1], skid: [3, 1], impact: [4, 0], water_a: [5, 1], water_b: [6, 1], traffic: [7, 1], splash: [8, 0], metal: [9, 0], plank: [10, 0], soft: [11, 0], wind2: [12, 1] } : { wind: [0, 1], birds: [1, 1], impact: [4, 0], water_a: [5, 1], water_b: [6, 1], traffic: [7, 1], splash: [8, 0], metal: [9, 0], plank: [10, 0], soft: [11, 0], wind2: [12, 1] };
 const SHARED = { ac: null, node: null, native: (window.FogwoodAudio && typeof window.FogwoodAudio.postMessage === "function") ? window.FogwoodAudio : null,
   msgs: [], ready: false, started: false, queue: [] };
+window.__SHARED = SHARED;   // the browser build of the native game streams its sound through this
 SHARED.send = (f32) => { const ab = f32.buffer.byteLength === f32.byteLength ? f32.buffer : f32.slice().buffer;
   if (SHARED.native) { try { SHARED.native.postMessage(ab); } catch (_) {} } else if (SHARED.node) SHARED.node.port.postMessage(ab, [ab]); else if (SHARED.queue.length < 64) SHARED.queue.push(ab); };
 SHARED.promise = (async () => { try {
@@ -340,9 +341,11 @@ if (NATIVE) {
     const t0 = performance.now(), pc = new Array(NP * 2); for (let i = 0; i < NP; i++) { pc[i * 2] = PATH[i][0]; pc[i * 2 + 1] = PATH[i][1]; }
     const res = String(NATIVE.prepare(SNOW ? 1 : CAN ? 2 : LAK ? 3 : ICE ? 4 : TOU ? 5 : RIV ? 6 : 0, pc.join(","), Array.prototype.join.call(ROADH, ","), GXH, GZH));
     if (!res.startsWith("ok")) throw new Error(res);
-    const n = GNX * GNZ, x = new XMLHttpRequest(); x.open("GET", "/native/grids.bin", false); x.overrideMimeType("text/plain; charset=x-user-defined"); x.send();
-    const str = x.responseText; if (str.length !== n * 10) throw new Error("grid size " + str.length);
-    const u8 = new Uint8Array(n * 10); for (let i = 0; i < u8.length; i++) u8[i] = str.charCodeAt(i) & 255;
+    const n = GNX * GNZ; let u8;
+    if (NATIVE.gridBytes) { u8 = new Uint8Array(NATIVE.gridBytes()); if (u8.length !== n * 10) throw new Error("grid size " + u8.length); }   // the browser build: straight from the engine
+    else { const x = new XMLHttpRequest(); x.open("GET", "/native/grids.bin", false); x.overrideMimeType("text/plain; charset=x-user-defined"); x.send();
+      const str = x.responseText; if (str.length !== n * 10) throw new Error("grid size " + str.length);
+      u8 = new Uint8Array(n * 10); for (let i = 0; i < u8.length; i++) u8[i] = str.charCodeAt(i) & 255; }
     pdG.set(new Float32Array(u8.buffer, 0, n)); hG.set(new Float32Array(u8.buffer, n * 4, n)); piG.set(new Int16Array(u8.buffer, n * 8, n));
     gridsNative = true; nativeMs = performance.now() - t0; console.log("native grids", res, nativeMs.toFixed(0) + " ms");
   } catch (e) { console.warn("native grids failed, using JS", e); jsSplat(); }

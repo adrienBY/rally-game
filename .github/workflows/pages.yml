@@ -1,11 +1,11 @@
 name: Web version (GitHub Pages)
 
-# the browser build of the game (the app's bundled page, three.js included) served at
-# https://adrienby.github.io/rally-game/ — on iPhone: Safari > Share > Add to Home Screen
+# the browser build of the native game (Rust engine as WebAssembly, WebGL2) at https://adrienby.github.io/rally-game/
+# on iPhone: Safari > Share > Add to Home Screen
 on:
   push:
     branches: [main]
-    paths: ["android/app/src/main/assets/**", ".github/workflows/pages.yml"]
+    paths: ["rust/**", "web/**", "android/app/src/main/assets/**", ".github/workflows/pages.yml"]
   workflow_dispatch:
 
 permissions:
@@ -25,9 +25,20 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@0.2.130
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Build
+        run: sh web/build_web.sh
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: android/app/src/main/assets
+          path: web/dist-web
       - id: deployment
         uses: actions/deploy-pages@v4

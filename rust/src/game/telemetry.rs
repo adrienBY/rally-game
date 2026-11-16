@@ -10,7 +10,7 @@ pub struct Tel { pub t: f64, rows: String, pub n: usize, header: Vec<String>, la
 
 impl Tel {
     pub fn new(g: &Game) -> Tel {
-        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let secs = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         let header = vec![
             format!("Fogwood Rally telemetry, map {}, {}", g.rt.map, if g.race.on { format!("race, {} laps, {} rivals", g.race.laps, g.race.cars.len().saturating_sub(1)) } else { "time trial".into() }),
             format!("stage length {} m (path index = metres from the start line), unix time {}", g.np, secs),
@@ -44,7 +44,7 @@ impl Tel {
         let _ = writeln!(out, "# frames {} over {:.1} s", self.n, self.t);
         out.push_str("t_s,clock_s,lap,lap_t_s,idx,prog_m,lat_m,x,z,y,kmh,slip_ms,yaw_rate,heading_dot,slide,gear,rpm,steer_in,throttle,brake,handbrake,rack,on_road,wheels_on_road,airborne,impact,shake,race_pos,note\n");
         out.push_str(&self.rows);
-        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let secs = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         let path = format!("{}/fogwood-telemetry-{}-{}.csv", dir, map, secs); std::fs::write(&path, out).ok()?; Some(path)
     }
 }

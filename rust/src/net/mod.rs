@@ -20,7 +20,7 @@ use std::collections::{HashMap, VecDeque};
 use std::net::{SocketAddr, SocketAddrV4, UdpSocket};
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::Mutex;
-use std::time::Instant;
+use web_time::Instant;
 
 pub const BROKERS: [&str; 3] = ["broker.emqx.io:1883", "broker.hivemq.com:1883", "test.mosquitto.org:1883"];
 const PEER_TIMEOUT: f64 = 15.0;
@@ -77,7 +77,7 @@ pub fn join(code: u32, name: &str, map: &str) { open(code, name, map, false); }
 pub fn leave() { if let Ok(mut s) = SESSION.lock() { if let Some(x) = s.as_mut() { x.bye(); } *s = None; } }
 
 fn rand_u32() -> u32 {
-    let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(7) as u64;
+    let n = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(7) as u64;
     let mut x = n ^ 0x9E3779B97F4A7C15 ^ (std::process::id() as u64) << 32; x ^= x >> 33; x = x.wrapping_mul(0xff51afd7ed558ccd); x ^= x >> 33; x = x.wrapping_mul(0xc4ceb9fe1a85ec53); x ^= x >> 33; x as u32
 }
 

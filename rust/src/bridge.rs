@@ -24,7 +24,7 @@ pub fn fmt_num(v: f64, out: &mut String) {
 
 /// Build the stage. `path` = "x0,z0,x1,z1,...", `roadh` = "h0,h1,...". Returns "ok <cells> <ms>".
 pub fn prepare(map: i32, path: &str, roadh: &str, gxh: i32, gzh: i32) -> String {
-    let t0 = std::time::Instant::now();
+    let t0 = web_time::Instant::now();
     let p = parse_csv(path); let pts: Vec<(f64, f64)> = p.chunks_exact(2).map(|c| (c[0], c[1])).collect();
     let rh = parse_csv(roadh);
     if pts.is_empty() || rh.len() != pts.len() { return format!("err path {} roadh {}", pts.len(), rh.len()); }

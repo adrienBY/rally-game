@@ -44,7 +44,11 @@ pub struct Saves { path: String, pub kv: HashMap<String, String>, dirty: bool }
 impl Saves {
     pub fn load(path: &str) -> Saves {
         let mut kv = HashMap::new();
-        if let Ok(s) = std::fs::read_to_string(path) { for l in s.lines() { if let Some((k, v)) = l.split_once('=') { kv.insert(k.to_string(), v.to_string()); } } }
+        #[cfg(target_arch = "wasm32")]
+        let text = crate::web_api::store_load(path);
+        #[cfg(not(target_arch = "wasm32"))]
+        let text = std::fs::read_to_string(path);
+        if let Ok(s) = text { for l in s.lines() { if let Some((k, v)) = l.split_once('=') { kv.insert(k.to_string(), v.to_string()); } } }
         Saves { path: path.to_string(), kv, dirty: false }
     }
     pub fn dir(&self) -> String { std::path::Path::new(&self.path).parent().map(|p| p.to_string_lossy().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| ".".into()) }
@@ -56,7 +60,10 @@ impl Saves {
         if !self.dirty || self.path.is_empty() { return; } self.dirty = false;
         let mut s = String::new(); let mut keys: Vec<_> = self.kv.keys().collect(); keys.sort();
         for k in keys { s.push_str(k); s.push('='); s.push_str(&self.kv[k]); s.push('\n'); }
-        let tmp = format!("{}.tmp", self.path); if std::fs::write(&tmp, s).is_ok() { let _ = std::fs::rename(&tmp, &self.path); }
+        #[cfg(target_arch = "wasm32")]
+        crate::web_api::store_save(&self.path, &s);
+        #[cfg(not(target_arch = "wasm32"))]
+        { let tmp = format!("{}.tmp", self.path); if std::fs::write(&tmp, s).is_ok() { let _ = std::fs::rename(&tmp, &self.path); } }
     }
 }
 
@@ -93,7 +100,7 @@ impl Persist {
         self.race_mode = self.saves.get("fogwood-mode") == Some("race");
         if let Some(v) = self.saves.get("fogwood-skill").and_then(|v| v.parse::<f64>().ok()) { if v > 0.8 && v < 1.1 { self.race_skill = v; } }
         match self.saves.get("fogwood-name") { Some(n) if !n.is_empty() => self.name = n.to_string(), _ => {
-            let k = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(7) % 90 + 10;
+            let k = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(7) % 90 + 10;
             self.name = format!("DRIVER{}", k); let n = self.name.clone(); self.saves.set("fogwood-name", n); } }
         let gi = |s: &Saves, k: &str| s.get(k).and_then(|v| v.parse::<i32>().ok());
         if let Some(v) = gi(&self.saves, "fogwood-vol") { self.vol = v.clamp(0, 10); }
@@ -141,7 +148,7 @@ pub struct Game {
     pub sun_vis: f64, pub expo: f64, pub dim: f64, pub expo_tun: bool, pub sun_uv: [f64; 2],
     // feel
     hap_t: f64, hap_cool: f64, aud_wet: f64, pub car_audio_on: bool, race_was: bool, pop_cool: f64, fps_acc: f64, fps_n: i32, hud_tick: bool, pub hud: hud::Canvas,
-    shadow_op: f32, pub flash: f64, pub speed_k: f64, clock: std::time::Instant, pub last_pidx: usize,
+    shadow_op: f32, pub flash: f64, pub speed_k: f64, clock: web_time::Instant, pub last_pidx: usize,
     /// test hook: the demo driver drives your car too
     pub auto: bool,
     tile_lod: Vec<usize>, fps30: Option<bool>, pub shade_dim: f64,
@@ -197,7 +204,7 @@ impl Game {
             sf_pos, sf_init: false, boats,
             sun_vis: 0.0, expo: 1.0, dim: 1.0, expo_tun: false, sun_uv: [0.5, 0.8],
             hap_t: 0.0, hap_cool: 0.0, aud_wet: 0.0, car_audio_on: false, race_was: false, pop_cool: 0.0, fps_acc: 0.0, fps_n: 0, hud_tick: false, hud: hud::Canvas::new(320, 180),
-            shadow_op: -1.0, flash: 0.0, speed_k: 0.0, clock: std::time::Instant::now(), last_pidx: 0, auto: false, tile_lod: Vec::new(), fps30: None, shade_dim: 1.0, prof: [0.0; 8], hud_uploaded: false, bench_req: false, bench_secs: None, d_live: 0, tel: None, tel_note: String::new(), set: Default::default(), rt,
+            shadow_op: -1.0, flash: 0.0, speed_k: 0.0, clock: web_time::Instant::now(), last_pidx: 0, auto: false, tile_lod: Vec::new(), fps30: None, shade_dim: 1.0, prof: [0.0; 8], hud_uploaded: false, bench_req: false, bench_secs: None, d_live: 0, tel: None, tel_note: String::new(), set: Default::default(), rt,
         };
         if let Some(e) = bridge::lock().as_ref() { g.place_at(&e.world, 6); }
         g
@@ -379,8 +386,8 @@ impl Game {
         let inp = if self.state == State::Drive {
             if self.go > 0.9 { Input { steer: 0.0, throttle: 0.0, brake: 0.0, hb: true } } else if self.auto || (self.race.on && self.race.phase == race::Phase::Done) { self.ai_input(w) } else { self.read_input() }
         } else if self.gar.open || (self.race.demo && self.go > 0.9) { Input { steer: 0.0, throttle: 0.0, brake: 0.0, hb: true } } else { self.ai_input(w) };
-        let mut tp = std::time::Instant::now(); let mut prof = [0f32; 8];
-        macro_rules! lap { ($k:expr) => {{ let n = std::time::Instant::now(); prof[$k] += (n - tp).as_secs_f32() * 1000.0; tp = n; }} }
+        let mut tp = web_time::Instant::now(); let mut prof = [0f32; 8];
+        macro_rules! lap { ($k:expr) => {{ let n = web_time::Instant::now(); prof[$k] += (n - tp).as_secs_f32() * 1000.0; tp = n; }} }
         self.online_tick(w, dt);
         self.garage_step(w, dt);
         // the menu's attract race: you and five rivals, AI at every wheel, round and round behind the menu
@@ -697,7 +704,7 @@ impl Game {
     }
 
     // ---------------- sound ----------------
-    pub fn audio_msg(&self, v: &[f32]) { let mut b = Vec::with_capacity(v.len() * 4); for x in v { b.extend_from_slice(&x.to_le_bytes()); } fogwood_audio::native::message(&b); }
+    pub fn audio_msg(&self, v: &[f32]) { let mut b = Vec::with_capacity(v.len() * 4); for x in v { b.extend_from_slice(&x.to_le_bytes()); } #[cfg(not(target_arch = "wasm32"))] fogwood_audio::native::message(&b); #[cfg(target_arch = "wasm32")] crate::web_api::audio(&b); }
     fn obstacle_mat(&self, x: f64, z: f64) -> f64 {
         let mut best = 9.0; let mut m = 0.0;
         for o in &self.rt.obstacles { if (o[0] - x).abs() > 24.0 || (o[1] - z).abs() > 24.0 { continue; } let d = (o[0] - x).hypot(o[1] - z) - o[2]; if d < best { best = d; m = o[3]; } }

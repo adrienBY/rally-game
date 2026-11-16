@@ -8,3 +8,4 @@ android/local.properties
 .idea/
 web/dist/
 rust/audio/target/
+web/dist-web/

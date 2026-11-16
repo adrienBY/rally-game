@@ -1,5 +1,6 @@
 //! Native renderer: draws the scene the game exports (see nglExport in the game) with OpenGL ES 3.
 //! Pipeline: scene -> low-resolution colour+depth target -> post (god rays, zoom blur, grade, dither) -> nearest upscale to the screen.
+#[cfg(not(target_arch = "wasm32"))]
 pub mod loader;
 pub mod math;
 pub mod shaders;
@@ -449,7 +450,7 @@ impl Renderer {
     /// Draw the current state, timing it when benchmarking (CPU always, GPU when the driver has timer queries).
     pub unsafe fn draw(&mut self, screen: Option<glow::Framebuffer>, w: i32, h: i32) -> Result<(), String> {
         const TIME_ELAPSED: u32 = 0x88BF; const GPU_DISJOINT: u32 = 0x8FBB;
-        let t0 = std::time::Instant::now(); self.frame_id += 1;
+        let t0 = web_time::Instant::now(); self.frame_id += 1;
         self.has_timer = self.gl.supported_extensions().contains("GL_EXT_disjoint_timer_query");
         self.tq_cur = None;
         if self.timing && self.has_timer && self.scene.is_some() {

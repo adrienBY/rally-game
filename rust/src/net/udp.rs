@@ -35,14 +35,14 @@ pub fn stun_parse(b: &[u8], tid: &[u8; 12]) -> Option<SocketAddrV4> {
 /// Ask STUN servers (from the game socket itself, so the mapping is the one peers must use) for our public address.
 /// Blocks up to ~2.5 s; run it off the game thread with a cloned socket.
 pub fn stun_query(sock: &UdpSocket) -> Option<SocketAddrV4> {
-    let mut tid = [0u8; 12]; let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(1);
+    let mut tid = [0u8; 12]; let seed = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(1);
     for (k, b) in tid.iter_mut().enumerate() { *b = ((seed >> (k * 5)) as u8) ^ (k as u8).wrapping_mul(37); }
     let req = stun_request(&tid); let addrs: Vec<SocketAddr> = STUN_SERVERS.iter().filter_map(|h| h.to_socket_addrs().ok()?.find(|a| a.is_ipv4())).collect();
     if addrs.is_empty() { return None; }
     let mut buf = [0u8; 576];
     for _ in 0..5 {
         for a in &addrs { let _ = sock.send_to(&req, a); }
-        let t0 = std::time::Instant::now();
+        let t0 = web_time::Instant::now();
         while t0.elapsed() < Duration::from_millis(500) {
             match sock.recv_from(&mut buf) { Ok((n, from)) => { if addrs.contains(&from) { if let Some(m) = stun_parse(&buf[..n], &tid) { return Some(m); } } }
                 Err(_) => std::thread::sleep(Duration::from_millis(10)) }

@@ -53,7 +53,7 @@ pub fn note_path() -> Option<String> {
 fn note(what: &str) {
     let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
     let last = LAST.try_lock().map(|g| g.clone()).unwrap_or_default();
-    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let secs = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let line = format!("[{secs}] #{n} in {what}: {last}\n");
     #[cfg(target_os = "android")]
     { eprintln!("Fogwood caught a panic: {line}"); }

@@ -13,3 +13,5 @@ pub mod net;
 #[cfg(any(target_os = "android", feature = "jni-host"))]
 mod jni_api;
 pub mod game;
+#[cfg(target_arch = "wasm32")]
+pub mod web_api;

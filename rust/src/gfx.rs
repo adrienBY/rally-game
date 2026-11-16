@@ -1,7 +1,9 @@
 //! Glue between the app and the renderer: messages arrive on any thread, the game runs and draws on the GL thread.
 //! Runtime mode: the page builds a stage, posts its scene ("FWS1") and runtime description ("FRT1"), and the native game takes over.
 use crate::game::{Game, Persist};
-use crate::render::{loader::Loader, Renderer};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::render::loader::Loader;
+use crate::render::Renderer;
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -37,9 +39,14 @@ pub fn status() -> String { inbox().status.clone() }
 pub fn gl_init() -> bool {
     // a new context means the old GPU objects are already gone: forget the old renderer instead of deleting
     // its (now meaningless) object names, which could collide with names in the new context
+    #[cfg(not(target_arch = "wasm32"))]
+    { let loader = Loader::new(); gl_init_ctx(unsafe { glow::Context::from_loader_function(|n| loader.get(n)) }) }
+    #[cfg(target_arch = "wasm32")]
+    { false }
+}
+/// a GL context made by the caller (the browser's WebGL2 canvas)
+pub fn gl_init_ctx(gl: glow::Context) -> bool {
     R.with(|c| { if let Some(old) = c.borrow_mut().take() { std::mem::forget(old); } });
-    let loader = Loader::new();
-    let gl = unsafe { glow::Context::from_loader_function(|n| loader.get(n)) };
     match unsafe { Renderer::new(gl) } {
         Ok(r) => { R.with(|c| *c.borrow_mut() = Some(r)); set_status("renderer ready".into()); }
         Err(e) => { set_status(format!("renderer init failed: {e}")); R.with(|c| *c.borrow_mut() = None); }
@@ -85,7 +92,7 @@ pub fn rt_bench() { inbox().bench = true; }
 const BENCH_SECS: f64 = 60.0;
 struct Row { id: u64, t: f32, dt: f32, interval: f32, total: f32, tick: f32, prof: [f32; 8], draw: f32, gpu: (f32, f32), calls: u32, tris: u32, state: u8, kmh: f32,
     race: u8, rivals: u8, dust: u16, hud_up: u8, lw: i32, lh: i32, thermal: i32, batt: f32 }
-struct Bench { start: std::time::Instant, last: Option<std::time::Instant>, rows: Vec<Row>, header: Vec<String> }
+struct Bench { start: web_time::Instant, last: Option<web_time::Instant>, rows: Vec<Row>, header: Vec<String> }
 fn pct(v: &mut Vec<f32>, p: f32) -> f32 { if v.is_empty() { return 0.0; } v.sort_by(|a, b| a.partial_cmp(b).unwrap()); v[((v.len() - 1) as f32 * p) as usize] }
 impl Bench {
     fn write(&self, dir: &str) -> Option<String> {
@@ -113,7 +120,7 @@ impl Bench {
                 r.id, r.t, r.dt, r.interval, r.total, r.tick, r.prof[0], r.prof[1], r.prof[2], r.prof[3], r.prof[4], r.prof[5], r.prof[6], r.prof[7], r.draw, g(r.gpu.0), g(r.gpu.1),
                 r.calls, r.tris, if r.state == 1 { "drive" } else { "menu" }, r.kmh, r.race, r.rivals, r.dust, r.hud_up, r.lw, r.lh, r.thermal, r.batt);
         }
-        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let secs = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         let path = format!("{}/fogwood-bench-{}.csv", dir, secs); std::fs::write(&path, out).ok()?; Some(path)
     }
 }
@@ -146,7 +153,7 @@ pub fn rt_frame_guarded(dt: f64) -> String {
 }
 
 pub fn rt_frame(dt: f64) -> String {
-    let t_frame = std::time::Instant::now();
+    let t_frame = web_time::Instant::now();
     let (scene, rtp, size, touches, back, insets, save_path, thermal, device) = { let mut ib = inbox();
         (ib.scene.take(), ib.rt.take(), ib.size, std::mem::take(&mut ib.touches), std::mem::replace(&mut ib.back, false), ib.insets, ib.save_path.clone(), ib.thermal, ib.device.clone()) }; let bench_tap = std::mem::replace(&mut inbox().bench, false);
     let mut events = String::new();
@@ -170,7 +177,7 @@ pub fn rt_frame(dt: f64) -> String {
                     g.resize(size.0 as f64, size.1 as f64, [insets[0] as f64, insets[1] as f64, insets[2] as f64, insets[3] as f64]); }
                 for (a, id, x, y) in touches { g.touch(a, id, x as f64, y as f64); }
                 if back { g.back(); }
-                let t_tick = std::time::Instant::now();
+                let t_tick = web_time::Instant::now();
                 g.tick(r, dt.clamp(0.0, 0.05));
                 let tick_ms = t_tick.elapsed().as_secs_f32() * 1000.0;
                 DRIVING.store(g.wants_back(), Ordering::Relaxed);
@@ -184,13 +191,13 @@ pub fn rt_frame(dt: f64) -> String {
                     else if toggle && b.is_none() {
                         let header = vec![format!("Fogwood Rally benchmark, map {}, {}", g.rt.map, if g.race.on { "race" } else { "time trial" }), format!("device: {}", device),
                             format!("gpu: {} (timer queries: {})", r.gl_renderer(), if r.has_timer { "yes" } else { "no" }), format!("surface {}x{}, render {}x{}, pixel setting {}", size.0, size.1, g.lw, g.lh, g.ps.pix_idx)];
-                        *b = Some(Bench { start: std::time::Instant::now(), last: None, rows: Vec::with_capacity(4000), header }); r.timing = true; g.flash_msg("RECORDING 60 S", 1.5); }
+                        *b = Some(Bench { start: web_time::Instant::now(), last: None, rows: Vec::with_capacity(4000), header }); r.timing = true; g.flash_msg("RECORDING 60 S", 1.5); }
                     if let Some(x) = b.as_ref() { g.bench_secs = Some((BENCH_SECS - x.start.elapsed().as_secs_f64()).max(0.0).ceil() as u32); }
                 });
                 for e in g.events.drain(..) { events.push_str(&e); events.push('\n'); }
                 if let Err(e) = unsafe { r.draw(None, size.0, size.1) } { set_status(format!("draw failed: {e}")); }
                 B.with(|bc| { if let Some(b) = bc.borrow_mut().as_mut() {
-                    let now = std::time::Instant::now(); let interval = b.last.map(|l| (t_frame - l).as_secs_f32() * 1000.0).unwrap_or(0.0); b.last = Some(t_frame);
+                    let now = web_time::Instant::now(); let interval = b.last.map(|l| (t_frame - l).as_secs_f32() * 1000.0).unwrap_or(0.0); b.last = Some(t_frame);
                     let s = &g.car;
                     b.rows.push(Row { id: r.frame_id, t: (t_frame - b.start).as_secs_f32() * 1000.0, dt: (dt * 1000.0) as f32, interval, total: (now - t_frame).as_secs_f32() * 1000.0, tick: tick_ms, prof: g.prof, draw: r.draw_cpu_ms,
                         gpu: (-1.0, -1.0), calls: r.stats.0, tris: r.stats.1, state: (g.state == crate::game::State::Drive) as u8, kmh: (s.u * 3.6) as f32, race: g.race.on as u8,

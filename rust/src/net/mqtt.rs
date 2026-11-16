@@ -5,7 +5,7 @@ use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration; use web_time::Instant;
 
 pub struct Broker { tx: Sender<Vec<u8>>, pub up: Arc<Mutex<bool>>, pub name: String, stop: Arc<Mutex<bool>> }
 

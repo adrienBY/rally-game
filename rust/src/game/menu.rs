@@ -15,9 +15,15 @@ pub fn stage_of(map: &str) -> usize { STAGES.iter().position(|s| s.0 == map).unw
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Item { Drive, Stage, Online, Garage, Options }
+#[cfg(not(target_arch = "wasm32"))]
 pub const ITEMS: [(Item, &str, &str); 5] = [
     (Item::Drive, "DRIVE", "m_drive"), (Item::Stage, "STAGE", "m_stage"),
     (Item::Online, "ONLINE", "m_online"), (Item::Garage, "GARAGE", "m_garage"), (Item::Options, "OPTIONS", "m_opts"),
+];
+/// the browser build has no online play (no UDP sockets in a browser)
+#[cfg(target_arch = "wasm32")]
+pub const ITEMS: [(Item, &str, &str); 4] = [
+    (Item::Drive, "DRIVE", "m_drive"), (Item::Stage, "STAGE", "m_stage"), (Item::Garage, "GARAGE", "m_garage"), (Item::Options, "OPTIONS", "m_opts"),
 ];
 /// every hit key the menu draws, in hit order: the arrows of a setting box first (they sit beside an entry), then the
 /// entries, the stage list and its BACK

@@ -68,6 +68,10 @@ fn canyon_mesa(x: f64, z: f64) -> f64 {
 /// `path` = road centreline every metre, `roadh` = road height per point (both as the JS build computed them).
 /// Run `f(row_index, row)` over all rows of a grid on every core.
 fn par_rows<F: Fn(usize, &mut [f32]) + Sync>(g: &mut [f32], gnx: usize, f: F) {
+    // the browser build has no threads: one pass on the calling thread
+    #[cfg(target_arch = "wasm32")]
+    { for (k, row) in g.chunks_mut(gnx).enumerate() { f(k, row); } return; }
+    #[allow(unreachable_code)]
     let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 8);
     let rows = g.len() / gnx; let per = (rows + threads - 1) / threads;
     std::thread::scope(|sc| {
