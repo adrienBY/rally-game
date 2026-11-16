@@ -1,0 +1,33 @@
+name: Web version (GitHub Pages)
+
+# the browser build of the game (the app's bundled page, three.js included) served at
+# https://adrienby.github.io/rally-game/ — on iPhone: Safari > Share > Add to Home Screen
+on:
+  push:
+    branches: [main]
+    paths: ["android/app/src/main/assets/**", ".github/workflows/pages.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: android/app/src/main/assets
+      - id: deployment
+        uses: actions/deploy-pages@v4
