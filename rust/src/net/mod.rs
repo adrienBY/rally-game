@@ -13,6 +13,7 @@
 pub mod mqtt;
 pub mod proto;
 pub mod relay;
+pub mod lobby;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod ws;
 pub mod smooth;
@@ -68,7 +69,7 @@ pub struct Session {
     /// estimated bytes on the wire, including UDP/IP and TCP/IP headers: [udp up, udp down, broker up, broker down]
     pub traffic: std::cell::Cell<[u64; 4]>, pub packets: std::cell::Cell<[u64; 4]>,
     /// our own relay server (None: off)
-    relay: Option<relay::Client>,
+    relay: Option<relay::Client>, last_announce: f64,
 }
 const UDP_OVERHEAD: u64 = 28; const TCP_OVERHEAD: u64 = 40;
 /// Data budget for a session, both directions, every header counted: 8 kB/s is 28.8 MB an hour, well under the 40 MB
@@ -125,7 +126,7 @@ fn open(code: u32, name: &str, map: &str, is_host: bool) {
         lag: std::env::var("FW_LAG").ok().and_then(|v| { let q: Vec<f64> = v.split(',').filter_map(|x| x.parse().ok()).collect(); if q.len() == 2 { Some([q[0], q[1]]) } else { None } }).unwrap_or([0.0, 0.0]), held: VecDeque::new(), held_last: 0.0,
         loss: std::env::var("FW_LOSS").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0),
         thr: smooth::Thresholds::default(), heartbeat: None,
-        relay: if std::env::var("FW_NORELAY").is_ok() { None } else { Some(relay::Client::start(code, me)) } };
+        relay: if std::env::var("FW_NORELAY").is_ok() { None } else { Some(relay::Client::start(code, me)) }, last_announce: -9.0 };
     let mut s = s;
     if let Ok(v) = std::env::var("FW_THR") { let q: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect();
         if q.len() >= 3 { s.thr.pos = q[0]; s.thr.head = q[1]; s.thr.speed = q[2]; } if q.len() >= 4 { s.heartbeat = Some(q[3]); } }
@@ -165,7 +166,7 @@ impl Session {
             Some(p) if self.on_relay(p, now) => { self.relay_send(to, b, now); }
             Some(p) => self.relay_for(b, &[p.brokers]), None => self.relay_for(b, &[]) }
     }
-    fn bye(&mut self) { let e = self.env(K_BYE, 0); let b = bare(e); self.relay_all(&b); for p in self.peers.values() { if let Some(a) = p.direct { self.udp(&b, a); } }  if let Some(r) = &self.relay { r.leave(); } }
+    fn bye(&mut self) { let e = self.env(K_BYE, 0); let b = bare(e); self.relay_all(&b); for p in self.peers.values() { if let Some(a) = p.direct { self.udp(&b, a); } }  if let Some(r) = &self.relay { if self.is_host { r.announce(&self.name, &self.map, 0, false, true); } r.leave(); } }
 
     /// Network work for one frame: read the broker queue and the UDP socket, presence, clock pings, punching, start repeats.
     pub fn poll(&mut self) {
@@ -208,6 +209,9 @@ impl Session {
         // clock: guests ping the host
         if !self.is_host { if let Some(h) = self.host_id { if now - self.last_ping > if self.pong_n < 6 { 0.3 } else { 5.0 } { self.last_ping = now;
             let e = self.env(K_PING, h); self.pings.insert(e.seq, now); let b = time_pair(e, now, 0.0); self.send_to(h, &b); if self.pings.len() > 32 { self.pings.clear(); } } } }
+        // hosts list their room for the open-rooms screen
+        if self.is_host && now - self.last_announce > 4.0 { self.last_announce = now;
+            if let Some(r) = &self.relay { if r.is_up(now) { r.announce(&self.name, &self.map, self.peers.len() + 1, self.racing, false); } } }
         // repeat the start a few times (broker messages can be lost)
         if let Some((s, until)) = self.start_out.clone() { if now < until { if now - self.last_start_tx >= 0.5 { self.last_start_tx = now; let e = self.env(K_START, 0); let b = start(e, &s); self.relay_all(&b); } } else { self.start_out = None; } }
     }

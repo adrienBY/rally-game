@@ -40,7 +40,7 @@ impl Client {
             Client { room, me, last_join: -99.0, last_rx: -99.0, members: 0, ws: Some(super::ws::Ws::open(format!("{}/{}", target.trim_end_matches('/'), room))), sock: None, addr: None, resolving: None }
         }
         #[cfg(target_arch = "wasm32")]
-        { Client { room, me, last_join: -99.0, last_rx: -99.0, members: 0, ws: web::Sock::open(room) } }
+        { Client { room, me, last_join: -99.0, last_rx: -99.0, members: 0, ws: web::Sock::open(web::SOCK, format!("{}/{}", URL, room)) } }
     }
     pub fn is_up(&self, now: f64) -> bool { now - self.last_rx < DOWN_AFTER }
     fn raw(&self, b: &[u8]) -> bool {
@@ -77,12 +77,19 @@ impl Client {
         out
     }
     pub fn leave(&self) { self.raw(&[0x04]); }
+    /// a host's room for the open-rooms list (`closed`: take it off)
+    pub fn announce(&self, name: &str, map: &str, players: usize, racing: bool, closed: bool) {
+        let clean: String = name.chars().filter(|c| c.is_ascii_alphanumeric() || *c == ' ').take(16).collect();
+        let j = format!("{{\"c\":{},\"n\":\"{}\",\"m\":\"{}\",\"p\":{},\"r\":{},\"x\":{}}}", self.room, clean, map.chars().filter(|c| c.is_ascii_alphabetic()).collect::<String>(), players, racing, closed);
+        let mut w = vec![0x05]; w.extend_from_slice(j.as_bytes()); self.raw(&w);
+    }
 }
 
-/// the browser build: the page holds the WebSocket (window.__fwWs, socket id SOCK); bytes come back through web_api
+/// the browser build: the page holds the WebSockets (window.__fwWs); bytes come back through web_api
 #[cfg(target_arch = "wasm32")]
 pub mod web {
     use std::cell::RefCell;
+    use std::collections::HashMap;
     use wasm_bindgen::prelude::*;
     #[wasm_bindgen]
     extern "C" {
@@ -93,27 +100,30 @@ pub mod web {
         #[wasm_bindgen(js_namespace = __fwWs, js_name = close)]
         fn ws_close(id: u32);
     }
-    /// socket id of the relay (the MQTT brokers use 0, 1, 2...)
+    /// socket ids from here up belong to the relay (the room) and the lobby; the MQTT brokers use 0, 1, 2...
     pub const SOCK: u32 = 1000;
+    pub const LOBBY: u32 = 1001;
     #[derive(Default)]
-    struct St { open: bool, fresh: bool, inbox: Vec<Vec<u8>>, retry_at: f64, backoff: f64, live: bool, room: u32 }
-    thread_local! { static ST: RefCell<St> = RefCell::new(St::default()); }
+    struct St { open: bool, fresh: bool, inbox: Vec<Vec<u8>>, retry_at: f64, backoff: f64, live: bool, url: String }
+    thread_local! { static ST: RefCell<HashMap<u32, St>> = RefCell::new(HashMap::new()); }
     fn now() -> f64 { js_sys::Date::now() / 1000.0 }
-    fn url() -> String { format!("{}/{}", super::URL, ST.with(|s| s.borrow().room)) }
-    pub struct Sock;
+    pub struct Sock(u32);
     impl Sock {
-        pub fn open(room: u32) -> Sock { ST.with(|s| { let mut s = s.borrow_mut(); s.live = true; s.backoff = 1.0; s.inbox.clear(); s.room = room; }); ws_open(SOCK, &url()); Sock }
-        pub fn send(&self, b: &[u8]) -> bool { if ST.with(|s| s.borrow().open) { ws_send(SOCK, b); true } else { false } }
-        pub fn take(&self) -> Vec<Vec<u8>> { ST.with(|s| std::mem::take(&mut s.borrow_mut().inbox)) }
-        /// just connected (join right away)
-        pub fn fresh(&self) -> bool { ST.with(|s| std::mem::replace(&mut s.borrow_mut().fresh, false)) }
+        pub fn open(id: u32, url: String) -> Sock {
+            ST.with(|s| { let mut m = s.borrow_mut(); m.insert(id, St { live: true, backoff: 1.0, url: url.clone(), ..Default::default() }); }); ws_open(id, &url); Sock(id)
+        }
+        pub fn send(&self, b: &[u8]) -> bool { if ST.with(|s| s.borrow().get(&self.0).map(|x| x.open).unwrap_or(false)) { ws_send(self.0, b); true } else { false } }
+        pub fn take(&self) -> Vec<Vec<u8>> { ST.with(|s| s.borrow_mut().get_mut(&self.0).map(|x| std::mem::take(&mut x.inbox)).unwrap_or_default()) }
+        /// just connected
+        pub fn fresh(&self) -> bool { ST.with(|s| s.borrow_mut().get_mut(&self.0).map(|x| std::mem::replace(&mut x.fresh, false)).unwrap_or(false)) }
         pub fn tick(&self) {
-            let again = ST.with(|s| { let mut s = s.borrow_mut(); if s.live && !s.open && s.retry_at > 0.0 && now() >= s.retry_at { s.retry_at = 0.0; true } else { false } });
-            if again { ws_open(SOCK, &url()); }
+            let again = ST.with(|s| { let mut m = s.borrow_mut(); let Some(x) = m.get_mut(&self.0) else { return None };
+                if x.live && !x.open && x.retry_at > 0.0 && now() >= x.retry_at { x.retry_at = 0.0; Some(x.url.clone()) } else { None } });
+            if let Some(u) = again { ws_open(self.0, &u); }
         }
     }
-    impl Drop for Sock { fn drop(&mut self) { ST.with(|s| { let mut s = s.borrow_mut(); s.live = false; s.open = false; }); ws_close(SOCK); } }
-    pub fn on_open() { ST.with(|s| { let mut s = s.borrow_mut(); s.open = true; s.fresh = true; s.backoff = 1.0; }); }
-    pub fn on_data(b: &[u8]) { ST.with(|s| { let mut s = s.borrow_mut(); if s.inbox.len() < 512 { s.inbox.push(b.to_vec()); } }); }
-    pub fn on_close() { ST.with(|s| { let mut s = s.borrow_mut(); if !s.open && s.retry_at > now() { return; } s.open = false; s.retry_at = now() + s.backoff.max(1.0); s.backoff = (s.backoff * 2.0).min(30.0); }); }
+    impl Drop for Sock { fn drop(&mut self) { ST.with(|s| { s.borrow_mut().remove(&self.0); }); ws_close(self.0); } }
+    pub fn on_open(id: u32) { ST.with(|s| if let Some(x) = s.borrow_mut().get_mut(&id) { x.open = true; x.fresh = true; x.backoff = 1.0; }); }
+    pub fn on_data(id: u32, b: &[u8]) { ST.with(|s| if let Some(x) = s.borrow_mut().get_mut(&id) { if x.inbox.len() < 512 { x.inbox.push(b.to_vec()); } }); }
+    pub fn on_close(id: u32) { ST.with(|s| if let Some(x) = s.borrow_mut().get_mut(&id) { if !x.open && x.retry_at > now() { return; } x.open = false; x.retry_at = now() + x.backoff.max(1.0); x.backoff = (x.backoff * 2.0).min(30.0); }); }
 }

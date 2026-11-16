@@ -7,9 +7,9 @@ use crate::physics::Car;
 use crate::world::World;
 
 #[derive(Clone, PartialEq, Debug, Default)]
-pub enum OnlineUi { #[default] Closed, Menu, Join(String), Lobby, Stages }
+pub enum OnlineUi { #[default] Closed, Menu, Join(String), Lobby, Stages, Rooms }
 
-pub const KEYS: [&str; 27] = ["on_host", "on_join", "on_back", "on_start", "on_leave", "on_stage", "k0", "k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "k9", "kdel", "kok", "on_laps", "online",
+pub const KEYS: [&str; 34] = ["on_rooms", "on_r0", "on_r1", "on_r2", "on_r3", "on_r4", "on_r5", "on_host", "on_join", "on_back", "on_start", "on_leave", "on_stage", "k0", "k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "k9", "kdel", "kok", "on_laps", "online",
     "on_name", "on_st0", "on_st1", "on_st2", "on_st3", "on_st4", "on_st5"];
 const MAPS: [(&str, &str); 6] = [("forest", "FOGWOOD"), ("snow", "COL DE GIVRE"), ("canyon", "CANYON ROUGE"), ("lakes", "LAKELAND"), ("touge", "MOMIJI TOUGE"), ("riviera", "RIVIERA CORNICHE")];
 /// the stage list: tile key, short name, surface
@@ -37,6 +37,8 @@ impl Game {
 
     /// network work for this frame, the start when it arrives, and the other players' cars (before the race step)
     pub(crate) fn online_tick(&mut self, w: &World, dt: f64) {
+        // the open-rooms list is fetched while the room screens are up
+        if matches!(self.ps.online_ui, OnlineUi::Menu | OnlineUi::Rooms) { net::lobby::open(); net::lobby::poll(); } else { net::lobby::close(); }
         if !net::active() { return; }
         let map = self.rt.map.clone(); let racing = self.race.online && self.state == State::Drive;
         let name = self.ps.name.clone(); let mycar = self.ps.car as u8;   // name and car reach the room with the next presence message
@@ -119,6 +121,11 @@ impl Game {
             ("on_back", OnlineUi::Lobby) => { self.ps.online_ui = OnlineUi::Closed; }   // stays in the room; ONLINE brings it back
             ("on_host", OnlineUi::Menu) => { let name = self.ps.name.clone(); net::host(&name, &self.rt.map); self.ps.online_ui = OnlineUi::Lobby; }
             ("on_join", OnlineUi::Menu) => { self.ps.online_ui = OnlineUi::Join(String::new()); }
+            ("on_rooms", OnlineUi::Menu) => { self.ps.online_ui = OnlineUi::Rooms; }
+            ("on_back", OnlineUi::Rooms) => { self.ps.online_ui = OnlineUi::Menu; }
+            (k, OnlineUi::Rooms) if k.starts_with("on_r") => {
+                let n: usize = k[4..].parse().unwrap_or(99);
+                if let Some(r) = net::lobby::rooms().and_then(|l| l.into_iter().nth(n)) { let name = self.ps.name.clone(); net::join(r.code, &name, &self.rt.map); self.ps.online_ui = OnlineUi::Lobby; } }
             (k, OnlineUi::Join(mut code)) if k.starts_with('k') => {
                 if k == "kdel" { code.pop(); } else if k == "kok" { if code.len() == 6 { let name = self.ps.name.clone(); net::join(code.parse().unwrap_or(0), &name, &self.rt.map); self.ps.online_ui = OnlineUi::Lobby; return true; } }
                 else if code.len() < 6 { code.push_str(&k[1..]); }
@@ -157,8 +164,11 @@ pub fn draw(ps: &super::Persist, map: &str, g: &mut Canvas, ui: &mut Vec<(&'stat
             centre(g, "ONLINE RACE", py + 6.0 * u, 2.0 * u, AMBER);
             centre(g, "RACE FRIENDS OVER THE INTERNET", py + 22.0 * u, u, rgba(233, 236, 226, 0.75));
             let y0 = py + 34.0 * u;
-            button(g, ui, "on_host", "HOST A ROOM", bx, y0, bw, true);
-            button(g, ui, "on_join", "JOIN WITH A CODE", bx, y0 + 17.0 * u, bw, false);
+            let open = net::lobby::rooms().map(|r| r.len()).unwrap_or(0);
+            let half = ((bw - 4.0 * u) / 2.0).floor();
+            button(g, ui, "on_rooms", &if open > 0 { format!("OPEN ROOMS ({})", open) } else { "OPEN ROOMS".to_string() }, bx, y0, bw, open > 0);
+            button(g, ui, "on_host", "HOST A ROOM", bx, y0 + 17.0 * u, half, open == 0);
+            button(g, ui, "on_join", "JOIN BY CODE", bx + half + 4.0 * u, y0 + 17.0 * u, half, false);
             button(g, ui, "on_back", "BACK", bx, y0 + 34.0 * u, bw, false);
             let nm = if ps.name.is_empty() { "SET YOUR NAME".to_string() } else { format!("NAME: {}  - EDIT", ps.name) };
             button(g, ui, "on_name", &nm, bx, y0 + 51.0 * u, bw, ps.name.is_empty());
@@ -199,6 +209,27 @@ pub fn draw(ps: &super::Persist, map: &str, g: &mut Canvas, ui: &mut Vec<(&'stat
                 button(g, ui, "on_back", "HIDE", bx, yb, half, false); button(g, ui, "on_leave", "LEAVE ROOM", bx + half + 4.0 * u, yb, half, false);
             }
             if host { button(g, ui, "on_back", "HIDE", bx, yb + 16.0 * u, bw, false); }
+        }
+        OnlineUi::Rooms => {
+            centre(g, "OPEN ROOMS", py + 5.0 * u, u, AMBER);
+            let yb = py + ph - 17.0 * u;
+            match net::lobby::rooms() {
+                None => centre(g, "LOOKING FOR ROOMS...", py + 30.0 * u, u, rgba(233, 236, 226, 0.75)),
+                Some(list) if list.is_empty() => { centre(g, "NO OPEN ROOMS RIGHT NOW", py + 30.0 * u, u, INK); centre(g, "GO BACK AND HOST ONE", py + 42.0 * u, u, rgba(233, 236, 226, 0.75)); }
+                Some(list) => {
+                    const K: [&str; 6] = ["on_r0", "on_r1", "on_r2", "on_r3", "on_r4", "on_r5"];
+                    let rows = (((yb - 4.0 * u) - (py + 17.0 * u)) / (16.0 * u)).floor().clamp(1.0, 6.0) as usize;
+                    for (n, r) in list.iter().take(rows).enumerate() {
+                        let y = py + 17.0 * u + n as f64 * 16.0 * u; let h = 13.0 * u; ui.push((K[n], Rect { x: bx, y, w: bw, h }));
+                        g.panel(bx, y, bw, h, u, PANEL, Some(EDGE));
+                        let left = if r.name.is_empty() { "ROOM".to_string() } else { r.name.to_uppercase() };
+                        g.tx(&left, bx + 4.0 * u, y + 3.0 * u, u, INK);
+                        let right = format!("{}  {}P{}", short_name(&r.map), r.players, if r.racing { "  RACING" } else { "" });
+                        g.tx(&right, bx + bw - 4.0 * u - text_w(&right, u), y + 3.0 * u, u, if r.racing { rgba(233, 236, 226, 0.55) } else { AMBER });
+                    }
+                }
+            }
+            button(g, ui, "on_back", "BACK", bx, yb, bw, false);
         }
         OnlineUi::Stages => {
             centre(g, "PICK THE STAGE", py + 5.0 * u, u, AMBER);
