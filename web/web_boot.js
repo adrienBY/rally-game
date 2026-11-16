@@ -21,8 +21,8 @@ const fallback = () => { const s = document.createElement("script"); s.type = "m
   // online rooms: the engine's MQTT client talks to the public brokers over secure WebSockets held here
   const socks = new Map();
   window.__fwWs = {
-    open: (k, url) => { try { const o = new URLSearchParams(location.search).get("ws"); if (o) url = o;   // ?ws=ws://host:port: a test broker const old = socks.get(k); if (old) { old.onclose = old.onerror = old.onmessage = null; try { old.close(); } catch (_) {} }
-      const ws = new WebSocket(url, ["mqtt"]); ws.binaryType = "arraybuffer"; socks.set(k, ws);
+    open: (k, url) => { try { const q = new URLSearchParams(location.search), o = k >= 1000 ? q.get("relay") : q.get("ws"); if (o) url = o;   // ?ws= / ?relay=: test servers const old = socks.get(k); if (old) { old.onclose = old.onerror = old.onmessage = null; try { old.close(); } catch (_) {} }
+      const ws = new WebSocket(url, k >= 1000 ? [] : ["mqtt"]); ws.binaryType = "arraybuffer"; socks.set(k, ws);
       ws.onopen = () => { if (socks.get(k) === ws) fw.web_ws_open(k); };
       ws.onmessage = (e) => { if (socks.get(k) === ws && e.data instanceof ArrayBuffer) fw.web_ws_data(k, new Uint8Array(e.data)); };
       ws.onclose = ws.onerror = () => { if (socks.get(k) === ws) { socks.delete(k); fw.web_ws_close(k); } };

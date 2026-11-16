@@ -1,0 +1,32 @@
+name: Relay server (Fly.io)
+
+# Deploys rust/relay to Fly.io. Needs the repository secret FLY_API_TOKEN (fly.io > Account > Access tokens).
+on:
+  push:
+    branches: [main]
+    paths: ["rust/relay/**", ".github/workflows/relay.yml"]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: No token yet
+        if: env.FLY_API_TOKEN == ''
+        run: echo "Add the FLY_API_TOKEN secret to deploy the relay." 
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+        if: env.FLY_API_TOKEN != ''
+      - name: Create the app and its IPv4 address (first time)
+        if: env.FLY_API_TOKEN != ''
+        working-directory: rust/relay
+        run: |
+          flyctl status -a fogwood-relay-adrienby >/dev/null 2>&1 || flyctl apps create fogwood-relay-adrienby
+          flyctl ips list -a fogwood-relay-adrienby | grep -q v4 || flyctl ips allocate-v4 -a fogwood-relay-adrienby --yes
+          flyctl ips list -a fogwood-relay-adrienby | grep -q v6 || flyctl ips allocate-v6 -a fogwood-relay-adrienby
+      - name: Deploy
+        if: env.FLY_API_TOKEN != ''
+        working-directory: rust/relay
+        run: flyctl deploy --remote-only --ha=false

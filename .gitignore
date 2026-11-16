@@ -9,3 +9,4 @@ android/local.properties
 web/dist/
 rust/audio/target/
 web/dist-web/
+rust/relay/target/

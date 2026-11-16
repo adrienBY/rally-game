@@ -12,6 +12,7 @@
 //! The session lives in a global so it survives stage switches (the game object is rebuilt for every stage).
 pub mod mqtt;
 pub mod proto;
+pub mod relay;
 pub mod smooth;
 pub mod udp;
 
@@ -37,6 +38,8 @@ pub struct Peer {
     pub track: smooth::Track, last_seq: u8,
     /// the brokers this peer is connected to (bit k: BROKERS[k]; 0xFF until they tell us)
     pub brokers: u8,
+    /// last time a packet from them came through our relay (they are on it too)
+    pub via_relay: f64,
 }
 impl Peer {
     pub fn link(&self) -> Link { if self.direct.is_some() { Link::Direct } else if self.last_seen > 0.0 { Link::Relay } else { Link::Connecting } }
@@ -62,6 +65,8 @@ pub struct Session {
     thr: smooth::Thresholds, heartbeat: Option<f32>, loss: f64, lag: [f64; 2], held: VecDeque<(f64, Vec<u8>, Option<SocketAddr>)>, held_last: f64,
     /// estimated bytes on the wire, including UDP/IP and TCP/IP headers: [udp up, udp down, broker up, broker down]
     pub traffic: std::cell::Cell<[u64; 4]>, pub packets: std::cell::Cell<[u64; 4]>,
+    /// our own relay server (None: off)
+    relay: Option<relay::Client>,
 }
 const UDP_OVERHEAD: u64 = 28; const TCP_OVERHEAD: u64 = 40;
 /// Data budget for a session, both directions, every header counted: 8 kB/s is 28.8 MB an hour, well under the 40 MB
@@ -117,7 +122,8 @@ fn open(code: u32, name: &str, map: &str, is_host: bool) {
         last_hello: -9.0, last_start_tx: -9.0, policy: Default::default(), car_seq: 0, view: Default::default(), pong_n: 0, start_out: None, start_in: None, last_start_go: -1.0, map: map.to_string(), racing: false, car: 0, hits_in: Vec::new(), no_direct: std::env::var("FW_NODIRECT").is_ok(), traffic: Default::default(), packets: Default::default(),
         lag: std::env::var("FW_LAG").ok().and_then(|v| { let q: Vec<f64> = v.split(',').filter_map(|x| x.parse().ok()).collect(); if q.len() == 2 { Some([q[0], q[1]]) } else { None } }).unwrap_or([0.0, 0.0]), held: VecDeque::new(), held_last: 0.0,
         loss: std::env::var("FW_LOSS").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0),
-        thr: smooth::Thresholds::default(), heartbeat: None };
+        thr: smooth::Thresholds::default(), heartbeat: None,
+        relay: if std::env::var("FW_NORELAY").is_ok() { None } else { Some(relay::Client::start(code, me)) } };
     let mut s = s;
     if let Ok(v) = std::env::var("FW_THR") { let q: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect();
         if q.len() >= 3 { s.thr.pos = q[0]; s.thr.head = q[1]; s.thr.speed = q[2]; } if q.len() >= 4 { s.heartbeat = Some(q[3]); } }
@@ -139,7 +145,7 @@ impl Session {
     fn mqtt_bytes(&self, payload: usize) -> u64 { (payload + self.topic.len() + 4) as u64 + TCP_OVERHEAD }
     fn udp(&self, b: &[u8], a: SocketAddr) { if let Some(s) = &self.sock { if s.send_to(b, a).is_ok() { self.count(0, b.len() as u64 + UDP_OVERHEAD); } } }
     /// to every broker (lobby traffic: small, and it must reach phones that only got through to one of them)
-    fn relay_all(&self, b: &[u8]) { for k in &self.brokers { if k.is_up() { k.publish(&self.topic, b); self.count(2, self.mqtt_bytes(b.len())); } } }
+    fn relay_all(&self, b: &[u8]) { let now = self.now(); self.relay_send(0, b, now); for k in &self.brokers { if k.is_up() { k.publish(&self.topic, b); self.count(2, self.mqtt_bytes(b.len())); } } }
     /// the brokers we are connected to (bit k: brokers[k])
     pub fn broker_mask(&self) -> u8 { self.brokers.iter().enumerate().filter(|(_, b)| b.is_up()).fold(0u8, |m, (k, _)| m | (1 << k.min(7))) }
     /// Game traffic through the relay, reaching every phone in `masks` (the brokers each is connected to) with as few
@@ -148,10 +154,16 @@ impl Session {
     fn relay_for(&self, b: &[u8], masks: &[u8]) {
         for k in pick_brokers(self.broker_mask(), masks) { if let Some(br) = self.brokers.get(k) { br.publish(&self.topic, b); self.count(2, self.mqtt_bytes(b.len())); } }
     }
+    /// our relay is up and this peer is on it too
+    fn on_relay(&self, p: &Peer, now: f64) -> bool { self.relay.as_ref().map(|r| r.is_up(now)).unwrap_or(false) && now - p.via_relay < 9.0 }
+    fn relay_send(&self, to: u32, b: &[u8], now: f64) -> bool { match &self.relay { Some(r) => { let ok = r.send(to, b, now); if ok { self.count(0, b.len() as u64 + 5 + UDP_OVERHEAD); } ok } None => false } }
     fn send_to(&self, to: u32, b: &[u8]) {
-        match self.peers.get(&to) { Some(p) if p.direct.is_some() => self.udp(b, p.direct.unwrap()), Some(p) => self.relay_for(b, &[p.brokers]), None => self.relay_for(b, &[]) }
+        let now = self.now();
+        match self.peers.get(&to) { Some(p) if p.direct.is_some() => self.udp(b, p.direct.unwrap()),
+            Some(p) if self.on_relay(p, now) => { self.relay_send(to, b, now); }
+            Some(p) => self.relay_for(b, &[p.brokers]), None => self.relay_for(b, &[]) }
     }
-    fn bye(&mut self) { let e = self.env(K_BYE, 0); let b = bare(e); self.relay_all(&b); for p in self.peers.values() { if let Some(a) = p.direct { self.udp(&b, a); } } }
+    fn bye(&mut self) { let e = self.env(K_BYE, 0); let b = bare(e); self.relay_all(&b); for p in self.peers.values() { if let Some(a) = p.direct { self.udp(&b, a); } }  if let Some(r) = &self.relay { r.leave(); } }
 
     /// Network work for one frame: read the broker queue and the UDP socket, presence, clock pings, punching, start repeats.
     pub fn poll(&mut self) {
@@ -163,6 +175,10 @@ impl Session {
         if !self.stun_done && now > 4.0 { self.stun_done = true; self.stun = None; }
         // broker messages
         let mut msgs = Vec::new(); while let Ok((t, p)) = self.inbox.try_recv() { self.count(3, self.mqtt_bytes(p.len())); if t == self.topic { msgs.push((p, None)); } }
+        // our relay
+        let mut via: Vec<u32> = Vec::new();
+        if let Some(r) = self.relay.as_mut() { for (from, p) in r.poll(now) { via.push(from); self.count(1, p.len() as u64 + 5 + UDP_OVERHEAD); msgs.push((p, None)); } }
+        for id in via { if let Some(p) = self.peers.get_mut(&id) { p.via_relay = now; } }
         // direct messages (only once STUN has finished with the socket)
         if self.stun_done { if let Some(s) = &self.sock { let mut buf = [0u8; 1500]; while let Ok((n, a)) = s.recv_from(&mut buf) { msgs.push((buf[..n].to_vec(), Some(a))); self.count(1, n as u64 + UDP_OVERHEAD); } } }
         // test hooks: FW_LOSS drops a share of what arrives, FW_LAG="mean_ms,jitter_ms" holds it back like a slow network
@@ -200,7 +216,7 @@ impl Session {
         if e.room != self.code || e.from == self.me || (e.to != 0 && e.to != self.me) { return; }
         if e.kind == K_BYE { self.peers.remove(&e.from); return; }
         let p = self.peers.entry(e.from).or_insert_with(|| Peer { id: e.from, name: "?".into(), map: String::new(), host: false, racing: false, first_seen: now, last_seen: now, car: 0,
-            cands: Vec::new(), punch_from: now, last_probe: -9.0, direct: None, last_udp: -9.0, seen: VecDeque::new(), rtt: -1.0, last_tx: -9.0, track: Default::default(), last_seq: 0, brokers: 0xFF });
+            cands: Vec::new(), punch_from: now, last_probe: -9.0, direct: None, last_udp: -9.0, seen: VecDeque::new(), rtt: -1.0, last_tx: -9.0, track: Default::default(), last_seq: 0, brokers: 0xFF, via_relay: -99.0 });
         p.last_seen = now;
         if let Some(a) = from { p.last_udp = now; if e.kind == K_PROBE || e.kind == K_PROBE_ACK { if p.direct != Some(a) { p.direct = Some(a); } } }
         if from.is_none() && e.seq != 0 && p.dup(e.seq) { return; }
@@ -234,10 +250,13 @@ impl Session {
     /// Every phone applies the same rule, so what we receive is bounded the same way as what we send.
     /// 2-4 players: up to ~20 a second; 8 players: ~9; 12 players: ~6.
     pub fn car_rate(&self) -> (f32, f32) {
-        let n = self.peers.len().max(1) as f64; let direct = self.peers.values().filter(|p| p.direct.is_some()).count() as f64;
+        let now = self.now(); let n = self.peers.len().max(1) as f64;
+        // phones on our relay cost like direct ones on the way down, and one datagram on the way up for all of them
+        let ours = self.peers.values().filter(|p| p.direct.is_none() && self.on_relay(p, now)).count() as f64;
+        let direct = self.peers.values().filter(|p| p.direct.is_some()).count() as f64 + ours;
         let udp = (CAR3_LEN as u64 + UDP_OVERHEAD) as f64; let relay = self.mqtt_bytes(CAR3_LEN) as f64 + 20.0;   // + the TCP acks we send back
         // ours: a datagram per direct peer, one broker publish if anyone needs the relay (the broker echoes it back to us too)
-        let up = direct * udp + if direct < n { 2.0 * relay } else { 0.0 };
+        let up = (direct - ours) * udp + if ours > 0.0 { udp } else { 0.0 } + if direct < n { 2.0 * relay } else { 0.0 };
         // theirs: each other phone, by datagram, plus a relayed copy when a room has relayed players
         let down = n * if direct < n { udp.max(relay) + relay * 0.5 } else { udp };
         let r = ((BUDGET - LOBBY_BYTES) / (up + down)).clamp(4.0, 24.0) as f32;
@@ -257,9 +276,13 @@ impl Session {
         self.car_seq = self.car_seq.wrapping_add(1); let b = car3(self.me, self.car_seq, &c);
         // remember exactly what receivers will decode, so both sides predict from the same numbers
         if let Some((_, _, _, mut q)) = read_car2(&b) { q.t = th; self.policy.sent = Some(q); }
-        let mut relayed = Vec::new(); let mut out = Vec::new();
-        for p in self.peers.values_mut() { match p.direct { Some(a) => { out.push(a); p.last_tx = now; } None => relayed.push(p.brokers) } }
+        let mut relayed = Vec::new(); let mut out = Vec::new(); let mut via_ours = false;
+        let relay_up = self.relay.as_ref().map(|r| r.is_up(now)).unwrap_or(false);
+        for p in self.peers.values_mut() { match p.direct { Some(a) => { out.push(a); p.last_tx = now; }
+            None if relay_up && now - p.via_relay < 9.0 => via_ours = true, None => relayed.push(p.brokers) } }
         for a in out { self.udp(&b, a); }
+        // one datagram to our relay reaches every phone on it; the brokers only for phones that aren't
+        if via_ours { self.relay_send(0, &b, now); }
         if !relayed.is_empty() { self.relay_for(&b, &relayed); }
     }
 

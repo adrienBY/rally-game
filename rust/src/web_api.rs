@@ -62,11 +62,11 @@ pub fn web_step(csv: &str) -> String { crate::guard::run("step", String::new(), 
 pub fn web_grid_bytes() -> Vec<u8> { crate::guard::run("grids", Vec::new(), crate::bridge::grid_bytes) }
 // the broker WebSockets the page holds for the online rooms (see net::mqtt::web)
 #[wasm_bindgen]
-pub fn web_ws_open(k: u32) { crate::guard::run("ws", (), || crate::net::mqtt::web::on_open(k)) }
+pub fn web_ws_open(k: u32) { crate::guard::run("ws", (), || if k >= crate::net::relay::web::SOCK { crate::net::relay::web::on_open() } else { crate::net::mqtt::web::on_open(k) }) }
 #[wasm_bindgen]
-pub fn web_ws_data(k: u32, b: &[u8]) { crate::guard::run("ws", (), || crate::net::mqtt::web::on_data(k, b)) }
+pub fn web_ws_data(k: u32, b: &[u8]) { crate::guard::run("ws", (), || if k >= crate::net::relay::web::SOCK { crate::net::relay::web::on_data(b) } else { crate::net::mqtt::web::on_data(k, b) }) }
 #[wasm_bindgen]
-pub fn web_ws_close(k: u32) { crate::guard::run("ws", (), || crate::net::mqtt::web::on_close(k)) }
+pub fn web_ws_close(k: u32) { crate::guard::run("ws", (), || if k >= crate::net::relay::web::SOCK { crate::net::relay::web::on_close() } else { crate::net::mqtt::web::on_close(k) }) }
 /// the online room this page is in (0: none); for tests and the page
 #[wasm_bindgen]
 pub fn web_room() -> u32 { crate::net::with(|s| s.code).unwrap_or(0) }

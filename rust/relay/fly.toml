@@ -1,0 +1,30 @@
+# Fogwood relay on Fly.io (deployed by .github/workflows/relay.yml)
+app = "fogwood-relay-adrienby"
+primary_region = "cdg"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  # Fly delivers UDP to this address only
+  RELAY_UDP = "fly-global-services:7777"
+  RELAY_WS = "0.0.0.0:8080"
+
+# the app's UDP (needs the app's own IPv4 address)
+[[services]]
+  internal_port = 7777
+  protocol = "udp"
+  [[services.ports]]
+    port = 7777
+
+# the browser's WebSocket: wss://fogwood-relay-adrienby.fly.dev/ws
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
