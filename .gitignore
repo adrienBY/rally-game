@@ -10,3 +10,4 @@ web/dist/
 rust/audio/target/
 web/dist-web/
 rust/relay/target/
+relay-cf/.wrangler/

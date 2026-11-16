@@ -16,6 +16,12 @@ fogwood_audio = { path = "audio" }
 # Instant / SystemTime that also work in the browser (plain std elsewhere)
 web-time = "1"
 
+# the app's WebSocket to the relay (TLS by rustls with ring: builds with the NDK, no cmake)
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "0.26"
+
 # the browser build (WebGL2 through glow, wasm-bindgen glue)
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "=0.2.130"

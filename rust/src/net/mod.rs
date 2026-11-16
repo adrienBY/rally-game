@@ -13,6 +13,8 @@
 pub mod mqtt;
 pub mod proto;
 pub mod relay;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod ws;
 pub mod smooth;
 pub mod udp;
 
