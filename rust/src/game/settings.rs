@@ -53,7 +53,7 @@ fn value(ps: &Persist, cam: u8, key: &str) -> i32 {
 
 impl Game {
     pub fn settings_paused(&self) -> bool { self.set.open && self.state == State::Drive && !self.race.online }
-    pub fn open_settings(&mut self) { self.set.open = true; self.set.kb = None; self.set.drag = None; self.set.kb_only = false; self.set.tab_y = self.set.tab as f64; }
+    pub fn open_settings(&mut self) { self.touches.clear(); self.set.open = true; self.set.kb = None; self.set.drag = None; self.set.kb_only = false; self.set.tab_y = self.set.tab as f64; }
     pub fn close_settings(&mut self) { if self.set.open && self.wipe_close(super::menu::Go::CloseSettings) { return; } self.close_settings_now(); }
     pub fn close_settings_now(&mut self) { self.set.open = false; self.set.kb = None; self.set.drag = None; self.set.kb_only = false; self.touches.clear(); }
     /// the name keyboard on its own (online screen): the settings screen opens on PLAYER with the keyboard up

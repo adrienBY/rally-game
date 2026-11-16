@@ -18,9 +18,22 @@ const fallback = () => { const s = document.createElement("script"); s.type = "m
   const vib = (k, s) => { try { navigator.vibrate && navigator.vibrate(k === "impact" ? Math.round(14 + 40 * s) : k === "land" ? Math.round(10 + 28 * s) : k === "rumble" ? Math.round(5 + 9 * s) : k === "shift" ? 12 : 7); } catch (_) {} };
   window.FogwoodNative = { prepare: (m, p, r, gx, gz) => fw.web_prepare(m, p, r, gx, gz), obstacles: (c) => fw.web_obstacles(c), step: (c) => fw.web_step(c), gridBytes: () => fw.web_grid_bytes(),
     haptic: vib, glStatus: () => fw.web_status(), version: () => "fogwood-core-wasm" };
+  // online rooms: the engine's MQTT client talks to the public brokers over secure WebSockets held here
+  const socks = new Map();
+  window.__fwWs = {
+    open: (k, url) => { try { const o = new URLSearchParams(location.search).get("ws"); if (o) url = o;   // ?ws=ws://host:port: a test broker const old = socks.get(k); if (old) { old.onclose = old.onerror = old.onmessage = null; try { old.close(); } catch (_) {} }
+      const ws = new WebSocket(url, ["mqtt"]); ws.binaryType = "arraybuffer"; socks.set(k, ws);
+      ws.onopen = () => { if (socks.get(k) === ws) fw.web_ws_open(k); };
+      ws.onmessage = (e) => { if (socks.get(k) === ws && e.data instanceof ArrayBuffer) fw.web_ws_data(k, new Uint8Array(e.data)); };
+      ws.onclose = ws.onerror = () => { if (socks.get(k) === ws) { socks.delete(k); fw.web_ws_close(k); } };
+    } catch (e) { setTimeout(() => fw.web_ws_close(k), 0); } },
+    send: (k, b) => { const ws = socks.get(k); if (ws && ws.readyState === 1) try { ws.send(b.slice()); } catch (_) {} },
+    close: (k) => { const ws = socks.get(k); if (ws) { socks.delete(k); ws.onclose = ws.onerror = ws.onmessage = null; try { ws.close(); } catch (_) {} } },
+  };
+  window.__fw = fw;
   window.__fwAudio = (u8) => { try { const S = window.__SHARED; if (S) S.send(new Float32Array(u8.slice().buffer)); } catch (_) {} };
   const map = fw.web_start("fogwood-native-save");
-  if (!/[?&]rt=1/.test(location.search)) history.replaceState(null, "", "?rt=1#" + map);
+  if (!/[?&]rt=1/.test(location.search)) history.replaceState(null, "", "?rt=1" + location.search.replace(/^\?/, "&") + "#" + map);
   // size, safe areas
   const probe = document.getElementById("probe");
   const fit = () => { const d = Math.min(window.devicePixelRatio || 1, 3); const w = Math.round(innerWidth * d), h = Math.round(innerHeight * d);
@@ -31,8 +44,12 @@ const fallback = () => { const s = document.createElement("script"); s.type = "m
   addEventListener("resize", fit); addEventListener("orientationchange", () => setTimeout(fit, 250)); fit();
   // touches (and the mouse) in canvas pixels: 0 down, 1 move, 2 up
   let sound = false; const d = () => Math.min(window.devicePixelRatio || 1, 3);
-  const ptr = (a) => (e) => { e.preventDefault(); if (!sound) { sound = true; window.__audioOn = true; try { window.__SHARED && window.__SHARED.start(); } catch (_) {} }
-    if (a === 0) try { cv.setPointerCapture(e.pointerId); } catch (_) {}
+  const live = new Set();   // pointers down: the first one also clears anything whose lift was lost (3)
+  addEventListener("blur", () => { live.clear(); fw.web_touch(5, 0, 0, 0); });
+  document.addEventListener("visibilitychange", () => { if (document.hidden) { live.clear(); fw.web_touch(5, 0, 0, 0); } });
+  const ptr = (a0) => (e) => { e.preventDefault(); let a = a0;
+    if (a === 0) { if (live.size === 0) a = 3; live.add(e.pointerId); } else if (a === 2) live.delete(e.pointerId); if (!sound) { sound = true; window.__audioOn = true; try { window.__SHARED && window.__SHARED.start(); } catch (_) {} }
+    if (a0 === 0) try { cv.setPointerCapture(e.pointerId); } catch (_) {}
     fw.web_touch(a, e.pointerId & 0xffff, e.clientX * d(), e.clientY * d()); };
   cv.addEventListener("pointerdown", ptr(0)); cv.addEventListener("pointermove", (e) => { if (e.buttons || e.pointerType === "touch") ptr(1)(e); });
   cv.addEventListener("pointerup", ptr(2)); cv.addEventListener("pointercancel", ptr(2));

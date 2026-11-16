@@ -259,7 +259,9 @@ class MainActivity : Activity() {
                 if (!rtMode) return@setOnTouchListener false
                 val i = e.actionIndex
                 when (e.actionMasked) {
-                    MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> NativeCore.rtTouch(0, e.getPointerId(i), e.getX(i), e.getY(i))
+                    // the first finger: nothing else is down (3 also lets go of anything whose lift was lost)
+                    MotionEvent.ACTION_DOWN -> NativeCore.rtTouch(3, e.getPointerId(i), e.getX(i), e.getY(i))
+                    MotionEvent.ACTION_POINTER_DOWN -> NativeCore.rtTouch(0, e.getPointerId(i), e.getX(i), e.getY(i))
                     MotionEvent.ACTION_MOVE -> for (k in 0 until e.pointerCount) NativeCore.rtTouch(1, e.getPointerId(k), e.getX(k), e.getY(k))
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> NativeCore.rtTouch(2, e.getPointerId(i), e.getX(i), e.getY(i))
                     MotionEvent.ACTION_CANCEL -> for (k in 0 until e.pointerCount) NativeCore.rtTouch(2, e.getPointerId(k), e.getX(k), e.getY(k))
@@ -361,6 +363,7 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         stopLoop(); main.removeCallbacks(thermalTick)
+        if (NativeCore.loaded && rtMode) NativeCore.rtTouch(5, 0, 0f, 0f)   // fingers lifted while away never report: let go of the pedals
         if (!rtMode) web.evaluateJavascript("window.__appPause && window.__appPause(true)", null)
         web.onPause(); glView?.onPause(); audio.stop(); super.onPause()
     }

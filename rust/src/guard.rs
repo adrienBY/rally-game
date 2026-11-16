@@ -57,7 +57,9 @@ fn note(what: &str) {
     let line = format!("[{secs}] #{n} in {what}: {last}\n");
     #[cfg(target_os = "android")]
     { eprintln!("Fogwood caught a panic: {line}"); }
-    #[cfg(not(target_os = "android"))]
+    #[cfg(target_arch = "wasm32")]
+    { web_sys::console::error_1(&format!("caught panic: {line}").into()); }
+    #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
     { eprint!("caught panic: {line}"); }
     if let Some(p) = note_path() {
         use std::io::Write;

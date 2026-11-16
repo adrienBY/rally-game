@@ -60,3 +60,13 @@ pub fn web_obstacles(csv: &str) -> i32 { crate::guard::run("obstacles", 0, || cr
 pub fn web_step(csv: &str) -> String { crate::guard::run("step", String::new(), || crate::bridge::step(csv)) }
 #[wasm_bindgen]
 pub fn web_grid_bytes() -> Vec<u8> { crate::guard::run("grids", Vec::new(), crate::bridge::grid_bytes) }
+// the broker WebSockets the page holds for the online rooms (see net::mqtt::web)
+#[wasm_bindgen]
+pub fn web_ws_open(k: u32) { crate::guard::run("ws", (), || crate::net::mqtt::web::on_open(k)) }
+#[wasm_bindgen]
+pub fn web_ws_data(k: u32, b: &[u8]) { crate::guard::run("ws", (), || crate::net::mqtt::web::on_data(k, b)) }
+#[wasm_bindgen]
+pub fn web_ws_close(k: u32) { crate::guard::run("ws", (), || crate::net::mqtt::web::on_close(k)) }
+/// the online room this page is in (0: none); for tests and the page
+#[wasm_bindgen]
+pub fn web_room() -> u32 { crate::net::with(|s| s.code).unwrap_or(0) }

@@ -24,7 +24,9 @@ pub struct CarSnap {
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Hello { pub host: bool, pub racing: bool, pub name: String, pub map: String, pub cands: Vec<([u8; 4], u16)>, pub car: u8 }
+pub struct Hello { pub host: bool, pub racing: bool, pub name: String, pub map: String, pub cands: Vec<([u8; 4], u16)>, pub car: u8,
+    /// which of the brokers (bit k: BROKERS[k]) this phone is connected to; 0xFF: unknown (older builds)
+    pub brokers: u8 }
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Start { pub map: String, pub laps: u8, pub go_at: f64, pub slots: Vec<(u32, u8)> }
 
@@ -58,14 +60,14 @@ pub fn read_env(b: &[u8]) -> Option<(Env, R<'_>)> {
 
 pub fn hello(e: Env, h: &Hello) -> Vec<u8> {
     let mut w = W::env(e); w.u8(h.host as u8 | (h.racing as u8) << 1); w.str(&h.name); w.str(&h.map); w.u8(h.cands.len().min(4) as u8);
-    for (ip, port) in h.cands.iter().take(4) { w.0.extend_from_slice(ip); w.u16(*port); } w.u8(h.car); w.0
+    for (ip, port) in h.cands.iter().take(4) { w.0.extend_from_slice(ip); w.u16(*port); } w.u8(h.car); w.u8(h.brokers); w.0
 }
 pub fn read_hello(r: &mut R) -> Option<Hello> {
     let f = r.u8()?; let name = r.str()?; let map = r.str()?; let n = r.u8()? as usize; let mut cands = Vec::new();
     for _ in 0..n.min(4) { let ip = r.take(4)?; let port = r.u16()?; cands.push(([ip[0], ip[1], ip[2], ip[3]], port)); }
     // the car came later: older builds stop before it (car 0)
-    let car = r.u8().unwrap_or(0);
-    Some(Hello { host: f & 1 != 0, racing: f & 2 != 0, name, map, cands, car })
+    let car = r.u8().unwrap_or(0); let brokers = r.u8().unwrap_or(0xFF);
+    Some(Hello { host: f & 1 != 0, racing: f & 2 != 0, name, map, cands, car, brokers })
 }
 pub fn start(e: Env, s: &Start) -> Vec<u8> {
     let mut w = W::env(e); w.str(&s.map); w.u8(s.laps); w.f64(s.go_at); w.u8(s.slots.len().min(12) as u8); for (id, k) in s.slots.iter().take(12) { w.u32(*id); w.u8(*k); } w.0
@@ -133,7 +135,7 @@ mod tests {
     #[test]
     fn roundtrips() {
         let e = Env { kind: K_HELLO, room: 123456, from: 0xdeadbeef, to: 0, seq: 9 };
-        let h = Hello { host: true, racing: false, name: "ADRIEN".into(), map: "lakes".into(), cands: vec![([192, 168, 1, 20], 40000), ([203, 0, 113, 9], 51234)], car: 3 };
+        let h = Hello { host: true, racing: false, name: "ADRIEN".into(), map: "lakes".into(), cands: vec![([192, 168, 1, 20], 40000), ([203, 0, 113, 9], 51234)], car: 3, brokers: 5 };
         let b = hello(e, &h); let (e2, mut r) = read_env(&b).unwrap(); assert_eq!(e2, e); assert_eq!(read_hello(&mut r).unwrap(), h);
         let s = Start { map: "snow".into(), laps: 3, go_at: 1234.5, slots: vec![(1, 0), (2, 1)] };
         let b = start(Env { kind: K_START, ..e }, &s); let (_, mut r) = read_env(&b).unwrap(); assert_eq!(read_start(&mut r).unwrap(), s);

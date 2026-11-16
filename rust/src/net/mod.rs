@@ -35,6 +35,8 @@ pub struct Peer {
     seen: VecDeque<u32>, pub rtt: f64, last_tx: f64,
     /// this peer's car as shown here, and the sequence number of the newest state from them
     pub track: smooth::Track, last_seq: u8,
+    /// the brokers this peer is connected to (bit k: BROKERS[k]; 0xFF until they tell us)
+    pub brokers: u8,
 }
 impl Peer {
     pub fn link(&self) -> Link { if self.direct.is_some() { Link::Direct } else if self.last_seen > 0.0 { Link::Relay } else { Link::Connecting } }
@@ -70,6 +72,19 @@ const LOBBY_BYTES: f64 = 250.0;
 
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
 
+/// Which of our brokers (`up`: bit k = connected to broker k) to publish on so every receiver in `masks` (the brokers
+/// each is connected to) gets it, with as few publishes as possible (greedy: the broker most of them share first,
+/// the earlier one on a tie). Nobody to reach, or nobody we share a broker with: the first broker that is up.
+pub fn pick_brokers(up: u8, masks: &[u8]) -> Vec<usize> {
+    let mut need: Vec<u8> = masks.iter().map(|m| m & up).filter(|m| *m != 0).collect(); let mut out = Vec::new();
+    if need.is_empty() { if up != 0 { out.push(up.trailing_zeros() as usize); } return out; }
+    while !need.is_empty() {
+        let k = (0..8usize).filter(|k| up & (1 << k) != 0).max_by_key(|k| (need.iter().filter(|m| *m & (1 << k) != 0).count(), std::cmp::Reverse(*k))).unwrap();
+        out.push(k); need.retain(|m| m & (1 << k) == 0);
+    }
+    out
+}
+
 pub fn with<T>(f: impl FnOnce(&mut Session) -> T) -> Option<T> { SESSION.lock().ok()?.as_mut().map(f) }
 pub fn active() -> bool { SESSION.lock().map(|s| s.is_some()).unwrap_or(false) }
 pub fn host(name: &str, map: &str) -> u32 { let code = rand_u32() % 900000 + 100000; open(code, name, map, true); code }
@@ -78,7 +93,11 @@ pub fn leave() { if let Ok(mut s) = SESSION.lock() { if let Some(x) = s.as_mut()
 
 fn rand_u32() -> u32 {
     let n = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(7) as u64;
-    let mut x = n ^ 0x9E3779B97F4A7C15 ^ (std::process::id() as u64) << 32; x ^= x >> 33; x = x.wrapping_mul(0xff51afd7ed558ccd); x ^= x >> 33; x = x.wrapping_mul(0xc4ceb9fe1a85ec53); x ^= x >> 33; x as u32
+    #[cfg(not(target_arch = "wasm32"))]
+    let pid = std::process::id() as u64;
+    #[cfg(target_arch = "wasm32")]
+    let pid = (js_sys::Math::random() * 4294967295.0) as u64;   // no process ids in a browser
+    let mut x = n ^ 0x9E3779B97F4A7C15 ^ pid << 32; x ^= x >> 33; x = x.wrapping_mul(0xff51afd7ed558ccd); x ^= x >> 33; x = x.wrapping_mul(0xc4ceb9fe1a85ec53); x ^= x >> 33; x as u32
 }
 
 fn open(code: u32, name: &str, map: &str, is_host: bool) {
@@ -114,22 +133,29 @@ impl Session {
     fn env(&mut self, kind: u8, to: u32) -> Env { self.seq = self.seq.wrapping_add(1); Env { kind, room: self.code, from: self.me, to, seq: self.seq } }
     fn hello_msg(&mut self) -> Vec<u8> {
         let mut cands = Vec::new(); for a in [self.local, self.public].into_iter().flatten() { cands.push((a.ip().octets(), a.port())); }
-        let h = Hello { host: self.is_host, racing: self.racing, name: self.name.clone(), map: self.map.clone(), cands, car: self.car }; let e = self.env(K_HELLO, 0); hello(e, &h)
+        let h = Hello { host: self.is_host, racing: self.racing, name: self.name.clone(), map: self.map.clone(), cands, car: self.car, brokers: self.broker_mask() }; let e = self.env(K_HELLO, 0); hello(e, &h)
     }
     fn count(&self, k: usize, bytes: u64) { let mut t = self.traffic.get(); t[k] += bytes; self.traffic.set(t); let mut p = self.packets.get(); p[k] += 1; self.packets.set(p); }
     fn mqtt_bytes(&self, payload: usize) -> u64 { (payload + self.topic.len() + 4) as u64 + TCP_OVERHEAD }
     fn udp(&self, b: &[u8], a: SocketAddr) { if let Some(s) = &self.sock { if s.send_to(b, a).is_ok() { self.count(0, b.len() as u64 + UDP_OVERHEAD); } } }
     /// to every broker (lobby traffic: small, and it must reach phones that only got through to one of them)
     fn relay_all(&self, b: &[u8]) { for k in &self.brokers { if k.is_up() { k.publish(&self.topic, b); self.count(2, self.mqtt_bytes(b.len())); } } }
-    /// to the first broker that is up (game traffic)
-    fn relay_one(&self, b: &[u8]) { if let Some(k) = self.brokers.iter().find(|k| k.is_up()) { k.publish(&self.topic, b); self.count(2, self.mqtt_bytes(b.len())); } }
+    /// the brokers we are connected to (bit k: brokers[k])
+    pub fn broker_mask(&self) -> u8 { self.brokers.iter().enumerate().filter(|(_, b)| b.is_up()).fold(0u8, |m, (k, _)| m | (1 << k.min(7))) }
+    /// Game traffic through the relay, reaching every phone in `masks` (the brokers each is connected to) with as few
+    /// publishes as possible: phones that ended up on different brokers (one of them unreachable from a network) still
+    /// hear each other, where sending on our first broker alone left them frozen.
+    fn relay_for(&self, b: &[u8], masks: &[u8]) {
+        for k in pick_brokers(self.broker_mask(), masks) { if let Some(br) = self.brokers.get(k) { br.publish(&self.topic, b); self.count(2, self.mqtt_bytes(b.len())); } }
+    }
     fn send_to(&self, to: u32, b: &[u8]) {
-        match self.peers.get(&to).and_then(|p| p.direct) { Some(a) => self.udp(b, a), None => self.relay_one(b) }
+        match self.peers.get(&to) { Some(p) if p.direct.is_some() => self.udp(b, p.direct.unwrap()), Some(p) => self.relay_for(b, &[p.brokers]), None => self.relay_for(b, &[]) }
     }
     fn bye(&mut self) { let e = self.env(K_BYE, 0); let b = bare(e); self.relay_all(&b); for p in self.peers.values() { if let Some(a) = p.direct { self.udp(&b, a); } } }
 
     /// Network work for one frame: read the broker queue and the UDP socket, presence, clock pings, punching, start repeats.
     pub fn poll(&mut self) {
+        mqtt::tick();
         let now = self.now();
         // clock corrections are eased in (at most 3 ms per frame) so other cars never jump when a better estimate arrives
         let d = self.offset_target - self.offset; self.offset += d.clamp(-0.003, 0.003);
@@ -174,7 +200,7 @@ impl Session {
         if e.room != self.code || e.from == self.me || (e.to != 0 && e.to != self.me) { return; }
         if e.kind == K_BYE { self.peers.remove(&e.from); return; }
         let p = self.peers.entry(e.from).or_insert_with(|| Peer { id: e.from, name: "?".into(), map: String::new(), host: false, racing: false, first_seen: now, last_seen: now, car: 0,
-            cands: Vec::new(), punch_from: now, last_probe: -9.0, direct: None, last_udp: -9.0, seen: VecDeque::new(), rtt: -1.0, last_tx: -9.0, track: Default::default(), last_seq: 0 });
+            cands: Vec::new(), punch_from: now, last_probe: -9.0, direct: None, last_udp: -9.0, seen: VecDeque::new(), rtt: -1.0, last_tx: -9.0, track: Default::default(), last_seq: 0, brokers: 0xFF });
         p.last_seen = now;
         if let Some(a) = from { p.last_udp = now; if e.kind == K_PROBE || e.kind == K_PROBE_ACK { if p.direct != Some(a) { p.direct = Some(a); } } }
         if from.is_none() && e.seq != 0 && p.dup(e.seq) { return; }
@@ -182,7 +208,7 @@ impl Session {
             K_HELLO => { if let Some(h) = read_hello(&mut r) {
                 let cands: Vec<SocketAddr> = h.cands.iter().map(|(ip, port)| SocketAddr::V4(SocketAddrV4::new((*ip).into(), *port))).collect();
                 if cands != p.cands { p.cands = cands; p.punch_from = now; }
-                p.name = h.name; p.map = h.map; p.host = h.host; p.racing = h.racing; p.car = h.car;
+                p.name = h.name; p.map = h.map; p.host = h.host; p.racing = h.racing; p.car = h.car; p.brokers = h.brokers;
                 if h.host && !self.is_host { self.host_id = Some(e.from); } } }
             K_PROBE => { if let Some(a) = from { let b = bare(Env { kind: K_PROBE_ACK, room: self.code, from: self.me, to: e.from, seq: 0 }); self.udp(&b, a); } }
             K_PING => { if self.is_host { if let Some(t) = r.f64() { let o = self.env(K_PONG, e.from); let b = time_pair(Env { seq: e.seq, ..o }, t, now); self.send_to(e.from, &b); } } }
@@ -228,10 +254,10 @@ impl Session {
         self.car_seq = self.car_seq.wrapping_add(1); let b = car3(self.me, self.car_seq, &c);
         // remember exactly what receivers will decode, so both sides predict from the same numbers
         if let Some((_, _, _, mut q)) = read_car2(&b) { q.t = th; self.policy.sent = Some(q); }
-        let mut relay = false; let mut out = Vec::new();
-        for p in self.peers.values_mut() { match p.direct { Some(a) => { out.push(a); p.last_tx = now; } None => relay = true } }
+        let mut relayed = Vec::new(); let mut out = Vec::new();
+        for p in self.peers.values_mut() { match p.direct { Some(a) => { out.push(a); p.last_tx = now; } None => relayed.push(p.brokers) } }
         for a in out { self.udp(&b, a); }
-        if relay { self.relay_one(&b); }
+        if !relayed.is_empty() { self.relay_for(&b, &relayed); }
     }
 
     /// Tell a player's phone about a bump we resolved (their phone owns their car), and show the push here right away.
@@ -251,7 +277,7 @@ impl Session {
         if p.track.latest.is_some() && (seq.wrapping_sub(p.last_seq) as i8) <= 0 { return; }   // late or duplicate
         p.last_seq = seq;
         let age = ((th * 1000.0).rem_euclid(65536.0) - ms as f64).rem_euclid(65536.0) / 1000.0; c.t = th - if age < 10.0 { age } else { 0.0 };
-        p.track.push(c);
+        p.track.push_at(c, th);
     }
 
     /// Call once per frame with the frame's length, before `remote`: advances the clock other cars are shown at.
@@ -260,5 +286,19 @@ impl Session {
     /// Where a peer's car is shown this frame.
     pub fn remote(&mut self, id: u32, g: smooth::Ground) -> Option<CarSnap> {
         let t = self.view.get().unwrap_or_else(|| self.host_now()); self.peers.get_mut(&id)?.track.sample(t, g)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pick_brokers;
+    #[test]
+    fn brokers_cover_everyone() {
+        assert_eq!(pick_brokers(0b111, &[0b111, 0b111]), vec![0]);       // everyone on everything: one publish
+        assert_eq!(pick_brokers(0b111, &[0b010, 0b011]), vec![1]);       // the broker both share
+        assert_eq!(pick_brokers(0b111, &[0b001, 0b100]), vec![0, 2]);    // split room: both brokers
+        assert_eq!(pick_brokers(0b011, &[0b100]), vec![0]);              // unreachable peer: still the first broker
+        assert_eq!(pick_brokers(0b110, &[0xFF]), vec![1]);               // older build (unknown): our first broker
+        assert!(pick_brokers(0, &[1]).is_empty());
     }
 }

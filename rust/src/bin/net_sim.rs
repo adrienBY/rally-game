@@ -120,7 +120,7 @@ fn main() {
             }
             flight.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
             // receive and draw
-            let mut tr = Track::default(); tr.stiff = env("STIFF", 0.0) as f32; let mut v1r = V1::default(); let mut fi = 0; let mut last_seq: Option<u8> = None;
+            let mut tr = Track::default(); tr.stiff = env("STIFF", 0.0) as f32; tr.cap = env("CAP", 0.0) as f32; let mut v1r = V1::default(); let mut fi = 0; let mut last_seq: Option<u8> = None;
             let mut view = smooth::ViewClock::default(); let mut shown: Vec<CarSnap> = Vec::with_capacity(n);
             for f in 0..n {
                 let vs = f as f64 * dt; let tick = vs + net_rng.f() * tickjit;   // the frame starts a little after vsync, by a varying amount
@@ -128,7 +128,7 @@ fn main() {
                     let (_, sq, ms, mut c) = proto::read_car2(&flight[fi].1).unwrap(); fi += 1;
                     if let Some(l) = last_seq { if (sq.wrapping_sub(l) as i8) <= 0 { continue; } } last_seq = Some(sq);
                     let age = ((tick * 1000.0).rem_euclid(65536.0) - ms as f64).rem_euclid(65536.0) / 1000.0; c.t = tick - age;
-                    if v1 { v1r.push(c, tick); } else { tr.push(c); }
+                    if v1 { v1r.push(c, tick); } else { tr.push_at(c, tick); }
                 }
                 let s = if v1 { v1r.sample(tick) } else {
                     let t = view.advance(tick, dt);

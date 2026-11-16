@@ -84,10 +84,22 @@ fn fade3(x0: f32, v0: f32, a0: f32, w: f32, tau: f32) -> (f32, f32, f32) {
     (p * e, (dp - w * p) * e, (2.0 * c2 - 2.0 * w * dp + w * w * p) * e)
 }
 /// One remote car on this phone.
+///
+/// It is drawn a little in the past: just far enough back (the 90th percentile of how late its states arrive, at most
+/// `DELAY_CAP`) that the state the sender transmitted for a moment has usually arrived before that moment is drawn.
+/// The switch to each new state then only has to absorb the sender's own drift threshold (15 cm), not the distance the
+/// car covered while the packet was travelling: corrections become tiny, and a slow or bursty link (the broker relay)
+/// stays smooth. When a state is late anyway the prediction carries on, as before.
 #[derive(Clone, Debug, Default)]
 pub struct Track {
     /// newest state received (its `t` is on the host clock)
     pub latest: Option<CarSnap>,
+    /// states not drawn yet, oldest first, and how late recent ones arrived (s)
+    queue: std::collections::VecDeque<CarSnap>, late: std::collections::VecDeque<f32>,
+    /// how far in the past the car is drawn now (s; follows the lateness slowly), and the last sample's time
+    pub delay: f32, last_t: f64,
+    /// most delay allowed (0: DELAY_CAP; negative: draw at the present, the old behaviour)
+    pub cap: f32,
     /// the state the current offsets are measured from
     base: Option<CarSnap>,
     /// offsets, their rates and accelerations when the last state was taken in, when that was (view clock), how fast they fade
@@ -101,12 +113,34 @@ const OMEGA: [f32; NCH] = [13.0, 13.0, 14.0, 16.0, 16.0, 16.0, 18.0];
 /// offset (m) at which the fade speed doubles: a car far off its line gets back quicker, small drifts melt away gently
 const ADAPT: f32 = 0.3;
 
+/// longest the car is drawn in the past (s): further back, contacts with it would be too far off
+pub const DELAY_CAP: f32 = 0.22;
+/// lateness (s) left to the prediction before the car is drawn in the past
+pub const FREE: f32 = 0.06;
+
 impl Track {
-    pub fn push(&mut self, c: CarSnap) { self.latest = Some(c); }
+    pub fn push(&mut self, c: CarSnap) { self.push_at(c, c.t); }
+    /// a state that arrived at host time `arrival`
+    pub fn push_at(&mut self, c: CarSnap, arrival: f64) {
+        self.latest = Some(c);
+        let k = self.queue.iter().position(|q| q.t > c.t).unwrap_or(self.queue.len()); self.queue.insert(k, c);
+        while self.queue.len() > 24 { self.queue.pop_front(); }
+        self.late.push_back(((arrival - c.t) as f32).clamp(0.0, 2.0)); while self.late.len() > 40 { self.late.pop_front(); }
+    }
+    /// lateness the prediction covers on its own (a fast link is drawn at the present: contacts stay exact)
+    fn free(&self) -> f32 { std::env::var("FW_FREE").ok().and_then(|v| v.parse().ok()).unwrap_or(FREE) }
+    /// the delay the lateness asks for: its 90th percentile plus a frame
+    fn want_delay(&self) -> f32 {
+        let cap = if self.cap > 0.0 { self.cap } else if self.cap < 0.0 { return 0.0 } else { DELAY_CAP };
+        if self.late.len() < 4 { return 0.0; }
+        let mut v: Vec<f32> = self.late.iter().copied().collect(); v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        (v[((v.len() - 1) as f32 * 0.9) as usize] + 0.017 - self.free()).clamp(0.0, cap)
+    }
 
     /// A bump this phone resolved: the push applies at once (like it does to an AI car), velocity included.
     pub fn nudge(&mut self, d: [f32; 5], now: f64) {
-        for c in [self.latest.as_mut(), self.base.as_mut()].into_iter().flatten() {
+        let now = now - self.delay as f64;
+        for c in [self.latest.as_mut(), self.base.as_mut()].into_iter().flatten().chain(self.queue.iter_mut()) {
             let age = soft_age((now - c.t) as f32);
             c.vx += d[0]; c.vz += d[1]; c.r += d[2]; c.x += d[3] - d[0] * age; c.z += d[4] - d[1] * age; c.h -= d[2] * age;
         }
@@ -114,7 +148,16 @@ impl Track {
 
     /// The car as shown at host time `t` (call once per frame, with a smoothly advancing `t`).
     pub fn sample(&mut self, t: f64, g: Ground) -> Option<CarSnap> {
-        let latest = self.latest?;
+        self.latest?;
+        // the delay eases toward what the link needs: at most 6% faster or 4% slower than real time, so the car never
+        // visibly speeds up or brakes because of it
+        let dtv = if self.last_t > 0.0 { (t - self.last_t).clamp(0.0, 0.1) as f32 } else { 0.0 }; self.last_t = t;
+        let want = self.want_delay(); self.delay += (want - self.delay).clamp(-0.04 * dtv, 0.06 * dtv);
+        let t = t - self.delay as f64;
+        // the newest state already due at that moment (the next ones wait for their turn)
+        let k = self.queue.iter().rposition(|q| q.t <= t + 1e-4).unwrap_or(0);
+        for _ in 0..k { self.queue.pop_front(); }
+        let latest = *self.queue.front()?;
         let ks = if self.stiff > 0.0 { self.stiff } else { 1.0 }; let tau = (t - self.anchor_t).max(0.0) as f32;
         // the offsets as they stand now
         let (mut off, mut offv, mut offa) = ([0f32; NCH], [0f32; NCH], [0f32; NCH]);

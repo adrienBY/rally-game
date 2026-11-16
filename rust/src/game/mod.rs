@@ -285,7 +285,12 @@ impl Game {
     }
     fn low_xy(&self, x: f64, y: f64) -> (f64, f64) { (x / self.w * self.lw as f64, y / self.h * self.lh as f64) }
     /// pointer events in screen pixels: 0 down, 1 move, 2 up/cancel
+    /// 3: the first finger down (no other finger is on the screen: anything still held here was lost), 5: every finger up
+    /// (the app was paused or lost focus). A lifted finger always lets go of its pedal, whatever screen it lands on.
     pub fn touch(&mut self, action: i32, id: i32, sx: f64, sy: f64) {
+        let action = match action { 3 => { self.touches.clear(); 0 } 5 => { self.touches.clear(); return; } a => a };
+        if action == 2 { self.touches.remove(&id); }
+        if action == 0 && (self.set.open || self.gar.open) { self.touches.clear(); }
         let (x, y) = self.low_xy(sx, sy);
         if self.settings_touch(action, id, x, y) { return; }
         if self.garage_touch(action, id, x, y) { return; }
