@@ -1,7 +1,7 @@
 //! Vehicle dynamics: a straight port of the JavaScript model (same order of operations, same constants),
 //! so a car driven by the native engine behaves exactly like the browser build.
 use crate::noise::{clamp, js_round, sgn, vnoise, wrap_a};
-use crate::world::{Map, World, ROAD, WL};
+use crate::world::{Map, World, PRISM_RAIL, ROAD, WL};
 use std::collections::HashMap;
 
 #[inline] fn sin(x: f64) -> f64 { libm::sin(x) }
@@ -265,6 +265,18 @@ impl Car {
             if ctl.hb && gr > 0.0 && uu.abs() > 4.0 { self.r += ctl.steer * t.a_hb_yaw * ar * gr * dt; }
             if contacts == 0.0 { self.pr += (-self.pitch * 3.0 - self.pr * 1.6) * ar * dt; self.rr += (-self.roll * 4.0 - self.rr * 2.0) * ar * dt; self.r += ctl.steer * 1.4 * ar * dt; }
         }
+        // prism: you can fly the car - steer to turn it (and its course follows the nose), throttle and brake push it along, and it levels out
+        if contacts == 0.0 && world.map == Map::Prism {
+            let k = 1.0 - exp(-4.0 * dt); self.r += (ctl.steer * 1.9 - self.r) * k;
+            // the course swings round after the nose (speed kept), then throttle pushes along the nose and brake slows
+            let sp = js_hypot(self.vx, self.vz);
+            if sp > 0.5 { let course = atan2(self.vx, self.vz); let nc = course + wrap_a(self.h - course) * (1.0 - exp(-3.2 * dt)); self.vx = sin(nc) * sp; self.vz = cos(nc) * sp; }
+            let uu = self.vx * sh + self.vz * ch;
+            let push = if self.gear > 0.0 { 9.0 * ctl.throttle * (1.0 - uu / 52.0).max(0.0) } else { -5.0 * ctl.throttle };
+            let slow = if ctl.brake > 0.0 && uu > 0.0 { (9.0 * ctl.brake * dt).min(uu) } else { 0.0 };
+            self.vx += sh * (push * dt - slow); self.vz += ch * (push * dt - slow);
+            self.pr += (-self.pitch * 6.0 - self.pr * 3.0) * dt; self.rr += (-self.roll * 7.0 - self.rr * 3.5) * dt;
+        }
         self.h += self.r * dt; self.x += self.vx * dt; self.z += self.vz * dt;
         // heave, pitch, roll
         if contacts > 0.0 && self.air_t > 0.12 { self.land_v = self.land_v.min(self.vy); self.last_air = self.air_t; self.landed = true; }
@@ -282,6 +294,27 @@ impl Car {
         self.u = u; self.vl = vl; self.slide = slide / 4.0;
     }
 
+    /// prism barriers: the body's three circles against a wall on each edge of the deck. The wall has no top - a car thrown high by a
+    /// crest or a wave comes down on the deck, never beyond it. A firm, low-bounce hit that lets the car slide along.
+    fn prism_rails(&mut self, world: &World, t: &Tune) {
+        let Some(wv) = world.wave.get() else { return }; if wv.path.is_empty() { return; }
+        let (m, iz) = (M, t.iz);
+        for off in [1.35, 0.0, -1.35] {
+            let (sh, ch) = (sin(self.h), cos(self.h)); let cr = 0.9; let cx = self.x + sh * off; let cz = self.z + ch * off;
+            let (k, lat, _) = world.road_frame(wv, cx, cz); let pen = lat.abs() + cr - PRISM_RAIL; if pen <= 0.0 { continue; }
+            let (px, pz) = wv.path[k]; let (tx, tz) = wv.tan[k]; let (rx, rz) = (-tz, tx); let lc = clamp(lat, -ROAD, ROAD);
+            let deck = world.height(px + rx * lc, pz + rz * lc); if self.y < deck - 3.0 { continue; }   // already dropping into the void (only a respawn helps then)
+            let sg = sgn(lat); let (nx, nz) = (-rx * sg, -rz * sg);   // back towards the road
+            self.x += nx * pen; self.z += nz * pen;
+            let qx = cx + nx * pen - nx * cr - self.x; let qz = cz + nz * pen - nz * cr - self.z;   // the contact point, from the car's centre
+            let vpx = self.vx + self.r * qz; let vpz = self.vz - self.r * qx; let vn = vpx * nx + vpz * nz; if vn >= 0.0 { continue; }
+            let crn = qz * nx - qx * nz; let jn = -1.15 * vn / (1.0 / m + crn * crn / iz);
+            self.vx += jn * nx / m; self.vz += jn * nz / m; self.r += jn * crn / iz;
+            let (ux, uz) = (-nz, nx); let vt = vpx * ux + vpz * uz; let crt = qz * ux - qx * uz;
+            let jt = clamp(-vt / (1.0 / m + crt * crt / iz), -0.2 * jn, 0.2 * jn); self.vx += jt * ux / m; self.vz += jt * uz / m; self.r += jt * crt / iz;
+            self.impact = self.impact.max(-vn * 0.6);
+        }
+    }
     fn collide(&mut self, world: &World, obs: &Obstacles, t: &Tune) {
         self.impact = 0.0; self.hay = 0.0;
         let sh = sin(self.h); let ch = cos(self.h); let m = M; let iz = t.iz;
@@ -311,6 +344,7 @@ impl Car {
                 }
             } }
         }
+        if world.map == Map::Prism { self.prism_rails(world, t); }
         let gxh = world.gxh as f64; let gzh = world.gzh as f64;
         if self.x.abs() > gxh - 10.0 { self.impact = self.impact.max(self.vx.abs()); self.x = sgn(self.x) * (gxh - 10.0); self.vx *= -0.3; }
         if self.z.abs() > gzh - 10.0 { self.impact = self.impact.max(self.vz.abs()); self.z = sgn(self.z) * (gzh - 10.0); self.vz *= -0.3; }

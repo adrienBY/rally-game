@@ -2,6 +2,8 @@
 use crate::noise::*;
 
 pub const ROAD: f64 = 3.4;
+/// Prism: the barriers' distance from the centreline (the fence the page draws stands here)
+pub const PRISM_RAIL: f64 = ROAD * 1.08 + 0.62;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Map { Forest = 0, Snow = 1, Canyon = 2, Lakes = 3, Iceland = 4, Touge = 5, Riviera = 6, Prism = 7 }
@@ -119,7 +121,7 @@ pub fn build(map: Map, path: &[(f64, f64)], roadh: &[f64], gxh: i32, gzh: i32) -
             let id = j * gnx + i; let x = i as f64 - gxh as f64; let z = j as f64 - gzh as f64; let pdv = pd_r[id] as f64;
             if map == Map::Prism {
                 let k = pi_r[id] as usize; let (px, pz) = path[k]; let (tx, tz) = tan[k];
-                let lat = (x - px) * -tz + (z - pz) * tx; let w2 = 1.0 - smooth(ROAD + 1.8, ROAD + 2.4, pdv);
+                let lat = (x - px) * -tz + (z - pz) * tx; let w2 = 1.0 - smooth(ROAD + 2.4, ROAD + 3.0, pdv);
                 row[i] = ((roadh[k] - 0.12 + lat * bank[k]) * w2 + PRISM_VOID * (1.0 - w2)) as f32; continue;
             }
             let mut hv = terrain(map, x, z);
@@ -184,10 +186,12 @@ impl World {
     pub fn set_wave_time(&self, t: f64) { self.wave_t.store(t.to_bits(), std::sync::atomic::Ordering::Relaxed); }
     pub fn wave_time(&self) -> f64 { f64::from_bits(self.wave_t.load(std::sync::atomic::Ordering::Relaxed)) }
     /// metres along the road for a point on (or near) the prism deck: the nearest index plus the offset along its tangent, so it runs smoothly
-    pub fn road_s(&self, wv: &Wave, x: f64, z: f64) -> f64 {
+    pub fn road_s(&self, wv: &Wave, x: f64, z: f64) -> f64 { self.road_frame(wv, x, z).2 }
+    /// nearest road index, lateral offset (+ = right of the direction of travel... as the page's `lat`) and metres along the road
+    pub fn road_frame(&self, wv: &Wave, x: f64, z: f64) -> (usize, f64, f64) {
         let i = clamp((x + self.gxh as f64).round(), 0.0, self.gnx as f64 - 1.0) as usize; let j = clamp((z + self.gzh as f64).round(), 0.0, self.gnz as f64 - 1.0) as usize;
         let np = wv.path.len(); let k = (self.pi[j * self.gnx + i].max(0) as usize).min(np.saturating_sub(1)); let (px, pz) = wv.path[k]; let (tx, tz) = wv.tan[k];
-        (k as f64 + (x - px) * tx + (z - pz) * tz).rem_euclid(np as f64)
+        (k, (x - px) * -tz + (z - pz) * tx, (k as f64 + (x - px) * tx + (z - pz) * tz).rem_euclid(np as f64))
     }
     #[inline] fn wave_h(&self, x: f64, z: f64) -> f64 {
         let Some(wv) = self.wave.get() else { return 0.0 }; if wv.path.is_empty() { return 0.0; }
