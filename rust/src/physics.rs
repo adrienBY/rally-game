@@ -160,6 +160,8 @@ impl Car {
         self.steer += clamp(target - self.steer, -rate * dt, rate * dt);
         let gx = (world.height(self.x + 0.6, self.z) - world.height(self.x - 0.6, self.z)) / 1.2;
         let gz = (world.height(self.x, self.z + 0.6) - world.height(self.x, self.z - 0.6)) / 1.2;
+        // prism: the deck edge is a 400 m cliff - its 'slope' must not fling a car sideways as a wheel drops over it
+        let (gx, gz) = if world.map == Map::Prism { (clamp(gx, -0.5, 0.5), clamp(gz, -0.5, 0.5)) } else { (gx, gz) };
         let ctl = Ctl { throttle: thr, brake: brk, hb: input.hb, steer: input.steer };
         let n = clamp(js_round(dt * 360.0), 1.0, 24.0) as usize;
         let sdt = dt / n as f64;

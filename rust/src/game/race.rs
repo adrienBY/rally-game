@@ -186,7 +186,7 @@ fn recover(g: &mut Game, w: &World, k: usize, dt: f64) {
     if pd < ROAD + 1.0 { c.off_at = Some(i); }
     let off = pd > ROAD + 5.0; let bad = off || (sp < 1.5 && g.race.t > c.react + 2.0) || s.roll.abs() > 0.9 || s.pitch.abs() > 0.9 || (fwd < -0.2 && sp < 8.0);
     c.stuck_t = if bad { c.stuck_t + dt } else { (c.stuck_t - dt * 2.0).max(0.0) };
-    if fell { c.stuck_t = 9.0; }
+    if fell { c.stuck_t = 9.0; if std::env::var("FW_FALLS").is_ok() { eprintln!("FALL car {} at {} off_at {:?} sp {:.1}", k, i, c.off_at, sp); } }
     if c.stuck_t > if off { 1.6 } else { 2.6 } {
         c.stuck_t = 0.0; let off_at = c.off_at.unwrap_or(i);
         if off { learn(g, off_at); }

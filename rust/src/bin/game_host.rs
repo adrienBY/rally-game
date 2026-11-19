@@ -51,7 +51,7 @@ fn main() {
             for c in 0..chs { for i in 0..frames { let q = (i * ch as usize + c) * 2; m.extend_from_slice(&data[q..q + 2]); } }
             fogwood_audio::native::message(&m); println!("loaded {} {} ch {} Hz {} frames", f, chs, rate, frames);
         }
-        let mut g = Game::new(rt, Persist::new("/tmp/game_host.sav")); if let Ok(n) = std::env::var("DUSTN") { g.dust = fogwood_core::game::dust::Dust::new(n.parse().unwrap_or(6000), 0x5EED); }   // a scene dumped from the browser build has the browser's small dust buffer
+        let mut g = Game::new(rt, Persist::new("/tmp/game_host.sav")); g.wave_sim = std::env::var("FW_REALTIME").is_err(); if let Ok(n) = std::env::var("DUSTN") { g.dust = fogwood_core::game::dust::Dust::new(n.parse().unwrap_or(6000), 0x5EED); }   // a scene dumped from the browser build has the browser's small dust buffer
         g.resize(w as f64, h as f64, [0.0; 4]); if std::env::var("NOLOD").is_err() { g.attach(&mut r); }
         let gl = r.gl();
         let tex = gl.create_texture().unwrap(); gl.bind_texture(glow::TEXTURE_2D, Some(tex));
@@ -105,7 +105,7 @@ fn main() {
                         let mut px = vec![0u8; (w * h * 4) as usize]; gl.read_pixels(0, 0, w, h, glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelPackData::Slice(&mut px));
                         let mut out = format!("P6\n{} {}\n255\n", w, h).into_bytes();
                         for y in (0..h).rev() { for x in 0..w { let i = ((y * w + x) * 4) as usize; out.extend_from_slice(&px[i..i + 3]); } }
-                        let f = format!("{}/f{:05.1}.ppm", a[3], t); std::fs::write(&f, out).unwrap(); println!("shot {} calls {} tris {}", f, r.stats.0, r.stats.1);
+                        let f = format!("{}/f{:07.3}.ppm", a[3], t); std::fs::write(&f, out).unwrap(); println!("shot {} calls {} tris {}", f, r.stats.0, r.stats.1);
                     }
                     "audio" => { println!("audio rms {:.4} peak {:.3} clipped blocks {:.1}%", (arms / anb.max(1.0)).sqrt(), apk, aclip / anb.max(1.0) * 100.0); arms = 0.0; apk = 0.0; anb = 0.0; aclip = 0.0; }
                     "cars" => { let pl = g.race.player; for (k, c) in g.race.cars.iter().enumerate() { let s = if k == pl { &g.car } else { &c.car };

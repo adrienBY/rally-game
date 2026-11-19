@@ -13,6 +13,8 @@ pub const WL: f64 = -4.5;
 
 pub struct World {
     pub map: Map,
+    /// prism: the deck's live waves (set once the game has the stage) and the clock they run on
+    pub wave: std::sync::OnceLock<Wave>, pub wave_t: std::sync::atomic::AtomicU64,
     pub gxh: i32, pub gzh: i32, pub gnx: usize, pub gnz: usize,
     pub pd: Vec<f32>, pub pi: Vec<i16>, pub h: Vec<f32>,
 }
@@ -131,7 +133,7 @@ pub fn build(map: Map, path: &[(f64, f64)], roadh: &[f64], gxh: i32, gzh: i32) -
             row[i] = hv as f32;
         } });
     }
-    World { map, gxh, gzh, gnx, gnz, pd, pi, h }
+    World { map, wave: Default::default(), wave_t: Default::default(), gxh, gzh, gnx, gnz, pd, pi, h }
 }
 
 /// Unit tangent of the centreline at `i` (from the points 2 m either side), as the page computes TAN.
@@ -149,6 +151,26 @@ pub fn prism_bank(path: &[(f64, f64)]) -> Vec<f64> {
     raw.iter().map(|&v| v as f32 as f64).collect()
 }
 
+/// Prism: travelling waves along the road. `secs` = [from, to, amplitude, wavelength, period] in metres of road and seconds; a section
+/// covering the whole lap has no ramps (its wavelength divides the lap so it closes on itself).
+pub struct Wave { pub path: Vec<(f64, f64)>, pub tan: Vec<(f64, f64)>, pub secs: Vec<[f64; 5]> }
+impl Wave {
+    /// deck lift at `s` metres along the road, at time `t`
+    pub fn at(&self, s: f64, t: f64) -> f64 {
+        let np = self.path.len() as f64; let tau = std::f64::consts::TAU; let mut h = 0.0;
+        for &[s0, s1, a, lam, per] in &self.secs {
+            if lam <= 0.0 || per <= 0.0 { continue; }
+            if s1 - s0 >= np - 0.5 { h += a * (tau * (s / lam - t / per)).sin(); continue; }
+            if s <= s0 || s >= s1 { continue; }
+            let e = smooth(s0, s0 + 40.0, s) * (1.0 - smooth(s1 - 40.0, s1, s));
+            h += a * e * (tau * ((s - s0) / lam - t / per)).sin();
+        }
+        h
+    }
+    /// can the deck at `s` ever move (any section reaching it)?
+    pub fn live(&self, s: f64) -> bool { let np = self.path.len() as f64; self.secs.iter().any(|q| q[1] - q[0] >= np - 0.5 || (s > q[0] && s < q[1])) }
+}
+
 impl World {
     #[inline]
     fn bil(&self, g: &[f32], x: f64, z: f64) -> f64 {
@@ -156,7 +178,21 @@ impl World {
         let i = fx as usize; let j = fz as usize; let u = fx - i as f64; let v = fz - j as f64; let k = j * self.gnx + i;
         (g[k] as f64 * (1.0 - u) + g[k + 1] as f64 * u) * (1.0 - v) + (g[k + self.gnx] as f64 * (1.0 - u) + g[k + self.gnx + 1] as f64 * u) * v
     }
-    #[inline] pub fn height(&self, x: f64, z: f64) -> f64 { self.bil(&self.h, x, z) }
+    #[inline] pub fn height(&self, x: f64, z: f64) -> f64 { self.bil(&self.h, x, z) + self.wave_h(x, z) }
+    /// the static ground only (no prism waves)
+    #[inline] pub fn base_height(&self, x: f64, z: f64) -> f64 { self.bil(&self.h, x, z) }
+    pub fn set_wave_time(&self, t: f64) { self.wave_t.store(t.to_bits(), std::sync::atomic::Ordering::Relaxed); }
+    pub fn wave_time(&self) -> f64 { f64::from_bits(self.wave_t.load(std::sync::atomic::Ordering::Relaxed)) }
+    /// metres along the road for a point on (or near) the prism deck: the nearest index plus the offset along its tangent, so it runs smoothly
+    pub fn road_s(&self, wv: &Wave, x: f64, z: f64) -> f64 {
+        let i = clamp((x + self.gxh as f64).round(), 0.0, self.gnx as f64 - 1.0) as usize; let j = clamp((z + self.gzh as f64).round(), 0.0, self.gnz as f64 - 1.0) as usize;
+        let np = wv.path.len(); let k = (self.pi[j * self.gnx + i].max(0) as usize).min(np.saturating_sub(1)); let (px, pz) = wv.path[k]; let (tx, tz) = wv.tan[k];
+        (k as f64 + (x - px) * tx + (z - pz) * tz).rem_euclid(np as f64)
+    }
+    #[inline] fn wave_h(&self, x: f64, z: f64) -> f64 {
+        let Some(wv) = self.wave.get() else { return 0.0 }; if wv.path.is_empty() { return 0.0; }
+        wv.at(self.road_s(wv, x, z), self.wave_time())
+    }
     #[inline] pub fn path_dist(&self, x: f64, z: f64) -> f64 { self.bil(&self.pd, x, z) }
 
     /// Packed for the JS side: [pd f32 * n][h f32 * n][pi i16 * n], little endian.

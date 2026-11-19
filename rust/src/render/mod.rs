@@ -179,7 +179,7 @@ impl Renderer {
     pub fn obj_map(&self, id: usize) -> i32 { self.scene.as_ref().and_then(|s| s.objs.get(id).map(|o| s.mats[o.mat].map)).unwrap_or(-1) }
     /// draw an object with another texture (None: its material's again)
     pub fn set_map(&mut self, id: usize, tex: Option<i32>) { if let Some(o) = self.scene.as_mut().and_then(|s| s.objs.get_mut(id)) { o.map = tex.filter(|t| *t >= 0); } }
-    /// the rest shape (positions, normals; normals empty if it has none) of a car-body object, as the page built it
+    /// the rest shape (positions, normals; normals empty if it has none) of a car-body object (or a prism deck piece), as the page built it
     pub fn car_rest(&self, id: usize) -> Option<&(Vec<f32>, Vec<f32>)> { self.scene.as_ref()?.car_rest.get(&id) }
     /// reshape one object: new positions (and normals) in its own buffers, rebound in its vertex array the first time
     pub fn reshape(&mut self, id: usize, pos: &[f32], nrm: Option<&[f32]>) {
@@ -328,7 +328,7 @@ impl Renderer {
             let kind = match o["type"].as_str().unwrap_or("mesh") { "inst" => ObjKind::Inst, "points" => ObjKind::Points, _ => ObjKind::Mesh };
             if geos.is_empty() { break; }
             let gi = (o["g"].as_u64().unwrap_or(0) as usize).min(geos.len() - 1); let geo = &geos[gi];
-            if kind == ObjKind::Mesh && o["car"].as_i64() == Some(1) {
+            if kind == ObjKind::Mesh && (o["car"].as_i64() == Some(1) || o["wave"].as_i64() == Some(1)) {
                 let ga = &head["geos"][gi]["attrs"]; let pick = |n: &str| ga.as_array().and_then(|l| l.iter().find(|a| a["name"].as_str() == Some(n))).map(|a| as_f32(bytes_of(&a["data"], blob)));
                 if let Some(pos) = pick("position") { car_rest.insert(objs.len(), (pos, pick("normal").unwrap_or_default())); } }
             let mut mw = [0f32; 16]; if let Some(a) = o["mw"].as_array() { for (i, x) in a.iter().take(16).enumerate() { mw[i] = f(x); } }

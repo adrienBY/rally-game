@@ -30,6 +30,8 @@ pub const VEH_L: f64 = 1.22 - -1.28;
 const LOD1: f64 = 150.0; const LOD2: f64 = 300.0;
 const REST: f64 = 0.21; const STOP: f64 = 0.33;
 pub(crate) const PIX: [f64; 3] = [170.0, 220.0, 340.0];
+/// one heaving prism deck mesh: its object, working positions, the vertices a wave reaches with their rest height and road position
+struct WaveMesh { id: usize, pos: Vec<f32>, live: Vec<u32>, rest_y: Vec<f32>, s: Vec<f32> }
 pub const MAPS: [&str; 7] = ["forest", "snow", "canyon", "lakes", "touge", "riviera", "prism"];
 
 /// xorshift64*: the page's Math.random / seeded rnd() stand-in (particles, mistakes, grid reactions)
@@ -133,6 +135,8 @@ impl Persist {
 
 pub struct Game {
     pub rt: Rt, pub np: usize, pub snow: bool, pub can: bool, pub lak: bool, pub tou: bool, pub riv: bool, pub pri: bool, pub pri_last: Option<usize>,
+    /// prism waves: run on the game clock instead of the wall clock (headless runs faster than real time); the heaving deck meshes
+    pub wave_sim: bool, wave_mesh: Vec<WaveMesh>, wave_tab: Vec<f32>,
     pub tune: Tune, pub cam_follow: f64, pub car: Car, pub rpm_shown: f64, pub shake: f64, pub car_hit: f64, pub prev_throttle: f64,
     pub state: State, pub g_t: f64, pub lap: i32, pub lap_start: f64, pub best: Option<f64>, pub flags: [bool; 3], pub last_idx: usize,
     pub msg: String, pub msg_t: f64, pub wrong_t: f64, pub started: bool, pub go: f64,
@@ -194,7 +198,7 @@ impl Game {
         let race = Race::new(&rt, &ps);
         let ncull = rt.cull.len(); let nglit = rt.glit.len();
         let mut g = Game {
-            np, snow: mid == 1, can: mid == 2, lak: mid == 3, tou: mid == 5, riv: mid == 6, pri: mid == 7, pri_last: None,
+            np, snow: mid == 1, can: mid == 2, lak: mid == 3, tou: mid == 5, riv: mid == 6, pri: mid == 7, pri_last: None, wave_sim: false, wave_mesh: Vec::new(), wave_tab: Vec::new(),
             tune: cars::tune_for(&Tune::from_slice(&tv), ps.car), base_tune: Tune::from_slice(&tv), gar: Default::default(), car_vis: None, paint_vis: None, menu: menu::fresh(), crash: crash::Crash::new(), cam_follow, car: Car::new(), rpm_shown: 900.0, shake: 0.0, car_hit: 0.0, prev_throttle: 0.0,
             state: State::Title, g_t: 0.0, lap: 1, lap_start: 0.0, best, flags: [false; 3], last_idx: 0, msg: String::new(), msg_t: 0.0, wrong_t: 0.0, started: false, go: 0.0,
             cam: CamState { y: 0.0, h: 0.0, init: false, mode: ps.cam_mode as i32, fov: 56.0, lag: 0.0, cp: None, cr: None, shot: -1, cut_t: 0.0, passed: 0.0, anchor: [0.0; 3], target: 0, side: 1.0 },
@@ -341,6 +345,25 @@ impl Game {
     pub fn toggle_mode(&mut self) { self.ps.race_mode = !self.ps.race_mode; self.ps.saves.set("fogwood-mode", if self.ps.race_mode { "race".into() } else { "tt".into() }); }
     pub fn toggle_sound(&mut self) { self.ps.sound_on = !self.ps.sound_on; let m = if self.ps.sound_on { "SOUND ON" } else { "SOUND OFF" }; self.flash_msg(m, 1.0); }
     fn cycle_cam(&mut self) { self.cam.mode = (self.cam.mode + 1) % 3; self.cam.init = false; self.ps.cam_mode = self.cam.mode as u8; self.ps.store(); self.flash_msg(["CHASE CAM", "CLOSE CAM", "BONNET CAM"][self.cam.mode as usize], 1.2); }
+    /// prism: the wave clock (wall clock mod 60 s, so every phone in a race sees the same deck), the physics' copy of the waves, and the deck
+    /// meshes heaved to match (rest shape + lift at each vertex's place along the road; only vertices a wave can reach are touched)
+    fn wave_step(&mut self, r: &mut Renderer, w: &World) {
+        if self.rt.wave_secs.is_empty() { return; }
+        let wv = w.wave.get_or_init(|| crate::world::Wave { path: self.rt.path.iter().map(|p| (p[0], p[1])).collect(), tan: self.rt.tan.iter().map(|t| (t[0], t[1])).collect(), secs: self.rt.wave_secs.clone() });
+        let t = if self.wave_sim { self.time } else { web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| (d.as_millis() % 60_000) as f64 / 1000.0).unwrap_or(self.time) };
+        w.set_wave_time(t);
+        if self.wave_mesh.is_empty() { for &id in &self.rt.wave_objs { let Some((rest, _)) = r.car_rest(id) else { continue };
+            let mut live = Vec::new(); let mut s = Vec::new();
+            for k in 0..rest.len() / 3 { let q = w.road_s(wv, rest[k * 3] as f64, rest[k * 3 + 2] as f64); if wv.live(q) { live.push(k as u32); s.push(q as f32); } }
+            self.wave_mesh.push(WaveMesh { id, pos: rest.clone(), rest_y: live.iter().map(|&k| rest[k as usize * 3 + 1]).collect(), live, s }); } }
+        // the lift per metre of road this frame (a few thousand sines), then each vertex interpolates its place
+        let np = wv.path.len(); self.wave_tab.clear(); self.wave_tab.extend((0..=np).map(|i| wv.at((i % np) as f64, t) as f32)); let tab = &self.wave_tab;
+        for m in self.wave_mesh.iter_mut() {
+            for (n, &k) in m.live.iter().enumerate() { let q = m.s[n]; let i = (q as usize).min(np - 1); let f = q - i as f32;
+                m.pos[k as usize * 3 + 1] = m.rest_y[n] + tab[i] + (tab[i + 1] - tab[i]) * f; }
+            r.reshape(m.id, &m.pos, None);
+        }
+    }
     fn reset_car(&mut self) { if self.state != State::Drive { return; } let g = bridge::lock(); if let Some(e) = g.as_ref() { let i = path_idx(&e.world, self.car.x, self.car.z); self.place_at(&e.world, i); } drop(g); self.flash_msg("RESET", 1.0); if self.tel.is_some() { self.tel_note.push_str("reset;"); } }
     pub fn start_game(&mut self) {
         if self.state != State::Title { return; }
@@ -409,6 +432,7 @@ impl Game {
         let pk = self.ps.paint.get(want).copied().unwrap_or(0);
         if self.paint_vis != Some((want, pk)) { if let Some((paint, alt)) = self.rt.liveries.get(want) {
             let tex = if pk == 0 { None } else { alt.get(pk - 1).map(|&o| r.obj_map(o)) }; for &o in paint { r.set_map(o, tex); } } self.paint_vis = Some((want, pk)); }
+        if self.pri { self.wave_step(r, w); }
         let paused = self.settings_paused();   // settings open while driving alone: the world holds still
         let pre = (self.car.vx, self.car.vz, self.car.r);
         let shifted = if paused { false } else { self.car.update(w, obs, &self.tune, dt, &inp) }; lap!(0);
