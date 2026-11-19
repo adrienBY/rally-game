@@ -240,7 +240,7 @@ impl Game {
         let p = rt.path[i]; let t = rt.tan[i];
         car.x = p[0]; car.z = p[1]; car.h = t[0].atan2(t[1]); car.vx = 0.0; car.vz = 0.0; car.r = 0.0; car.gear = 1.0; car.rpm = 900.0; car.steer = 0.0;
         car.ax_f = 0.0; car.ay_f = 0.0; car.y = w.height(car.x, car.z) + 0.075; car.vy = 0.0; car.pitch = 0.0; car.roll = 0.0; car.pr = 0.0; car.rr = 0.0;
-        car.air_t = 0.0; car.landed = false; car.land_v = 0.0;
+        car.air_t = 0.0; car.landed = false; car.land_v = 0.0; car.falling = false;
         for wh in car.wh.iter_mut() { wh.w = 0.0; wh.comp = 0.135; wh.d = 0.075; wh.fz = 2900.0; wh.hg = car.y - 0.075; }
         car.hb_t = 0.0; car.p_t = 0.0; car.p_b = 0.0; car.impact = 0.0;
     }

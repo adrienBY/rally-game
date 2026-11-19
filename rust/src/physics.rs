@@ -72,6 +72,8 @@ pub struct Car {
     pub y: f64, pub vy: f64, pub pitch: f64, pub roll: f64, pub pr: f64, pub rr: f64, pub ax_f: f64, pub ay_f: f64, pub u: f64, pub vl: f64, pub slide: f64,
     pub on_road: bool, /** speed into straw bales this step (hay flies) */ pub hay: f64, pub contacts: f64, pub air_t: f64, pub land_v: f64, pub last_air: f64, pub landed: bool, pub impact: f64, pub clutch: f64,
     pub p_t: f64, pub p_b: f64, pub hb_t: f64,
+    /// prism: gone over the edge (no deck under any wheel until the car is put back on the road)
+    pub falling: bool,
     pub wh: [Wheel; 4],
 }
 pub const NSTATE: usize = 33; pub const NWHEEL: usize = 13;
@@ -173,6 +175,20 @@ impl Car {
 
     fn step(&mut self, world: &World, t: &Tune, dt: f64, ctl: &Ctl, gx: f64, gz: f64) {
         let snow = world.map == Map::Snow; let can = world.map == Map::Canyon; let lak = world.map == Map::Lakes; let ice = world.map == Map::Iceland; let tou = world.map == Map::Touge; let riv = world.map == Map::Riviera; let prism = world.map == Map::Prism;
+        // prism: a car going over the edge falls cleanly - once its centre is past the edge below deck level, or it is tipping over with no
+        // wheel left on the deck outboard of its centre, every wheel loses the deck for good (until it is put back on the road). Without
+        // this it hangs on its inside wheels while the body rolls down through the ribbon.
+        if prism && !self.falling { if let Some(wv) = world.wave.get().filter(|wv| !wv.path.is_empty()) {
+            let (k, lat, _) = world.road_frame(wv, self.x, self.z); let edge = crate::world::PRISM_EDGE;
+            if lat.abs() > edge {
+                let (px, pz) = wv.path[k]; let (tx, tz) = wv.tan[k]; let sg = lat.signum();
+                let lip = world.height(px - tz * sg * (edge - 0.05), pz + tx * sg * (edge - 0.05)); if self.y < lip + 0.3 { self.falling = true; }
+            } else if self.roll.abs() > 0.5 && self.wh.iter().any(|q| q.hg < -300.0) {   // tipping, with a wheel already over the void
+                let outboard = self.wh.iter().any(|q| q.hg > -300.0 && { let l = world.road_frame(wv, q.wx, q.wz).1; l * lat.signum() >= lat.abs() });
+                if !outboard { self.falling = true; }
+            }
+        } }
+        let gone = self.falling;
         let sh = sin(self.h); let ch = cos(self.h); let lxw = ch; let lzw = -sh;
         let u = self.vx * sh + self.vz * ch; let vl = self.vx * lxw + self.vz * lzw;
         let (m, iz, r_, g) = (M, t.iz, TIRE_R, 9.81);
@@ -182,11 +198,11 @@ impl Car {
             let wx = self.x + ch * w.lx + sh * w.lz; let wz = self.z - sh * w.lx + ch * w.lz; w.wx = wx; w.wz = wz;
             let wpd = world.path_dist(wx, wz); w.road = wpd < world.road() + 0.25; w.bank = snow && !w.road && wpd < ROAD + 1.8; if w.road { road_n += 1; }
             let hg = world.height(wx, wz) + (vnoise(wx * 0.45 + 3.1, wz * 0.45) - 0.5) * (if w.road { 0.05 } else { 0.16 });
-            // prism: a wheel coming back in from over the void (the car already dropping past the edge) below the deck's surface finds no
-            // ground there - the deck is a thin ribbon, not a block to be shoved out of. A wheel that was on the deck always keeps it, even
-            // if the deck rose a little past it (a spawn, a wave).
+            // prism: a wheel coming back in from over the void well below the deck's surface (more than a tyre's half-height) finds no
+            // ground there - the deck is a thin ribbon, not a block to be shoved out of; one only a little below catches the edge (steering
+            // back on). A wheel that was on the deck always keeps it, even if the deck rose a little past it (a spawn, a wave).
             let wy = self.y + w.lz * sp + w.lx * sr;
-            let hg = if prism && w.hg < -300.0 && wy < hg - 0.05 { crate::world::PRISM_VOID } else { hg };
+            let hg = if gone || (prism && w.hg < -300.0 && wy < hg - 0.35) { crate::world::PRISM_VOID } else { hg };
             let d = wy - hg; let comp = REST - d;
             // prism: the ground under a wheel can appear or vanish at the edge - damp from where the tyre is now, not from the void
             let rate = (comp - if prism { w.comp.max(comp.min(0.0) - 0.05) } else { w.comp }) / dt;

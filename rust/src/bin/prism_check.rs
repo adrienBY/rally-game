@@ -38,6 +38,30 @@ fn main() {
         n += 1; if left.is_some() { off += 1; }
     } } } } }
     println!("edge: {} runs, {} went off; over the void, in the half second after the last wheel leaves the deck: most upward speed gained {:+.2} m/s, largest change of horizontal velocity {:.2} m/s ({})", n, off, worst_up, worst_side, worst_where);
+    // saving it: drift towards the edge at a shallow angle, and when a wheel is over the void (at once, or a little late) steer back hard - the car must not sink into the deck
+    // (its reference point stays above the deck surface while it is over the deck), and it should catch the edge, not pop up off it
+    let (mut runs, mut saved, mut worst_sink, mut worst_pop) = (0, 0, 0.0f64, 0.0f64); let mut by_speed = std::collections::BTreeMap::new(); let mut sink_where = String::new();
+    for &i in &[200usize, 640, 1000, 1300, 1700] { for &side in &[-1.0f64, 1.0] { for &yaw in &[0.06f64, 0.12, 0.2] { for &v in &[12.0f64, 25.0, 40.0] { for &tw in &[0.0f64, 1.3, 2.6] { for &late in &[0usize, 6, 12] {
+        w.set_wave_time(tw - 0.6); let mut c = place((i + np - 20) % np, 0.0, 0.0, v, 0.0); let mut back_at: Option<usize> = None; let mut fell = false; let mut was_out = false;
+        for f0 in 0..(4.0 / dt) as usize { let settle = f0 < 36; w.set_wave_time(tw + (f0 as f64 - 36.0) * dt); let sp = c.vx.hypot(c.vz);
+            let over = c.wh.iter().any(|q| q.hg < -300.0); if back_at.is_none() && !settle && over { back_at = Some(f0 + late); }
+            if f0 == 36 { let a = -side * yaw; c.h += a; let (cs, sn) = (a.cos(), a.sin()); let (vx, vz) = (c.vx, c.vz); c.vx = vx * cs + vz * sn; c.vz = -vx * sn + vz * cs; }   // drifting at the edge at this angle
+            // back towards the middle: positive steering turns the car towards positive lat
+            let lat_now = w.road_frame(wv, c.x, c.z).1;
+            let steer = if settle { 0.0 } else if back_at.map(|b| f0 >= b).unwrap_or(false) { -lat_now.signum() } else { 0.0 };
+            let inp = Input { steer, throttle: if settle && sp >= v { 0.0 } else { 0.6 }, brake: 0.0, hb: false };
+            let pre_vy = c.vy; c.update(w, &e.obstacles, &tune, dt, &inp);
+            let (k, lat, s) = w.road_frame(wv, c.x, c.z); if c.y < rt.roadh[k] - 6.0 { fell = true; break; }
+            if lat.abs() > PRISM_EDGE || c.falling { was_out = true; }
+            if !was_out && lat.abs() < PRISM_EDGE - 0.3 { let deck = wv.deck(s, lat) + wv.at(s, w.wave_time()); let sink = deck - c.y;
+                if sink > worst_sink { worst_sink = sink; sink_where = format!("idx {} side {} steer {} v {} tw {} late {}", i, side, yaw, v, tw, late); } }
+            if std::env::var("DBG4").map(|d| d == format!("{}:{}:{}:{}:{}:{}", i, side, yaw, v, tw, late)).unwrap_or(false) && f0 > 36 {
+                let deck = wv.deck(s, lat) + wv.at(s, w.wave_time());
+                println!("{} lat {:+.2} y-deck {:+.2} vy {:+.1} steer {:+.1} roll {:+.2} hg {:?} d {:?}", f0, lat, c.y - deck, c.vy, steer, c.roll, c.wh.iter().map(|q| (q.hg - deck) as f32).map(|x| (x * 100.0).round() / 100.0).collect::<Vec<_>>(), c.wh.iter().map(|q| (q.d * 100.0).round() / 100.0).collect::<Vec<_>>()); }
+            if back_at.is_some() { worst_pop = worst_pop.max(c.vy - pre_vy.max(0.0)); } }
+        if back_at.is_some() { runs += 1; let e2 = by_speed.entry(v as i64).or_insert((0, 0)); e2.0 += 1; if !fell { saved += 1; e2.1 += 1; } }
+    } } } } } }
+    println!("saving it: {} cars got a wheel over the edge and steered back, {} stayed on (by speed m/s: (tries, saved) {:?}); deepest the car sank below the deck surface while still over it {:.2} m ({}); most upward speed gained in one frame {:+.2} m/s", runs, saved, by_speed, worst_sink, sink_where, worst_pop);
     // air control: 6 m up at 30 m/s on the straightest stretch, 0.5 s of input
     w.set_wave_time(0.0);
     for (name, inp) in [("none", Input::default()), ("steer right", Input { steer: 1.0, ..Default::default() }), ("steer left", Input { steer: -1.0, ..Default::default() }), ("throttle", Input { throttle: 1.0, ..Default::default() }), ("brake", Input { brake: 1.0, ..Default::default() })] {

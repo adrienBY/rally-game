@@ -50,7 +50,8 @@ builds a bare stage from a test fixture, then two `game_host` runs talk through 
 
 Prism Skyway check: `cargo run --release --bin prism_check <rt.bin>` (a runtime packet dumped from the page) drives cars off the deck
 edge at many speeds, steering amounts and wave phases and measures any flick as they leave (upward and sideways speed gained over
-the void), then measures how much steering, throttle and brake move a car in the air.
+the void), lets cars drift over the edge and steer back (they must never sink into the deck while still over it), then measures
+how much steering, throttle and brake move a car in the air.
 
 Online netcode check (no phones needed): `cargo run --release --bin net_sim` drives a car round each stage, sends it
 through a simulated link and reports how far off and how smooth the other player's car looks, plus data per hour.
