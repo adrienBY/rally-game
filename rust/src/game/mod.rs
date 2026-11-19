@@ -30,7 +30,7 @@ pub const VEH_L: f64 = 1.22 - -1.28;
 const LOD1: f64 = 150.0; const LOD2: f64 = 300.0;
 const REST: f64 = 0.21; const STOP: f64 = 0.33;
 pub(crate) const PIX: [f64; 3] = [170.0, 220.0, 340.0];
-pub const MAPS: [&str; 6] = ["forest", "snow", "canyon", "lakes", "touge", "riviera"];
+pub const MAPS: [&str; 7] = ["forest", "snow", "canyon", "lakes", "touge", "riviera", "prism"];
 
 /// xorshift64*: the page's Math.random / seeded rnd() stand-in (particles, mistakes, grid reactions)
 pub struct Rng(u64);
@@ -132,7 +132,7 @@ impl Persist {
 }
 
 pub struct Game {
-    pub rt: Rt, pub np: usize, pub snow: bool, pub can: bool, pub lak: bool, pub tou: bool, pub riv: bool,
+    pub rt: Rt, pub np: usize, pub snow: bool, pub can: bool, pub lak: bool, pub tou: bool, pub riv: bool, pub pri: bool, pub pri_last: Option<usize>,
     pub tune: Tune, pub cam_follow: f64, pub car: Car, pub rpm_shown: f64, pub shake: f64, pub car_hit: f64, pub prev_throttle: f64,
     pub state: State, pub g_t: f64, pub lap: i32, pub lap_start: f64, pub best: Option<f64>, pub flags: [bool; 3], pub last_idx: usize,
     pub msg: String, pub msg_t: f64, pub wrong_t: f64, pub started: bool, pub go: f64,
@@ -194,16 +194,16 @@ impl Game {
         let race = Race::new(&rt, &ps);
         let ncull = rt.cull.len(); let nglit = rt.glit.len();
         let mut g = Game {
-            np, snow: mid == 1, can: mid == 2, lak: mid == 3, tou: mid == 5, riv: mid == 6,
+            np, snow: mid == 1, can: mid == 2, lak: mid == 3, tou: mid == 5, riv: mid == 6, pri: mid == 7, pri_last: None,
             tune: cars::tune_for(&Tune::from_slice(&tv), ps.car), base_tune: Tune::from_slice(&tv), gar: Default::default(), car_vis: None, paint_vis: None, menu: menu::fresh(), crash: crash::Crash::new(), cam_follow, car: Car::new(), rpm_shown: 900.0, shake: 0.0, car_hit: 0.0, prev_throttle: 0.0,
             state: State::Title, g_t: 0.0, lap: 1, lap_start: 0.0, best, flags: [false; 3], last_idx: 0, msg: String::new(), msg_t: 0.0, wrong_t: 0.0, started: false, go: 0.0,
             cam: CamState { y: 0.0, h: 0.0, init: false, mode: ps.cam_mode as i32, fov: 56.0, lag: 0.0, cp: None, cr: None, shot: -1, cut_t: 0.0, passed: 0.0, anchor: [0.0; 3], target: 0, side: 1.0 },
             cam_pos: [0.0; 3], cam_rot: ID, fov_now: 56.0, view: ID, proj: ID, w: 1280.0, h: 720.0, lw: 320, lh: 180, u: 1.0, inset: [0.0; 4], inset_px: [0.0; 4],
             race, ui: HashMap::new(), touches: HashMap::new(), time: 0.0, wind: 0.5, rng: Rng(0x9E3779B97F4A7C15 ^ (mid as u64 + 1)), events: Vec::new(), ps, loading: None,
             node_base, node_world: vec![ID; rt.nodes.len()], obj_last: HashMap::new(), named, cull_vis: vec![true; ncull], glit_op: vec![-1.0; nglit],
-            dust: dust::Dust::new(dn, 0x5EED ^ mid as u64), dust_env: dust::Env { tarmac: mid == 5 || mid == 6, snow: mid == 1, sand: mid == 2, lush: mid == 0, alpha: if mid == 5 || mid == 6 { 0.16 } else if mid == 1 { 0.14 } else if mid == 2 { 0.17 } else if mid == 3 { 0.17 } else { 0.15 },
+            dust: dust::Dust::new(dn, 0x5EED ^ mid as u64), dust_env: dust::Env { tarmac: mid == 5 || mid == 6 || mid == 7, snow: mid == 1, sand: mid == 2, lush: mid == 0, alpha: if mid == 5 || mid == 6 || mid == 7 { 0.16 } else if mid == 1 { 0.14 } else if mid == 2 { 0.17 } else if mid == 3 { 0.17 } else { 0.15 },
                 dry: if mid == 2 { 1.0 } else if mid == 3 { 0.8 } else { 0.7 },
-                grit: if mid == 2 { [0.62, 0.36, 0.22] } else if mid == 0 { [0.34, 0.28, 0.21] } else if mid == 5 || mid == 6 { [0.46, 0.42, 0.37] } else { [0.5, 0.43, 0.33] } },
+                grit: if mid == 2 { [0.62, 0.36, 0.22] } else if mid == 0 { [0.34, 0.28, 0.21] } else if mid == 5 || mid == 6 || mid == 7 { [0.46, 0.42, 0.37] } else { [0.5, 0.43, 0.33] } },
             sf_pos, sf_init: false, boats,
             sun_vis: 0.0, expo: 1.0, dim: 1.0, expo_tun: false, sun_uv: [0.5, 0.8],
             hap_t: 0.0, hap_cool: 0.0, aud_wet: 0.0, car_audio_on: false, race_was: false, pop_cool: 0.0, fps_acc: 0.0, fps_n: 0, hud_tick: false, hud: hud::Canvas::new(320, 180),
@@ -276,7 +276,7 @@ impl Game {
 
     fn hit_button(&self, x: f64, y: f64) -> Option<&'static str> {
         let inb = |b: &Rect, l: f64, r: f64, t: f64, bt: f64| x >= b.x - l && x <= b.x + b.w + r && y >= b.y - t && y <= b.y + b.h + bt;
-        if self.state == State::Title { for k in ["mapF", "mapS", "mapC", "mapL", "mapT", "mapR", "mode", "garage"].iter().chain(online::KEYS.iter()).chain(menu::KEYS.iter()) { if let Some(b) = self.ui.get(k) { if inb(b, 2.0, 2.0, 3.0, 3.0) { return Some(k); } } } }
+        if self.state == State::Title { for k in ["mapF", "mapS", "mapC", "mapL", "mapT", "mapR", "mapP", "mode", "garage"].iter().chain(online::KEYS.iter()).chain(menu::KEYS.iter()) { if let Some(b) = self.ui.get(k) { if inb(b, 2.0, 2.0, 3.0, 3.0) { return Some(k); } } } }
         for k in TOPB { if let Some(b) = self.ui.get(k) { if inb(b, 2.0, 2.0, 2.0, 3.0) { return Some(k); } } }
         let (Some(hb), Some(left), Some(right), Some(gas)) = (self.ui.get("hb"), self.ui.get("left"), self.ui.get("right"), self.ui.get("gas")) else { return None };
         if !self.ps.touch_used { return None; }
@@ -314,7 +314,7 @@ impl Game {
                     Some("mode") => self.toggle_mode(),
                     Some("rec") => { self.bench_req = true; }   // temporary: benchmark recording on / off
                     Some("tel") => self.tel_toggle(),
-                    Some(k) if k.starts_with("map") => { let want = match k { "mapF" => "forest", "mapS" => "snow", "mapC" => "canyon", "mapL" => "lakes", "mapT" => "touge", _ => "riviera" }; if want != self.rt.map { self.switch_map(want); } }
+                    Some(k) if k.starts_with("map") => { let want = match k { "mapF" => "forest", "mapS" => "snow", "mapC" => "canyon", "mapL" => "lakes", "mapT" => "touge", "mapP" => "prism", _ => "riviera" }; if want != self.rt.map { self.switch_map(want); } }
                     _ if self.state == State::Title && self.online_open() => {}
                     _ if self.state == State::Title && crate::net::active() => { self.ps.online_ui = online::OnlineUi::Lobby; }
                     _ if self.state == State::Title => {}
@@ -413,6 +413,11 @@ impl Game {
         let pre = (self.car.vx, self.car.vz, self.car.r);
         let shifted = if paused { false } else { self.car.update(w, obs, &self.tune, dt, &inp) }; lap!(0);
         if shifted { if self.state == State::Drive { self.buzz("shift", 0.45); } self.audio_msg(&[7.0, 2.0]); }
+        // prism: off the edge of the skyway is a long way down - back on the deck a few metres before where you left it
+        if self.pri && !paused && (self.state == State::Drive || self.race.demo) {
+            let np = self.np; let k = path_idx(w, self.car.x, self.car.z); if w.path_dist(self.car.x, self.car.z) < ROAD { self.pri_last = Some(k); }
+            if self.car.y < self.rt.roadh[k] - 8.0 { let back = (self.pri_last.unwrap_or(k) + np - 4) % np; self.place_at(w, back); if self.state == State::Drive { self.flash_msg("RESPAWN", 1.0); self.buzz("land", 0.7); } }
+        }
         if self.state == State::Drive && !paused { if self.race.on { race::step(self, w, obs, dt); } else { self.update_lap(w, dt); } }
         else if self.state == State::Title && self.race.demo { race::step(self, w, obs, dt); } lap!(1);
         // crash damage: a hit (a tree, a rock, a wall, another car) dents the bodywork where it landed; a landing does not
@@ -726,7 +731,7 @@ impl Game {
         let s = self.car; self.rpm_shown += (s.rpm - self.rpm_shown) * (dt * 14.0).min(1.0);
         // engine and tyres (the build 16 recordings, played by the native mixer)
         let thr = if s.gear < 0.0 { inp.brake } else { inp.throttle };
-        let tar = (self.tou || self.riv) && s.on_road;
+        let tar = (self.tou || self.riv || self.pri) && s.on_road;
         let slide = if self.snow { clamp((s.slide - 5.5) / 9.0, 0.0, 1.0) } else if tar { clamp((s.slide - 4.8) / 8.0, 0.0, 1.0) } else { clamp((s.slide - 3.0) / 7.0, 0.0, 1.0) };
         let surf = if self.snow { 1.0 } else if self.can { 2.0 } else if tar { 3.0 } else if s.on_road { 4.0 } else { 0.0 };
         let sp = s.vx.hypot(s.vz);
@@ -746,7 +751,7 @@ impl Game {
         let fwd = [-self.cam_rot[8], -self.cam_rot[10]]; let on_road: f64 = s.wh.iter().map(|w| if w.road { 0.25 } else { 0.0 }).sum();
         let master = if self.ps.sound_on { 0.9 * vol } else { 0.0 };
         let cp = self.cam_pos; let _ = w;
-        self.audio_msg(&[1.0, self.rpm_shown as f32, thr as f32, sp as f32, s.slide as f32, on_road as f32, if self.snow { 1.0 } else if self.can { 2.0 } else if self.tou || self.riv { 3.0 } else { 0.0 }, wet as f32,
+        self.audio_msg(&[1.0, self.rpm_shown as f32, thr as f32, sp as f32, s.slide as f32, on_road as f32, if self.snow { 1.0 } else if self.can { 2.0 } else if self.tou || self.riv || self.pri { 3.0 } else { 0.0 }, wet as f32,
             if s.contacts == 0.0 { 1.0 } else { 0.0 }, s.gear as f32, if self.state == State::Title { 3.0 } else { self.cam.mode as f32 }, cp[0] as f32, cp[1] as f32, cp[2] as f32, fwd[0].atan2(fwd[1]) as f32,
             s.x as f32, s.y as f32, s.z as f32, gust as f32, if self.state == State::Drive { 1.0 } else { 0.0 }, master as f32, if s.shift_t > 0.0 { 1.0 } else { 0.0 }, inp.brake as f32,
             if s.on_road { 0.0 } else { clamp(sp / 20.0, 0.0, 1.0) as f32 }]);

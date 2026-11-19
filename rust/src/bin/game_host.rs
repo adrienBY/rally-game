@@ -111,7 +111,7 @@ fn main() {
                     "cars" => { let pl = g.race.player; for (k, c) in g.race.cars.iter().enumerate() { let s = if k == pl { &g.car } else { &c.car };
                         println!("t={:.2} car {} {} x={:.2} z={:.2} u={:.1} prog={:.0} bot={:?} remote={} ai={} left={} fin={}", t, k, if k == pl { "YOU".to_string() } else { c.tag() }, s.x, s.z, s.u, c.prog, c.bot, c.remote.map(|r| format!("{:08x}", r)).unwrap_or("-".into()), c.is_ai(), c.left, c.finished); }
                         if let Some((b, r, np, links)) = fogwood_core::net::with(|s| (s.race_bots, s.car_rate(), s.peers.len(), s.peers.values().map(|p| format!("{:?}", p.link())).collect::<Vec<_>>())) { println!("t={:.2} race_bots={} rate={:?} peers={} {:?} msg={:?}", t, b, r, np, links, g.msg); } }
-                    "state" => { let c = &g.car; println!("t={:.2} state={} x={:.3} z={:.3} h={:.4} u={:.2} gear={} rpm={:.0} lap={} best={:?} race={} pos={} phase={:?}", t, if g.state == State::Drive { "drive" } else { "title" }, c.x, c.z, c.h, c.u, c.gear, c.rpm, g.lap, g.best, g.race.on, g.race.pos, g.race.phase); }
+                    "state" => { let c = &g.car; println!("t={:.2} state={} x={:.3} z={:.3} h={:.4} u={:.2} gear={} rpm={:.0} lap={} best={:?} race={} pos={} phase={:?}", t, if g.state == State::Drive { "drive" } else { "title" }, c.x, c.z, c.h, c.u, c.gear, c.rpm, g.lap, g.best, g.race.on, g.race.pos, g.race.phase); if g.race.on { println!("  rival resets {:?}", g.race.cars.iter().map(|c| c.resets).collect::<Vec<_>>()); } }
                     _ => println!("unknown {}", act),
                 }
             }

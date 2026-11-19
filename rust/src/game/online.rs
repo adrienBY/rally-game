@@ -9,11 +9,11 @@ use crate::world::World;
 #[derive(Clone, PartialEq, Debug, Default)]
 pub enum OnlineUi { #[default] Closed, Menu, Join(String), Lobby, Stages, Rooms }
 
-pub const KEYS: [&str; 35] = ["on_bots", "on_rooms", "on_r0", "on_r1", "on_r2", "on_r3", "on_r4", "on_r5", "on_host", "on_join", "on_back", "on_start", "on_leave", "on_stage", "k0", "k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "k9", "kdel", "kok", "on_laps", "online",
-    "on_name", "on_st0", "on_st1", "on_st2", "on_st3", "on_st4", "on_st5"];
-const MAPS: [(&str, &str); 6] = [("forest", "FOGWOOD"), ("snow", "COL DE GIVRE"), ("canyon", "CANYON ROUGE"), ("lakes", "LAKELAND"), ("touge", "MOMIJI TOUGE"), ("riviera", "RIVIERA CORNICHE")];
+pub const KEYS: [&str; 36] = ["on_bots", "on_rooms", "on_r0", "on_r1", "on_r2", "on_r3", "on_r4", "on_r5", "on_host", "on_join", "on_back", "on_start", "on_leave", "on_stage", "k0", "k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "k9", "kdel", "kok", "on_laps", "online",
+    "on_name", "on_st0", "on_st1", "on_st2", "on_st3", "on_st4", "on_st5", "on_st6"];
+const MAPS: [(&str, &str); 7] = [("forest", "FOGWOOD"), ("snow", "COL DE GIVRE"), ("canyon", "CANYON ROUGE"), ("lakes", "LAKELAND"), ("touge", "MOMIJI TOUGE"), ("riviera", "RIVIERA CORNICHE"), ("prism", "PRISM SKYWAY")];
 /// the stage list: tile key, short name, surface
-const TILES: [(&str, &str, &str); 6] = [("on_st0", "FOREST", "GRAVEL"), ("on_st1", "SNOW", "SNOW"), ("on_st2", "CANYON", "SAND"), ("on_st3", "LAKES", "GRAVEL"), ("on_st4", "TOUGE", "TARMAC"), ("on_st5", "RIVIERA", "TARMAC")];
+const TILES: [(&str, &str, &str); 7] = [("on_st0", "FOREST", "GRAVEL"), ("on_st1", "SNOW", "SNOW"), ("on_st2", "CANYON", "SAND"), ("on_st3", "LAKES", "GRAVEL"), ("on_st4", "TOUGE", "TARMAC"), ("on_st5", "RIVIERA", "TARMAC"), ("on_st6", "PRISM", "LIGHT")];
 fn short_name(m: &str) -> &'static str { MAPS.iter().position(|x| x.0 == m).map(|k| TILES[k].1).unwrap_or("STAGE") }
 fn stage_name(m: &str) -> &'static str { MAPS.iter().find(|x| x.0 == m).map(|x| x.1).unwrap_or("STAGE") }
 
@@ -275,9 +275,9 @@ pub fn draw(ps: &super::Persist, map: &str, g: &mut Canvas, ui: &mut Vec<(&'stat
         }
         OnlineUi::Stages => {
             centre(g, "PICK THE STAGE", py + 5.0 * u, u, AMBER);
-            let gp = 4.0 * u; let tw = ((bw - 2.0 * gp) / 3.0).floor(); let th = 25.0 * u; let y0 = py + 17.0 * u;
+            let gp = 4.0 * u; let tw = ((bw - 3.0 * gp) / 4.0).floor(); let th = 25.0 * u; let y0 = py + 17.0 * u;
             for (n, (k, name, surf)) in TILES.iter().enumerate() {
-                let (x, y) = (bx + (n % 3) as f64 * (tw + gp), y0 + (n / 3) as f64 * (th + gp)); let on = MAPS[n].0 == map;
+                let (x, y) = (bx + (n % 4) as f64 * (tw + gp), y0 + (n / 4) as f64 * (th + gp)); let on = MAPS[n].0 == map;
                 ui.push((k, Rect { x, y, w: tw, h: th }));
                 g.panel(x, y, tw, th, u, if on { rgba(243, 207, 98, 0.3) } else { PANEL }, Some(if on { AMBER } else { EDGE }));
                 g.tx(name, x + (tw - text_w(name, u)) / 2.0, y + 5.0 * u, u, if on { AMBER } else { INK });

@@ -165,6 +165,7 @@ impl Amb {
             4 => Preset { wind: 1.15, wind_lp: 1800.0, howl: 0.25, leaves: 0.0, birds: 0.0, cicada: 0.0 },
             5 => Preset { wind: 0.3, wind_lp: 2600.0, howl: 0.0, leaves: 0.35, birds: 0.0, cicada: 0.0 },
             6 => Preset { wind: 0.42, wind_lp: 3400.0, howl: 0.0, leaves: 0.18, birds: 0.1, cicada: 0.3 },
+            7 => Preset { wind: 0.22, wind_lp: 900.0, howl: 0.35, leaves: 0.0, birds: 0.0, cicada: 0.0 },   // the skyway: a low hum of empty space
             _ => Preset { wind: 0.38, wind_lp: 3600.0, howl: 0.0, leaves: 0.5, birds: 0.55, cicada: 0.0 },
         };
         for v in self.voices.iter_mut() { v.kind = Kind::Off; }

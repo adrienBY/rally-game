@@ -4,8 +4,10 @@ use crate::noise::*;
 pub const ROAD: f64 = 3.4;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Map { Forest = 0, Snow = 1, Canyon = 2, Lakes = 3, Iceland = 4, Touge = 5, Riviera = 6 }
-impl Map { pub fn from_id(i: i32) -> Map { match i { 1 => Map::Snow, 2 => Map::Canyon, 3 => Map::Lakes, 4 => Map::Iceland, 5 => Map::Touge, 6 => Map::Riviera, _ => Map::Forest } } }
+pub enum Map { Forest = 0, Snow = 1, Canyon = 2, Lakes = 3, Iceland = 4, Touge = 5, Riviera = 6, Prism = 7 }
+impl Map { pub fn from_id(i: i32) -> Map { match i { 1 => Map::Snow, 2 => Map::Canyon, 3 => Map::Lakes, 4 => Map::Iceland, 5 => Map::Touge, 6 => Map::Riviera, 7 => Map::Prism, _ => Map::Forest } } }
+/// Prism: the floor of space, far below the skyway (falling to it means a respawn)
+pub const PRISM_VOID: f64 = -400.0;
 /// Lakes: water level
 pub const WL: f64 = -4.5;
 
@@ -17,6 +19,7 @@ pub struct World {
 
 fn terrain(map: Map, x: f64, z: f64) -> f64 {
     match map {
+        Map::Prism => PRISM_VOID,
         Map::Riviera => riv_land(x, z, true),
         Map::Iceland => { let b = ice_base(x, z); b - ice_riv(x, z) * (b + 1.0) }
         Map::Touge => { let k = (x * x + z * z) / 90000.0; 66.0 / (1.0 + k) - (k - 0.62).max(0.0).min(2.5) * 46.0 + tou_hill(x, z) }
@@ -105,22 +108,45 @@ pub fn build(map: Map, path: &[(f64, f64)], roadh: &[f64], gxh: i32, gzh: i32) -
             for jj in j..(j + 8).min(gnz) { for ii in i..(i + 8).min(gnx) { let q = jj * gnx + ii; if pd[q] >= 20.0 { pi[q] = bk as i16; } } }
         }
         i += 8; } j += 8; }
+    // prism: the deck banks into the curves (same recipe as the page: lateral turn of the tangent over +-10 m, clamped, box-smoothed)
+    let bank = if map == Map::Prism { prism_bank(path) } else { Vec::new() };
+    let tan: Vec<(f64, f64)> = if map == Map::Prism { (0..np).map(|i| path_tan(path, i)).collect() } else { Vec::new() };
     {
         let (pd_r, pi_r) = (&pd, &pi);
         par_rows(&mut h, gnx, |j, row| { for i in 0..gnx {
             let id = j * gnx + i; let x = i as f64 - gxh as f64; let z = j as f64 - gzh as f64; let pdv = pd_r[id] as f64;
+            if map == Map::Prism {
+                let k = pi_r[id] as usize; let (px, pz) = path[k]; let (tx, tz) = tan[k];
+                let lat = (x - px) * -tz + (z - pz) * tx; let w2 = 1.0 - smooth(ROAD + 1.8, ROAD + 2.4, pdv);
+                row[i] = ((roadh[k] - 0.12 + lat * bank[k]) * w2 + PRISM_VOID * (1.0 - w2)) as f32; continue;
+            }
             let mut hv = terrain(map, x, z);
             if map == Map::Canyon { hv += canyon_mesa(x, z) * smooth(ROAD + 6.0, ROAD + 16.0, pdv); }
             if map == Map::Iceland { hv += ice_cliff(x, z) * smooth(ROAD + 7.0, ROAD + 16.5, pdv); }
             let w = 1.0 - match map { Map::Snow => smooth(ROAD + 1.5, ROAD + 22.0, pdv), Map::Canyon => smooth(ROAD + 1.0, ROAD + 9.0, pdv),
                 Map::Lakes => smooth(ROAD + 1.0, ROAD + 14.0, pdv), Map::Iceland => smooth(ROAD + 1.0, ROAD + 12.0, pdv),
-                Map::Touge => smooth(ROAD + 1.2, ROAD + 8.0, pdv), Map::Riviera => smooth(ROAD + 1.0, ROAD + 7.0, pdv), Map::Forest => smooth(ROAD + 1.0, ROAD + 10.0, pdv) };
+                Map::Touge => smooth(ROAD + 1.2, ROAD + 8.0, pdv), Map::Riviera => smooth(ROAD + 1.0, ROAD + 7.0, pdv), Map::Prism => 1.0, Map::Forest => smooth(ROAD + 1.0, ROAD + 10.0, pdv) };
             hv = hv + (roadh[pi_r[id] as usize] - 0.12 - hv) * w;
             if map == Map::Lakes && hv < WL { hv = WL - (1.6f64).min((WL - hv) * 0.2); }
             row[i] = hv as f32;
         } });
     }
     World { map, gxh, gzh, gnx, gnz, pd, pi, h }
+}
+
+/// Unit tangent of the centreline at `i` (from the points 2 m either side), as the page computes TAN.
+pub fn path_tan(path: &[(f64, f64)], i: usize) -> (f64, f64) {
+    let np = path.len(); let a = path[(i + np - 2) % np]; let b = path[(i + 2) % np];
+    let (dx, dz) = (b.0 - a.0, b.1 - a.1); let l = crate::physics::js_hypot(dx, dz); (dx / l, dz / l)
+}
+/// Prism banking: height gained per metre of lateral offset at each path point.
+pub fn prism_bank(path: &[(f64, f64)]) -> Vec<f64> {
+    let np = path.len(); let tan: Vec<(f64, f64)> = (0..np).map(|i| path_tan(path, i)).collect();
+    let mut raw: Vec<f64> = (0..np).map(|i| { let a = tan[(i + np - 10) % np]; let b = tan[(i + 10) % np]; let t = tan[i];
+        let dr = (b.0 - a.0) * -t.1 + (b.1 - a.1) * t.0; clamp(-0.9 * dr, -0.24, 0.24) }).collect();
+    for _ in 0..3 { let c = raw.clone(); for i in 0..np { let mut s = 0.0; for k in -15i64..=15 { s += c[((i as i64 + k + np as i64) % np as i64) as usize]; } raw[i] = s / 31.0; } }
+    // the page keeps these in a Float32Array
+    raw.iter().map(|&v| v as f32 as f64).collect()
 }
 
 impl World {
