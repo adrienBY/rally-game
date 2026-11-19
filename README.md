@@ -42,6 +42,12 @@ and how it was hit. It never touches the physics. `game_host ... "hit:cx:cz:r:dx
 Tyre smoke check: `cargo run --release --bin smoke_stats <stage.rt>...` drives a lap on each stage (`SMOKE_HB=1` adds handbrake
 slides) and reports how often the tyres would smoke on the tarmac and how many puffs per second (`.rt` = the page's `__rtPacket()`).
 
+Two headless phones in an online race (no phones, no internet): `cargo run --release --bin stage_dump lakes /tmp/stage`
+builds a bare stage from a test fixture, then two `game_host` runs talk through a local relay (`rust/relay`, with
+`FW_RELAY=udp:127.0.0.1:7777 FW_BROKERS= FW_LOOPBACK=1 FW_NOSTUN=1 FW_REALTIME=1`); the host script taps
+`online:on_host`, `online:on_bots` (AI cars) and `online:on_start`, the guest `joincode`; `cars` prints every car.
+`FW_CUT=from,to` loses the direct packets in that window (a dying path), to check nobody drops out.
+
 Online netcode check (no phones needed): `cargo run --release --bin net_sim` drives a car round each stage, sends it
 through a simulated link and reports how far off and how smooth the other player's car looks, plus data per hour.
 `cargo run --release --bin net_contact` races two phones door to door through the link and reports how contacts come

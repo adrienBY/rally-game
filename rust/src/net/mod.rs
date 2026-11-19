@@ -32,8 +32,17 @@ use std::sync::Mutex;
 use web_time::Instant;
 
 pub const BROKERS: [&str; 3] = ["broker.emqx.io:1883", "broker.hivemq.com:1883", "test.mosquitto.org:1883"];
-const PEER_TIMEOUT: f64 = 15.0;
-const DIRECT_TIMEOUT: f64 = 6.0;
+const PEER_TIMEOUT: f64 = 20.0;
+const DIRECT_TIMEOUT: f64 = 4.0;
+/// A way of reaching a peer (direct, our relay) counts as gone quiet when nothing has come from them that way for this
+/// long (s): racing, cars report at least every 0.75 s. Packets for them then also go the other ways, so a path that died
+/// (a phone switching from Wi-Fi to 4G, a router forgetting the mapping, a stalled relay socket) costs a second, not a
+/// dropped-out player.
+const QUIET_RACING: f64 = 1.5; const QUIET_LOBBY: f64 = 3.5;
+/// the ids AI cars go by on the guests' phones (BOT_ID | index in the start message)
+pub const BOT_ID: u32 = 0xB07A_1000;
+pub fn bot_id(k: u8) -> u32 { BOT_ID | k as u32 }
+pub fn bot_of(id: u32) -> Option<u8> { if id & !0xFF == BOT_ID { Some((id & 0xFF) as u8) } else { None } }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Link { Connecting, Relay, Direct }
@@ -48,9 +57,19 @@ pub struct Peer {
     pub brokers: u8,
     /// last time a packet from them came through our relay (they are on it too)
     pub via_relay: f64,
-    /// pushes we gave their car, summed until the next bump message goes out, and when the last one went
-    hit_acc: Option<([f32; 5], f32)>, hit_tx: f64,
+    /// until when to also send them our packets the indirect ways: their car came relayed although we have a direct path,
+    /// so they are not hearing us on it (a one-sided failure we cannot see from here)
+    mirror_until: f64,
+    /// pushes we gave their car (by which of our cars: proto::BY_PLAYER or an AI car), summed until the next bump message
+    /// goes out, and when the last one went
+    hit_acc: Vec<(u8, [f32; 5], f32)>, hit_tx: f64,
 }
+/// one of the host's AI cars as a guest sees it
+#[derive(Default)]
+pub struct BotIn { pub track: smooth::Track, last_seq: u8, hit_acc: Option<([f32; 5], f32)>, hit_tx: f64 }
+/// one of our AI cars going out (host)
+#[derive(Default)]
+struct BotOut { policy: smooth::Policy, seq: u8 }
 impl Peer {
     pub fn link(&self) -> Link { if self.direct.is_some() { Link::Direct } else if self.last_seen > 0.0 { Link::Relay } else { Link::Connecting } }
     fn dup(&mut self, seq: u32) -> bool { if self.seen.contains(&seq) { return true; } self.seen.push_back(seq); if self.seen.len() > 96 { self.seen.pop_front(); } false }
@@ -74,9 +93,16 @@ pub struct Session {
     pub map: String, pub racing: bool, no_direct: bool,
     /// the car we drive (shown on the other phones)
     pub car: u8,
-    /// bumps other phones gave our car, waiting for the game to apply them
-    pub hits_in: Vec<(u32, [f32; 5], f32)>,
+    /// bumps other phones gave our car, waiting for the game to apply them (sender, which of their cars, push, impact)
+    pub hits_in: Vec<(u32, u8, [f32; 5], f32)>,
+    /// this race's AI cars: on a guest, the host's as they arrive; on the host, ours going out; and the bumps guests gave
+    /// ours (sender, AI car, push, impact)
+    pub bots: HashMap<u8, BotIn>, bots_out: Vec<BotOut>, pub race_bots: usize, pub bot_hits_in: Vec<(u32, u8, [f32; 5], f32)>,
+    /// when the current race began (our clock)
+    race_t0: f64,
     /// send thresholds (FW_THR="pos,heading,speed[,heartbeat]" overrides) and a fixed heartbeat if set
+    /// test hook FW_CUT="from,to" (seconds on our clock): the direct packets that arrive then are lost (a path dying)
+    cut: Option<[f64; 2]>,
     thr: smooth::Thresholds, heartbeat: Option<f32>, loss: f64, lag: [f64; 2], held: VecDeque<(f64, Vec<u8>, Option<SocketAddr>)>, held_last: f64,
     /// estimated bytes on the wire, including UDP/IP and TCP/IP headers: [udp up, udp down, broker up, broker down]
     pub traffic: std::cell::Cell<[u64; 4]>, pub packets: std::cell::Cell<[u64; 4]>,
@@ -134,8 +160,9 @@ fn open(code: u32, name: &str, map: &str, is_host: bool) {
     let stun_done = stun.is_none();
     let s = Session { code, me, name: name.to_string(), is_host, t0: Instant::now(), seq: 0, brokers, inbox, topic, sock, stun, public: None, local, stun_done,
         peers: HashMap::new(), host_id: if is_host { Some(me) } else { None }, offset: 0.0, offset_target: 0.0, best_rtt: 9.0, last_ping: -9.0, pings: HashMap::new(),
-        last_hello: -9.0, last_start_tx: -9.0, policy: Default::default(), car_seq: 0, view: Default::default(), frame_dt: 0.0, stamp: Default::default(), pong_n: 0, start_out: None, start_in: None, last_start_go: -1.0, map: map.to_string(), racing: false, car: 0, hits_in: Vec::new(), no_direct: std::env::var("FW_NODIRECT").is_ok(), traffic: Default::default(), packets: Default::default(),
+        last_hello: -9.0, last_start_tx: -9.0, policy: Default::default(), car_seq: 0, view: Default::default(), frame_dt: 0.0, stamp: Default::default(), pong_n: 0, start_out: None, start_in: None, last_start_go: -1.0, map: map.to_string(), racing: false, car: 0, hits_in: Vec::new(), bots: HashMap::new(), bots_out: Vec::new(), race_bots: 0, bot_hits_in: Vec::new(), race_t0: 0.0, no_direct: std::env::var("FW_NODIRECT").is_ok(), traffic: Default::default(), packets: Default::default(),
         lag: std::env::var("FW_LAG").ok().and_then(|v| { let q: Vec<f64> = v.split(',').filter_map(|x| x.parse().ok()).collect(); if q.len() == 2 { Some([q[0], q[1]]) } else { None } }).unwrap_or([0.0, 0.0]), held: VecDeque::new(), held_last: 0.0,
+        cut: std::env::var("FW_CUT").ok().and_then(|v| { let q: Vec<f64> = v.split(',').filter_map(|x| x.parse().ok()).collect(); if q.len() == 2 { Some([q[0], q[1]]) } else { None } }),
         loss: std::env::var("FW_LOSS").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0),
         thr: smooth::Thresholds::default(), heartbeat: None,
         relay: if std::env::var("FW_NORELAY").is_ok() { None } else { Some(relay::Client::start(code, me)) }, last_announce: -9.0 };
@@ -172,11 +199,29 @@ impl Session {
     /// our relay is up and this peer is on it too
     fn on_relay(&self, p: &Peer, now: f64) -> bool { self.relay.as_ref().map(|r| r.is_up(now)).unwrap_or(false) && now - p.via_relay < 9.0 }
     fn relay_send(&self, to: u32, b: &[u8], now: f64) -> bool { match &self.relay { Some(r) => { let ok = r.send(to, b, now); if ok { self.count(0, b.len() as u64 + 5 + UDP_OVERHEAD); } ok } None => false } }
+    /// How to reach a peer: (direct address, through our relay, through the brokers). The direct path alone while it is
+    /// lively; once it has gone quiet, our relay too; the brokers as well when the relay has gone quiet for them too.
+    fn route(&self, p: &Peer, now: f64) -> (Option<SocketAddr>, bool, bool) {
+        let quiet = if self.racing { QUIET_RACING } else { QUIET_LOBBY };
+        if p.direct.is_some() && now - p.last_udp < quiet && now > p.mirror_until { return (p.direct, false, false); }
+        let ours = self.on_relay(p, now); (p.direct, ours, !(ours && now - p.via_relay < quiet))
+    }
     fn send_to(&self, to: u32, b: &[u8]) {
         let now = self.now();
-        match self.peers.get(&to) { Some(p) if p.direct.is_some() => self.udp(b, p.direct.unwrap()),
-            Some(p) if self.on_relay(p, now) => { self.relay_send(to, b, now); }
-            Some(p) => self.relay_for(b, &[p.brokers]), None => self.relay_for(b, &[]) }
+        let Some(p) = self.peers.get(&to) else { self.relay_for(b, &[]); return };
+        let (d, ours, brokers) = self.route(p, now);
+        if let Some(a) = d { self.udp(b, a); }
+        if ours { self.relay_send(to, b, now); }
+        if brokers { self.relay_for(b, &[p.brokers]); }
+    }
+    /// a car state to everyone in the room, each the way `route` says (one datagram to our relay covers all on it)
+    fn deliver(&mut self, b: &[u8], now: f64) {
+        let mut relayed = Vec::new(); let mut out = Vec::new(); let mut via_ours = false;
+        let routes: Vec<(u32, (Option<SocketAddr>, bool, bool), u8)> = self.peers.values().map(|p| (p.id, self.route(p, now), p.brokers)).collect();
+        for (id, (d, ours, brokers), mask) in routes { if let Some(a) = d { out.push(a); if let Some(p) = self.peers.get_mut(&id) { p.last_tx = now; } } if ours { via_ours = true; } if brokers { relayed.push(mask); } }
+        for a in out { self.udp(b, a); }
+        if via_ours { self.relay_send(0, b, now); }
+        if !relayed.is_empty() { self.relay_for(b, &relayed); }
     }
     fn bye(&mut self) { let e = self.env(K_BYE, 0); let b = bare(e); self.relay_all(&b); for p in self.peers.values() { if let Some(a) = p.direct { self.udp(&b, a); } }  if let Some(r) = &self.relay { if self.is_host { r.announce(&self.name, &self.map, 0, false, true); } r.leave(); } }
 
@@ -197,7 +242,9 @@ impl Session {
         // direct messages (only once STUN has finished with the socket)
         if self.stun_done { if let Some(s) = &self.sock { let mut buf = [0u8; 1500]; while let Ok((n, a)) = s.recv_from(&mut buf) { msgs.push((buf[..n].to_vec(), Some(a))); self.count(1, n as u64 + UDP_OVERHEAD); } } }
         // test hooks: FW_LOSS drops a share of what arrives, FW_LAG="mean_ms,jitter_ms" holds it back like a slow network
+        let cut = self.cut.map(|c| now >= c[0] && now < c[1]).unwrap_or(false);
         for (b, from) in msgs { if self.loss > 0.0 && (rand_u32() as f64 / u32::MAX as f64) < self.loss { continue; }
+            if cut && from.is_some() { continue; }
             if self.lag[0] > 0.0 { let j = (rand_u32() as f64 / u32::MAX as f64 * 2.0 - 1.0) * self.lag[1]; let mut at = now + (self.lag[0] + j) / 1000.0;
                 if from.is_none() { at = at.max(self.held_last); self.held_last = at; }   // the broker link is TCP: late, never out of order
                 let k = self.held.iter().position(|h| h.0 > at).unwrap_or(self.held.len()); self.held.insert(k, (at, b, from)); } else { self.handle(&b, from, now); } }
@@ -219,9 +266,14 @@ impl Session {
         }
         if self.stun_done { for (a, b) in out { self.udp(&b, a); } }
         // bumps we gave other players' cars: at most one message per car every 60 ms (a long scrape sums its pushes)
-        let due: Vec<(u32, [f32; 5], f32)> = self.peers.values_mut().filter(|p| p.hit_acc.is_some() && now - p.hit_tx >= 0.06)
-            .map(|p| { p.hit_tx = now; let (d, imp) = p.hit_acc.take().unwrap(); (p.id, d, imp) }).collect();
-        for (id, d, imp) in due { let e = self.env(K_HIT, id); let b = hit(e, d, imp); self.send_to(id, &b); }
+        let due: Vec<(u32, Vec<(u8, [f32; 5], f32)>)> = self.peers.values_mut().filter(|p| !p.hit_acc.is_empty() && now - p.hit_tx >= 0.06)
+            .map(|p| { p.hit_tx = now; (p.id, std::mem::take(&mut p.hit_acc)) }).collect();
+        for (id, list) in due { for (by, d, imp) in list { let e = self.env(K_HIT, id); let b = hit(e, d, imp, by); self.send_to(id, &b); } }
+        // bumps we gave the host's AI cars go to the host, whose phone drives them
+        if let Some(h) = self.host_id.filter(|_| !self.is_host) {
+            let due: Vec<(u8, [f32; 5], f32)> = self.bots.iter_mut().filter(|(_, b)| b.hit_acc.is_some() && now - b.hit_tx >= 0.06)
+                .map(|(k, b)| { b.hit_tx = now; let (d, imp) = b.hit_acc.take().unwrap(); (*k, d, imp) }).collect();
+            for (k, d, imp) in due { let e = self.env(K_BOTHIT, h); let b = bot_hit(e, k, d, imp); self.send_to(h, &b); } }
         // clock: guests ping the host
         if !self.is_host { if let Some(h) = self.host_id { if now - self.last_ping > if self.pong_n < 6 { 0.3 } else { 5.0 } { self.last_ping = now;
             let e = self.env(K_PING, h); self.pings.insert(e.seq, now); let b = time_pair(e, now, 0.0); self.send_to(h, &b); if self.pings.len() > 32 { self.pings.clear(); } } } }
@@ -233,15 +285,16 @@ impl Session {
     }
 
     fn handle(&mut self, b: &[u8], from: Option<SocketAddr>, now: f64) {
-        if matches!(b.first(), Some(&K_CAR2) | Some(&K_CAR3)) { self.handle_car(b, from, now); return; }
+        if matches!(b.first(), Some(&K_CAR2) | Some(&K_CAR3) | Some(&K_BOT3)) { self.handle_car(b, from, now); return; }
         let Some((e, mut r)) = read_env(b) else { return };
         if e.room != self.code || e.from == self.me || (e.to != 0 && e.to != self.me) { return; }
         if e.kind == K_BYE { self.peers.remove(&e.from); return; }
         let p = self.peers.entry(e.from).or_insert_with(|| Peer { id: e.from, name: "?".into(), map: String::new(), host: false, racing: false, first_seen: now, last_seen: now, car: 0,
-            cands: Vec::new(), punch_from: now, last_probe: -9.0, direct: None, last_udp: -9.0, seen: VecDeque::new(), rtt: -1.0, last_tx: -9.0, track: Default::default(), last_seq: 0, brokers: 0xFF, via_relay: -99.0, hit_acc: None, hit_tx: -9.0 });
+            cands: Vec::new(), punch_from: now, last_probe: -9.0, direct: None, last_udp: -9.0, seen: VecDeque::new(), rtt: -1.0, last_tx: -9.0, track: Default::default(), last_seq: 0, brokers: 0xFF, via_relay: -99.0, hit_acc: Vec::new(), hit_tx: -9.0, mirror_until: -9.0 });
         p.last_seen = now;
         if let Some(a) = from { p.last_udp = now; if e.kind == K_PROBE || e.kind == K_PROBE_ACK { if p.direct != Some(a) { p.direct = Some(a); } } }
-        if from.is_none() && e.seq != 0 && p.dup(e.seq) { return; }
+        // a message can now come twice (direct and relayed while a path is quiet): once is enough
+        if e.seq != 0 && p.dup(e.seq) { return; }
         match e.kind {
             K_HELLO => { if let Some(h) = read_hello(&mut r) {
                 let cands: Vec<SocketAddr> = h.cands.iter().map(|(ip, port)| SocketAddr::V4(SocketAddrV4::new((*ip).into(), *port))).collect();
@@ -255,17 +308,29 @@ impl Session {
                     // keep the estimate from the quickest round trip; slowly forget it so a better path can take over
                     self.best_rtt += 0.002; if rtt <= self.best_rtt { self.best_rtt = rtt; self.offset_target = ht - (t + rtt / 2.0); if self.pong_n <= 2 { self.offset = self.offset_target; } } } } } }
             K_START => { if !self.is_host { if let Some(s) = read_start(&mut r) { if (s.go_at - self.last_start_go).abs() > 0.01 { self.last_start_go = s.go_at; self.start_in = Some(s); } } } }
-            K_HIT => { if let Some((d, imp)) = read_hit(&mut r) { if self.hits_in.len() < 64 { self.hits_in.push((e.from, d, imp)); } } }
+            K_HIT => { if let Some((d, imp, by)) = read_hit(&mut r) { if self.hits_in.len() < 64 { self.hits_in.push((e.from, by, d, imp)); } } }
+            K_BOTHIT => { if self.is_host { if let Some((k, d, imp)) = read_bot_hit(&mut r) { if self.bot_hits_in.len() < 64 { self.bot_hits_in.push((e.from, k, d, imp)); } } } }
             _ => {}
         }
     }
 
-    /// Host: everyone in the room races on `map`, lights out `delay` seconds from now. Returns the start for the host itself.
-    pub fn start_race(&mut self, map: &str, laps: u8, delay: f64) -> Option<Start> {
+    /// Host: everyone in the room races on `map`, lights out `delay` seconds from now, with `bots` AI cars (rivals, fastest
+    /// first). Like a solo race the players start mid-grid: the quicker half of the AI cars ahead of them, the rest behind.
+    /// Returns the start for the host itself.
+    pub fn start_race(&mut self, map: &str, laps: u8, delay: f64, bots: &[u8]) -> Option<Start> {
         if !self.is_host { return None; }
         let mut ids: Vec<(f64, u32)> = self.peers.values().map(|p| (p.first_seen, p.id)).collect(); ids.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let mut slots = vec![(self.me, 0u8)]; for (k, (_, id)) in ids.iter().enumerate().take(11) { slots.push((*id, (k + 1) as u8)); }
-        let s = Start { map: map.to_string(), laps, go_at: self.host_now() + delay, slots }; self.start_out = Some((s.clone(), self.now() + 3.0)); Some(s)
+        let mut players = vec![self.me]; players.extend(ids.iter().take(11).map(|x| x.1));
+        let nb = bots.len().min(12 - players.len()); let ahead = (nb + 1) / 2;
+        let bot_slots: Vec<(u8, u8)> = bots.iter().take(nb).enumerate().map(|(k, r)| (*r, if k < ahead { k } else { k + players.len() } as u8)).collect();
+        let slots = players.iter().enumerate().map(|(k, id)| (*id, (ahead + k) as u8)).collect();
+        let s = Start { map: map.to_string(), laps, go_at: self.host_now() + delay, slots, bots: bot_slots }; self.start_out = Some((s.clone(), self.now() + 3.0)); Some(s)
+    }
+    /// a race begins with `n` AI cars (driven by the host's phone): fresh tracks and senders
+    pub fn begin_race(&mut self, n: usize) {
+        self.race_bots = n; self.race_t0 = self.now(); self.bots.clear(); self.bot_hits_in.clear(); self.hits_in.clear();
+        self.bots_out = (0..n).map(|_| BotOut::default()).collect();
+        if !self.is_host { for k in 0..n { self.bots.insert(k as u8, BotIn::default()); } }
     }
 
     /// How fast car states may go out, and the longest gap between them, so the whole session stays inside BUDGET.
@@ -281,6 +346,8 @@ impl Session {
         let up = (direct - ours) * udp + if ours > 0.0 { udp } else { 0.0 } + if direct < n { 2.0 * relay } else { 0.0 };
         // theirs: each other phone, by datagram, plus a relayed copy when a room has relayed players
         let down = n * if direct < n { udp.max(relay) + relay * 0.5 } else { udp };
+        // AI cars: the host sends each like its own car, every guest receives each
+        let nb = self.race_bots as f64; let (up, down) = if self.is_host { (up * (1.0 + nb), down) } else { (up, down + nb * if direct < n { udp.max(relay) } else { udp }) };
         let r = ((BUDGET - LOBBY_BYTES) / (up + down)).clamp(4.0, 24.0) as f32;
         (r, self.heartbeat.unwrap_or((3.0 / r).clamp(0.4, 0.75)))
     }
@@ -298,39 +365,60 @@ impl Session {
         self.car_seq = self.car_seq.wrapping_add(1); let b = car3(self.me, self.car_seq, &c);
         // remember exactly what receivers will decode, so both sides predict from the same numbers
         if let Some((_, _, _, mut q)) = read_car2(&b) { q.t = th; self.policy.sent = Some(q); }
-        let mut relayed = Vec::new(); let mut out = Vec::new(); let mut via_ours = false;
-        let relay_up = self.relay.as_ref().map(|r| r.is_up(now)).unwrap_or(false);
-        for p in self.peers.values_mut() { match p.direct { Some(a) => { out.push(a); p.last_tx = now; }
-            None if relay_up && now - p.via_relay < 9.0 => via_ours = true, None => relayed.push(p.brokers) } }
-        for a in out { self.udp(&b, a); }
-        // one datagram to our relay reaches every phone on it; the brokers only for phones that aren't
-        if via_ours { self.relay_send(0, &b, now); }
-        if !relayed.is_empty() { self.relay_for(&b, &relayed); }
+        self.deliver(&b, now);
+    }
+    /// Host: one of our AI cars (index `k` in the start message), right after our own car in the frame (same stamp, same
+    /// rules: it goes out when the receivers' prediction has drifted, within the data budget).
+    pub fn send_bot(&mut self, k: usize, mut c: CarSnap, dt: f64, g: smooth::Ground, near: bool) {
+        if !self.is_host || k >= self.bots_out.len() { return; }
+        let now = self.now(); let th = self.stamp.get().unwrap_or_else(|| self.host_now()); c.t = th; c.a = self.bots_out[k].policy.accel(c.u, dt as f32);
+        let (rate, beat) = self.car_rate();
+        let thr = if near { smooth::Thresholds { pos: self.thr.pos * 0.4, head: self.thr.head * 0.5, speed: self.thr.speed * 0.5, height: self.thr.height, body: self.thr.body } } else { self.thr };
+        let (rate, beat) = if near { ((rate * 1.5).min(30.0), beat.min(0.25)) } else { (rate, beat) };
+        let bo = &mut self.bots_out[k]; if !bo.policy.due(&c, g, &thr, rate, beat) { return; }
+        bo.seq = bo.seq.wrapping_add(1); let b = bot3(self.me, bo.seq, k as u8, &c);
+        if let Some((_, _, _, mut q)) = read_car2(&b) { q.t = th; bo.policy.sent = Some(q); }
+        self.deliver(&b, now);
     }
 
     /// A bump we settled with a player's car (`d`: the push their car got here): shown on their car at once, and sent
     /// to their phone, which owns that car. Their phone takes the push unless it settled the same contact itself.
-    pub fn bump(&mut self, id: u32, d: [f32; 5], imp: f32) {
+    /// `by`: which of our cars did it (proto::BY_PLAYER, or the index of one of our AI cars when we are the host). The
+    /// host's AI cars (ids from `bot_id`) are pushed the same way, the push going to the host.
+    pub fn bump(&mut self, id: u32, by: u8, d: [f32; 5], imp: f32) {
+        if let Some(k) = bot_of(id) { if let Some(b) = self.bots.get_mut(&k) { b.track.nudge(d);
+            let a = b.hit_acc.get_or_insert(([0.0; 5], 0.0)); for q in 0..5 { a.0[q] += d[q]; } a.1 = a.1.max(imp); } return; }
         if let Some(p) = self.peers.get_mut(&id) { p.track.nudge(d);
-            let a = p.hit_acc.get_or_insert(([0.0; 5], 0.0)); for k in 0..5 { a.0[k] += d[k]; } a.1 = a.1.max(imp); }
+            match p.hit_acc.iter_mut().find(|x| x.0 == by) { Some(a) => { for q in 0..5 { a.1[q] += d[q]; } a.2 = a.2.max(imp); } None => p.hit_acc.push((by, d, imp)) } }
     }
-    /// whether a peer's car is, for now, moved only by its own phone (a contact it has already taken in)
-    pub fn owned(&self, id: u32) -> bool { self.peers.get(&id).map(|p| p.track.owned()).unwrap_or(false) }
-    /// how close a peer's car is to ours (0 far .. 1 close; close cars are drawn at the present)
-    pub fn set_near(&mut self, id: u32, near: f32) { if let Some(p) = self.peers.get_mut(&id) { p.track.near = near; } }
-    /// bumps other phones gave our car since the last call (sender, push, impact speed)
-    pub fn take_hits(&mut self) -> Vec<(u32, [f32; 5], f32)> { std::mem::take(&mut self.hits_in) }
-    /// seconds since this peer's car last reported (None once they have left the room)
-    pub fn car_silence(&self, id: u32) -> Option<f64> { let p = self.peers.get(&id)?; Some(match p.track.latest { Some(c) => self.host_now() - c.t, None => self.now() - p.first_seen }) }
+    fn track(&self, id: u32) -> Option<&smooth::Track> { match bot_of(id) { Some(k) => self.bots.get(&k).map(|b| &b.track), None => self.peers.get(&id).map(|p| &p.track) } }
+    fn track_mut(&mut self, id: u32) -> Option<&mut smooth::Track> { match bot_of(id) { Some(k) => self.bots.get_mut(&k).map(|b| &mut b.track), None => self.peers.get_mut(&id).map(|p| &mut p.track) } }
+    /// whether a car is, for now, moved only by its own phone (a contact it has already taken in)
+    pub fn owned(&self, id: u32) -> bool { self.track(id).map(|t| t.owned()).unwrap_or(false) }
+    /// how close a car is to ours (0 far .. 1 close; close cars are drawn at the present)
+    pub fn set_near(&mut self, id: u32, near: f32) { if let Some(t) = self.track_mut(id) { t.near = near; } }
+    /// bumps other phones gave our car since the last call (sender, which of their cars, push, impact speed)
+    pub fn take_hits(&mut self) -> Vec<(u32, u8, [f32; 5], f32)> { std::mem::take(&mut self.hits_in) }
+    /// host: bumps guests gave our AI cars since the last call (sender, AI car, push, impact speed)
+    pub fn take_bot_hits(&mut self) -> Vec<(u32, u8, [f32; 5], f32)> { std::mem::take(&mut self.bot_hits_in) }
+    /// seconds since a car last reported (None once its player, or the host for an AI car, has left the room)
+    pub fn car_silence(&self, id: u32) -> Option<f64> {
+        let first = match bot_of(id) { Some(_) => self.peers.get(&self.host_id?)?.first_seen, None => self.peers.get(&id)?.first_seen };
+        Some(match self.track(id)?.latest { Some(c) => self.host_now() - c.t, None => (self.now() - first).min(self.now() - self.race_t0) }) }
 
     fn handle_car(&mut self, b: &[u8], from: Option<SocketAddr>, now: f64) {
         let Some((sid, seq, ms, mut c)) = read_car2(b) else { return };
         let th = self.host_now();
         let Some(p) = self.peers.values_mut().find(|p| p.id as u16 == sid && (from.is_none() || p.direct == from || p.cands.contains(&from.unwrap()))) else { return };
-        p.last_seen = now; if from.is_some() { p.last_udp = now; }
+        p.last_seen = now; if from.is_some() { p.last_udp = now; } else if p.direct.is_some() { p.mirror_until = now + 2.0; }
+        let age = ((th * 1000.0).rem_euclid(65536.0) - ms as f64).rem_euclid(65536.0) / 1000.0; c.t = th - if age < 10.0 { age } else { 0.0 };
+        // one of the host's AI cars
+        if let Some(k) = bot_idx(b) { if !p.host || self.is_host { return; }
+            let Some(bt) = self.bots.get_mut(&k) else { return };
+            if bt.track.latest.is_some() && (seq.wrapping_sub(bt.last_seq) as i8) <= 0 { return; }
+            bt.last_seq = seq; bt.track.push_at(c, th); return; }
         if p.track.latest.is_some() && (seq.wrapping_sub(p.last_seq) as i8) <= 0 { return; }   // late or duplicate
         p.last_seq = seq;
-        let age = ((th * 1000.0).rem_euclid(65536.0) - ms as f64).rem_euclid(65536.0) / 1000.0; c.t = th - if age < 10.0 { age } else { 0.0 };
         p.track.push_at(c, th);
     }
 
@@ -339,7 +427,7 @@ impl Session {
 
     /// Where a peer's car is shown this frame.
     pub fn remote(&mut self, id: u32, g: smooth::Ground) -> Option<CarSnap> {
-        let t = self.view.get().unwrap_or_else(|| self.host_now()) + self.frame_dt; self.peers.get_mut(&id)?.track.sample(t, g)
+        let t = self.view.get().unwrap_or_else(|| self.host_now()) + self.frame_dt; self.track_mut(id)?.sample(t, g)
     }
 }
 

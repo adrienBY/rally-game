@@ -4,12 +4,18 @@
 pub const MAGIC: &[u8; 3] = b"FW1";
 pub const K_HELLO: u8 = 1; pub const K_PROBE: u8 = 2; pub const K_PROBE_ACK: u8 = 3; pub const K_PING: u8 = 4; pub const K_PONG: u8 = 5;
 pub const K_START: u8 = 6; pub const K_CAR: u8 = 7; pub const K_BYE: u8 = 8;
-/// a bump: the push the sender's phone gave the receiver's car ([dvx, dvz, yaw rate, dx, dz], impact speed)
+/// a bump: the push the sender's phone gave the receiver's car ([dvx, dvz, yaw rate, dx, dz], impact speed), then which
+/// of the sender's cars did it (BY_PLAYER: their own; else the index of one of the host's AI cars; older builds omit it)
 pub const K_HIT: u8 = 9;
+/// a bump a guest gave one of the host's AI cars: the AI car's index, then the push as in K_HIT
+pub const K_BOTHIT: u8 = 10;
+pub const BY_PLAYER: u8 = 0xFF;
 /// compact car state: 4-byte header (kind, sender's short id, sequence) and 23 bytes of quantised state
 pub const K_CAR2: u8 = 0xC2; pub const CAR2_LEN: usize = 27;
 /// CAR2 plus forward acceleration and vertical speed (so receivers can predict braking and jumps): 29 bytes
 pub const K_CAR3: u8 = 0xC3; pub const CAR3_LEN: usize = 29;
+/// one of the host's AI cars: CAR3 (sender = the host) plus the AI car's index, 30 bytes
+pub const K_BOT3: u8 = 0xC4; pub const BOT3_LEN: usize = 30;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Env { pub kind: u8, pub room: u32, pub from: u32, pub to: u32, pub seq: u32 }
@@ -28,7 +34,9 @@ pub struct Hello { pub host: bool, pub racing: bool, pub name: String, pub map: 
     /// which of the brokers (bit k: BROKERS[k]) this phone is connected to; 0xFF: unknown (older builds)
     pub brokers: u8 }
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Start { pub map: String, pub laps: u8, pub go_at: f64, pub slots: Vec<(u32, u8)> }
+pub struct Start { pub map: String, pub laps: u8, pub go_at: f64, pub slots: Vec<(u32, u8)>,
+    /// AI cars, driven by the host's phone: (rival, grid slot); their index in this list is their id on the wire
+    pub bots: Vec<(u8, u8)> }
 
 #[derive(Default)]
 pub struct W(pub Vec<u8>);
@@ -70,11 +78,14 @@ pub fn read_hello(r: &mut R) -> Option<Hello> {
     Some(Hello { host: f & 1 != 0, racing: f & 2 != 0, name, map, cands, car, brokers })
 }
 pub fn start(e: Env, s: &Start) -> Vec<u8> {
-    let mut w = W::env(e); w.str(&s.map); w.u8(s.laps); w.f64(s.go_at); w.u8(s.slots.len().min(12) as u8); for (id, k) in s.slots.iter().take(12) { w.u32(*id); w.u8(*k); } w.0
+    let mut w = W::env(e); w.str(&s.map); w.u8(s.laps); w.f64(s.go_at); w.u8(s.slots.len().min(12) as u8); for (id, k) in s.slots.iter().take(12) { w.u32(*id); w.u8(*k); }
+    w.u8(s.bots.len().min(11) as u8); for (r, k) in s.bots.iter().take(11) { w.u8(*r); w.u8(*k); } w.0
 }
 pub fn read_start(r: &mut R) -> Option<Start> {
     let map = r.str()?; let laps = r.u8()?; let go_at = r.f64()?; let n = r.u8()? as usize; let mut slots = Vec::new(); for _ in 0..n { slots.push((r.u32()?, r.u8()?)); }
-    Some(Start { map, laps, go_at, slots })
+    // AI cars came later: older hosts stop before them
+    let mut bots = Vec::new(); if let Some(nb) = r.u8() { for _ in 0..nb { match (r.u8(), r.u8()) { (Some(a), Some(b)) => bots.push((a, b)), _ => break } } }
+    Some(Start { map, laps, go_at, slots, bots })
 }
 pub fn car(e: Env, c: &CarSnap) -> Vec<u8> {
     let mut w = W::env(e); w.f64(c.t);
@@ -95,6 +106,10 @@ pub fn car3(from: u32, seq: u8, c: &CarSnap) -> Vec<u8> {
     let mut b = compact(K_CAR3, from, seq, c); let q8 = |v: f32, s: f32| (v / s).round().clamp(-127.0, 127.0) as i8 as u8;
     b.push(q8(c.a, 0.2)); b.push(q8(c.vy, 0.1)); b
 }
+/// BOT3: one of the host's AI cars (`idx`), sent by the host
+pub fn bot3(from: u32, seq: u8, idx: u8, c: &CarSnap) -> Vec<u8> { let mut b = car3(from, seq, c); b[0] = K_BOT3; b.push(idx); b }
+/// the AI car a BOT3 is about
+pub fn bot_idx(b: &[u8]) -> Option<u8> { if b.first() == Some(&K_BOT3) && b.len() >= BOT3_LEN { Some(b[29]) } else { None } }
 fn compact(kind: u8, from: u32, seq: u8, c: &CarSnap) -> Vec<u8> {
     let mut w = W(Vec::with_capacity(CAR3_LEN)); w.u8(kind); w.u16(from as u16); w.u8(seq);
     w.u16(((c.t * 1000.0).rem_euclid(65536.0)) as u16);
@@ -112,8 +127,9 @@ fn compact(kind: u8, from: u32, seq: u8, c: &CarSnap) -> Vec<u8> {
 /// (sender short id, sequence, ms stamp, state with t left at 0 for the caller to unwrap)
 /// reads CAR2 and CAR3
 pub fn read_car2(b: &[u8]) -> Option<(u16, u8, u16, CarSnap)> {
-    if b.len() < CAR2_LEN || !(b[0] == K_CAR2 || (b[0] == K_CAR3 && b.len() >= CAR3_LEN)) { return None; }
-    let (a, vy) = if b[0] == K_CAR3 { (b[27] as i8 as f32 * 0.2, b[28] as i8 as f32 * 0.1) } else { (0.0, 0.0) };
+    let c3 = (b.first() == Some(&K_CAR3) && b.len() >= CAR3_LEN) || (b.first() == Some(&K_BOT3) && b.len() >= BOT3_LEN);
+    if b.len() < CAR2_LEN || !(b[0] == K_CAR2 || c3) { return None; }
+    let (a, vy) = if c3 { (b[27] as i8 as f32 * 0.2, b[28] as i8 as f32 * 0.1) } else { (0.0, 0.0) };
     let mut r = R::new(&b[1..]); let from = r.u16()?; let seq = r.u8()?; let ms = r.u16()?;
     let i24 = |r: &mut R| -> Option<f32> { let t = r.take(3)?; Some(((i32::from_le_bytes([t[0], t[1], t[2], 0]) << 8) >> 8) as f32 / 128.0) };
     let x = i24(&mut r)?; let z = i24(&mut r)?; let y = r.u16()? as i16 as f32 / 100.0; let h = r.u16()? as f32 / 65536.0 * std::f32::consts::TAU;
@@ -122,11 +138,14 @@ pub fn read_car2(b: &[u8]) -> Option<(u16, u8, u16, CarSnap)> {
     let rpm = r.u8()? as u16 * 40; let gf = r.u8()?; let d01 = r.u8()?; let d23 = r.u8()?;
     let dd = |n: u8| n as f32 / 15.0 * 0.37 - 0.16; let (sh, ch) = (h.sin(), h.cos());
     Some((from, seq, ms, CarSnap { t: 0.0, x, y, z, h, vx: u * sh + vl * ch, vz: u * ch - vl * sh, r: yr, pitch, roll, steer, u, gear: (gf & 7) as i8, rpm,
-        d: [dd(d01 & 15), dd(d01 >> 4), dd(d23 & 15), dd(d23 >> 4)], ang: [0.0; 4], flags: gf >> 3, a, vy: if b[0] == K_CAR3 { vy } else { 0.0 } }))
+        d: [dd(d01 & 15), dd(d01 >> 4), dd(d23 & 15), dd(d23 >> 4)], ang: [0.0; 4], flags: gf >> 3, a, vy }))
 }
 pub fn time_pair(e: Env, a: f64, b: f64) -> Vec<u8> { let mut w = W::env(e); w.f64(a); w.f64(b); w.0 }
-pub fn hit(e: Env, d: [f32; 5], imp: f32) -> Vec<u8> { let mut w = W::env(e); for v in d { w.f32(v); } w.f32(imp); w.0 }
-pub fn read_hit(r: &mut R) -> Option<([f32; 5], f32)> { let mut d = [0f32; 5]; for v in d.iter_mut() { *v = r.f32()?; } Some((d, r.f32()?)) }
+pub fn hit(e: Env, d: [f32; 5], imp: f32, by: u8) -> Vec<u8> { let mut w = W::env(e); for v in d { w.f32(v); } w.f32(imp); w.u8(by); w.0 }
+/// (push, impact, which of the sender's cars did it)
+pub fn read_hit(r: &mut R) -> Option<([f32; 5], f32, u8)> { let mut d = [0f32; 5]; for v in d.iter_mut() { *v = r.f32()?; } let imp = r.f32()?; Some((d, imp, r.u8().unwrap_or(BY_PLAYER))) }
+pub fn bot_hit(e: Env, idx: u8, d: [f32; 5], imp: f32) -> Vec<u8> { let mut w = W::env(e); w.u8(idx); for v in d { w.f32(v); } w.f32(imp); w.0 }
+pub fn read_bot_hit(r: &mut R) -> Option<(u8, [f32; 5], f32)> { let idx = r.u8()?; let mut d = [0f32; 5]; for v in d.iter_mut() { *v = r.f32()?; } Some((idx, d, r.f32()?)) }
 pub fn bare(e: Env) -> Vec<u8> { W::env(e).0 }
 
 #[cfg(test)]
@@ -137,8 +156,12 @@ mod tests {
         let e = Env { kind: K_HELLO, room: 123456, from: 0xdeadbeef, to: 0, seq: 9 };
         let h = Hello { host: true, racing: false, name: "ADRIEN".into(), map: "lakes".into(), cands: vec![([192, 168, 1, 20], 40000), ([203, 0, 113, 9], 51234)], car: 3, brokers: 5 };
         let b = hello(e, &h); let (e2, mut r) = read_env(&b).unwrap(); assert_eq!(e2, e); assert_eq!(read_hello(&mut r).unwrap(), h);
-        let s = Start { map: "snow".into(), laps: 3, go_at: 1234.5, slots: vec![(1, 0), (2, 1)] };
+        let s = Start { map: "snow".into(), laps: 3, go_at: 1234.5, slots: vec![(1, 0), (2, 1)], bots: vec![(0, 2), (3, 3)] };
         let b = start(Env { kind: K_START, ..e }, &s); let (_, mut r) = read_env(&b).unwrap(); assert_eq!(read_start(&mut r).unwrap(), s);
+        // an older host's start (no AI cars) still reads
+        let old = { let mut b = start(Env { kind: K_START, ..e }, &Start { bots: vec![], ..s.clone() }); b.pop(); b }; let (_, mut r) = read_env(&old).unwrap(); assert!(read_start(&mut r).unwrap().bots.is_empty());
+        let b = hit(Env { kind: K_HIT, ..e }, [1.0, -2.0, 0.5, 0.1, 0.0], 3.5, 2); let (_, mut r) = read_env(&b).unwrap(); assert_eq!(read_hit(&mut r).unwrap(), ([1.0, -2.0, 0.5, 0.1, 0.0], 3.5, 2));
+        let b = bot_hit(Env { kind: K_BOTHIT, ..e }, 4, [1.0, -2.0, 0.5, 0.1, 0.0], 3.5); let (_, mut r) = read_env(&b).unwrap(); assert_eq!(read_bot_hit(&mut r).unwrap(), (4, [1.0, -2.0, 0.5, 0.1, 0.0], 3.5));
         let c = CarSnap { t: 5.25, x: 1.0, y: 2.0, z: -3.0, h: 0.5, u: 20.0, gear: 3, rpm: 6100, d: [0.07; 4], ang: [1.0, 2.0, 3.0, 4.0], flags: 1, ..Default::default() };
         let b = car(Env { kind: K_CAR, ..e }, &c); let (_, mut r) = read_env(&b).unwrap(); assert_eq!(read_car(&mut r).unwrap(), c);
         assert!(read_env(b"XX1aaaaaaaaaaaaaaaaaaaa").is_none());
@@ -152,5 +175,7 @@ mod tests {
         let c3 = CarSnap { a: -9.3, vy: 2.47, ..c }; let b = car3(0xabcd1234, 78, &c3); assert_eq!(b.len(), CAR3_LEN);
         let (_, sq, _, d) = read_car2(&b).unwrap(); assert_eq!(sq, 78); assert!((d.a + 9.3).abs() < 0.11 && (d.vy - 2.47).abs() < 0.051, "{} {}", d.a, d.vy);
         assert!((d.x - c.x).abs() < 0.005 && d.gear == 4);
+        let b = bot3(0xabcd1234, 79, 3, &c3); assert_eq!(b.len(), BOT3_LEN); assert_eq!(bot_idx(&b), Some(3));
+        let (f, sq, _, d) = read_car2(&b).unwrap(); assert_eq!((f, sq), (0x1234, 79)); assert!((d.a + 9.3).abs() < 0.11 && (d.x - c.x).abs() < 0.005);
     }
 }

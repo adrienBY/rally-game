@@ -108,6 +108,9 @@ fn main() {
                         let f = format!("{}/f{:05.1}.ppm", a[3], t); std::fs::write(&f, out).unwrap(); println!("shot {} calls {} tris {}", f, r.stats.0, r.stats.1);
                     }
                     "audio" => { println!("audio rms {:.4} peak {:.3} clipped blocks {:.1}%", (arms / anb.max(1.0)).sqrt(), apk, aclip / anb.max(1.0) * 100.0); arms = 0.0; apk = 0.0; anb = 0.0; aclip = 0.0; }
+                    "cars" => { let pl = g.race.player; for (k, c) in g.race.cars.iter().enumerate() { let s = if k == pl { &g.car } else { &c.car };
+                        println!("t={:.2} car {} {} x={:.2} z={:.2} u={:.1} prog={:.0} bot={:?} remote={} ai={} left={} fin={}", t, k, if k == pl { "YOU".to_string() } else { c.tag() }, s.x, s.z, s.u, c.prog, c.bot, c.remote.map(|r| format!("{:08x}", r)).unwrap_or("-".into()), c.is_ai(), c.left, c.finished); }
+                        if let Some((b, r, np, links)) = fogwood_core::net::with(|s| (s.race_bots, s.car_rate(), s.peers.len(), s.peers.values().map(|p| format!("{:?}", p.link())).collect::<Vec<_>>())) { println!("t={:.2} race_bots={} rate={:?} peers={} {:?} msg={:?}", t, b, r, np, links, g.msg); } }
                     "state" => { let c = &g.car; println!("t={:.2} state={} x={:.3} z={:.3} h={:.4} u={:.2} gear={} rpm={:.0} lap={} best={:?} race={} pos={} phase={:?}", t, if g.state == State::Drive { "drive" } else { "title" }, c.x, c.z, c.h, c.u, c.gear, c.rpm, g.lap, g.best, g.race.on, g.race.pos, g.race.phase); }
                     _ => println!("unknown {}", act),
                 }
@@ -125,7 +128,7 @@ fn main() {
                 else if p < 0.105 { g.garage_paint(1); } else if p < 0.107 { g.resize((200.0 + rnd() * 1800.0), (150.0 + rnd() * 900.0), [0.0; 4]); }
                 else if p < 0.108 { g.to_title(); } else if p < 0.109 { g.start_game(); g.auto = true; }
             }
-            let t0 = std::time::Instant::now(); g.tick(&mut r, dt); if std::env::var("HUDCHECK").is_ok() && !g.hud.verify() { println!("HUD MISMATCH at t={:.2}", t); } tick_ms += t0.elapsed().as_secs_f64() * 1000.0; ticks += 1;
+            let t0 = std::time::Instant::now(); let m0 = g.msg.clone(); g.tick(&mut r, dt); if g.msg != m0 && !g.msg.is_empty() { println!("t={:.2} msg {}", t, g.msg); } if std::env::var("HUDCHECK").is_ok() && !g.hud.verify() { println!("HUD MISMATCH at t={:.2}", t); } tick_ms += t0.elapsed().as_secs_f64() * 1000.0; ticks += 1;
             fogwood_audio::native::render(&mut audio); { let (mut s2, mut pk) = (0f64, 0f32); for v in &audio { s2 += (*v as f64) * (*v as f64); pk = pk.max(v.abs()); if !v.is_finite() { println!("audio NaN"); break; } } arms += s2 / audio.len() as f64; apk = apk.max(pk); anb += 1.0; if pk >= 0.999 { aclip += 1.0; } }
             if log && t >= next_log { next_log = t + 1.0; r.draw(Some(fb), w, h).expect("draw"); let c = &g.car; println!("log calls={} tris={} t={:.1} x={:.2} z={:.2} kmh={:.0} gear={} sunvis={:.2} race_t={:.1} pos={} cars={:?}", r.stats.0, r.stats.1, t, c.x, c.z, c.u * 3.6, c.gear, g.sun_vis, g.race.t, g.race.pos,
                 g.race.cars.iter().map(|q| (q.r.map(|i| fogwood_core::game::race::RIVALS[i].tag).unwrap_or("YOU"), (q.prog as i64), q.resets)).collect::<Vec<_>>()); }

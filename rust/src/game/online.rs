@@ -9,7 +9,7 @@ use crate::world::World;
 #[derive(Clone, PartialEq, Debug, Default)]
 pub enum OnlineUi { #[default] Closed, Menu, Join(String), Lobby, Stages, Rooms }
 
-pub const KEYS: [&str; 34] = ["on_rooms", "on_r0", "on_r1", "on_r2", "on_r3", "on_r4", "on_r5", "on_host", "on_join", "on_back", "on_start", "on_leave", "on_stage", "k0", "k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "k9", "kdel", "kok", "on_laps", "online",
+pub const KEYS: [&str; 35] = ["on_bots", "on_rooms", "on_r0", "on_r1", "on_r2", "on_r3", "on_r4", "on_r5", "on_host", "on_join", "on_back", "on_start", "on_leave", "on_stage", "k0", "k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "k9", "kdel", "kok", "on_laps", "online",
     "on_name", "on_st0", "on_st1", "on_st2", "on_st3", "on_st4", "on_st5"];
 const MAPS: [(&str, &str); 6] = [("forest", "FOGWOOD"), ("snow", "COL DE GIVRE"), ("canyon", "CANYON ROUGE"), ("lakes", "LAKELAND"), ("touge", "MOMIJI TOUGE"), ("riviera", "RIVIERA CORNICHE")];
 /// the stage list: tile key, short name, surface
@@ -65,31 +65,46 @@ impl Game {
             // bumps: the pushes we gave other cars this phone settled last frame (summed per car) are shown on their cars
             // and sent to their phones
             let hits = std::mem::take(&mut self.race.hits);
-            let mut sum: Vec<(u32, [f64; 5], f64)> = Vec::new();
-            for (id, d, imp) in hits { match sum.iter_mut().find(|x| x.0 == id) { Some(x) => { for q in 0..5 { x.1[q] += d[q]; } x.2 = x.2.max(imp); } None => sum.push((id, d, imp)) } }
-            if std::env::var("FW_DEBUG").is_ok() { for (id, d, imp) in &sum { eprintln!("hit-out t={:.2} to {:08x} dv=({:.2},{:.2}) dr={:.2} imp={:.2}", self.race.t, id, d[0], d[1], d[2], imp); } }
-            let (snaps, owned, incoming) = net::with(|s| {
-                for (id, d, imp) in &sum { s.bump(*id, d.map(|v| v as f32), *imp as f32); }
-                for (id, n, _) in &near { s.set_near(*id, *n); } s.send_car(mine, dt, g, any_near); s.advance_view(dt);
-                (ids.iter().map(|(k, id)| (*k, s.remote(*id, g))).collect::<Vec<_>>(), ids.iter().map(|(k, id)| (*k, s.owned(*id))).collect::<Vec<_>>(), s.take_hits())
+            let mut sum: Vec<(u32, u8, [f64; 5], f64)> = Vec::new();
+            for (id, by, d, imp) in hits { match sum.iter_mut().find(|x| x.0 == id && x.1 == by) { Some(x) => { for q in 0..5 { x.2[q] += d[q]; } x.3 = x.3.max(imp); } None => sum.push((id, by, d, imp)) } }
+            if std::env::var("FW_DEBUG").is_ok() { for (id, by, d, imp) in &sum { eprintln!("hit-out t={:.2} to {:08x} by {} dv=({:.2},{:.2}) dr={:.2} imp={:.2}", self.race.t, id, by, d[0], d[1], d[2], imp); } }
+            // host: our AI cars go out right after our own car (closer than 30 m to a player: more precisely)
+            let humans: Vec<(f64, f64)> = self.race.cars.iter().enumerate().filter(|(_, c)| c.bot.is_none() && !c.left).map(|(k, c)| if k == self.race.player { (self.car.x, self.car.z) } else { (c.car.x, c.car.z) }).collect();
+            let bots_out: Vec<(usize, CarSnap, bool)> = self.race.cars.iter().filter(|c| c.is_ai()).filter_map(|c| c.bot.map(|b| (b as usize, snap_of(&c.car, c.epoch), humans.iter().any(|h| (h.0 - c.car.x).hypot(h.1 - c.car.z) < 30.0)))).collect();
+            let (snaps, owned, incoming, bot_in) = net::with(|s| {
+                for (id, by, d, imp) in &sum { s.bump(*id, *by, d.map(|v| v as f32), *imp as f32); }
+                for (id, n, _) in &near { s.set_near(*id, *n); } s.send_car(mine, dt, g, any_near);
+                for (k, sn, nr) in &bots_out { s.send_bot(*k, *sn, dt, g, *nr); }
+                s.advance_view(dt);
+                (ids.iter().map(|(k, id)| (*k, s.remote(*id, g))).collect::<Vec<_>>(), ids.iter().map(|(k, id)| (*k, s.owned(*id))).collect::<Vec<_>>(), s.take_hits(), s.take_bot_hits())
             }).unwrap_or_default();
             for (k, sn) in snaps { if let Some(sn) = sn { let mut c = self.race.cars[k].car; apply(&mut c, &sn, w, dt); self.race.cars[k].car = c; } }
             for (k, o) in owned { self.race.cars[k].owned = o; }
-            // pushes other phones gave our car: taken (in the race step, with the other contacts) unless this phone settled
-            // that contact itself a moment ago
-            for (from, d, imp) in incoming {
-                let Some(k) = self.race.cars.iter().position(|c| c.remote == Some(from)) else { continue };
-                if std::env::var("FW_DEBUG").is_ok() { eprintln!("hit-in t={:.2} from {:08x} dv=({:.2},{:.2}) imp={:.2} local={:.2}s ago", self.race.t, from, d[0], d[1], imp, self.race.t - self.race.cars[k].contact_t); }
-                // either way our states from now on carry our own answer to that contact: say so (see net::smooth::epoch)
-                self.race.epoch = self.race.epoch.wrapping_add(1) & 15;
-                if self.race.t - self.race.cars[k].contact_t < 0.35 { continue; }
-                self.race.net_hits.push((k, d.map(|v| v as f64), imp as f64));
+            // pushes other phones gave our car (by their own car, or by one of the host's AI cars), and on the host the pushes
+            // guests gave our AI cars: taken (in the race step, with the other contacts) unless this phone settled that
+            // contact itself a moment ago
+            let pl = self.race.player;
+            let mut todo: Vec<(usize, usize, [f32; 5], f32)> = Vec::new();
+            for (from, by, d, imp) in incoming {
+                let pusher = if by == net::proto::BY_PLAYER { self.race.cars.iter().position(|c| c.remote == Some(from) && c.bot.is_none()) } else { self.race.cars.iter().position(|c| c.bot == Some(by) && c.remote.is_some()) };
+                if let Some(k) = pusher { todo.push((pl, k, d, imp)); } }
+            for (from, idx, d, imp) in bot_in {
+                let (Some(kb), Some(k)) = (self.race.cars.iter().position(|c| c.bot == Some(idx) && c.is_ai()), self.race.cars.iter().position(|c| c.remote == Some(from) && c.bot.is_none())) else { continue };
+                todo.push((kb, k, d, imp)); }
+            for (ours, k, d, imp) in todo {
+                if std::env::var("FW_DEBUG").is_ok() { eprintln!("hit-in t={:.2} car {} from car {} dv=({:.2},{:.2}) imp={:.2} local={:.2}s ago", self.race.t, ours, k, d[0], d[1], imp, self.race.t - self.race.touched(ours, k)); }
+                // either way that car's states from now on carry our own answer to the contact: say so (see net::smooth::epoch)
+                self.race.tick_epoch(ours);
+                if self.race.t - self.race.touched(ours, k) < 0.35 { continue; }
+                self.race.net_hits.push((ours, k, d.map(|v| v as f64), imp as f64));
             }
-            // dropped out: their car silent for 3 s (cars report at least every 0.75 s; this also covers going back to the menu) or gone from the room
+            // dropped out
             let silence: Vec<(usize, Option<f64>)> = net::with(|s| ids.iter().map(|(k, id)| (*k, s.car_silence(*id))).collect()).unwrap_or_default();
             let names: Vec<(u32, String)> = net::with(|s| s.peers.values().map(|p| (p.id, p.name.clone())).collect()).unwrap_or_default();
             for c in self.race.cars.iter_mut() { if let Some(n) = c.remote.and_then(|id| names.iter().find(|n| n.0 == id)) { if n.1 != "?" && n.1 != c.name { c.name = n.1.clone(); } } }
-            for (k, q) in silence { let gone = q.map(|t| t > 3.0).unwrap_or(true); let c = &mut self.race.cars[k];
+            // a car silent for a moment is not out yet: it carries on as predicted and the message waits; out after 8 s of
+            // silence (or once its player has left the room: their goodbye, or 20 s without a word)
+            for (k, q) in silence { let gone = q.map(|t| t > 8.0).unwrap_or(true); let c = &mut self.race.cars[k];
                 if gone && !c.left { c.left = true; if !c.finished { let m = format!("{} DROPPED OUT", c.name.to_uppercase()); self.flash_msg(&m, 2.0); } } else if !gone && c.left { c.left = false; } }
         }
     }
@@ -103,15 +118,26 @@ impl Game {
         self.close_settings();
         self.state = State::Drive; self.lap = 1; self.started = false; self.g_t = 0.0; self.flags = [false; 3]; self.car_audio_on = true;
         let np = self.np; let rc = &mut self.race; rc.on = true; rc.online = true; rc.phase = race::Phase::Grid; rc.t = 0.0; rc.done_t = 0.0; rc.note.clear(); rc.cars.clear(); rc.pos = 0; rc.order.clear();
-        rc.laps = st.laps.max(1) as i64; rc.go_at = st.go_at; rc.me_id = me; rc.hits.clear(); rc.net_hits.clear(); net::with(|s| s.take_hits());
+        rc.laps = st.laps.max(1) as i64; rc.go_at = st.go_at; rc.me_id = me; rc.hits.clear(); rc.net_hits.clear(); rc.touch_t.clear(); rc.pushed_t.clear();
+        let is_host = net::with(|s| { s.begin_race(st.bots.len()); s.is_host }).unwrap_or(false);
+        // players' cars take the rival colours the AI cars leave free first
+        let taken: Vec<usize> = st.bots.iter().map(|b| b.0 as usize % race::RIVALS.len()).collect();
+        let free: Vec<usize> = (0..race::RIVALS.len()).filter(|c| !taken.contains(c)).chain(taken.iter().copied()).collect();
         let mut colour = 0usize;
+        for (idx, (ri, k)) in st.bots.iter().enumerate() {
+            let (i, lat) = race::slot(np, *k as usize); let ri = *ri as usize % race::RIVALS.len();
+            let mut c: RCar = race::mk_car(self, Some(ri), i, lat); race::rc_place(&mut c.car, &self.rt, w, i, lat, 0.0); c.bot = Some(idx as u8);
+            // the host's phone drives them; on the guests they come in like another player's car
+            if !is_host { c.remote = Some(net::bot_id(idx as u8)); c.name = race::RIVALS[ri].name.to_string(); }
+            self.race.cars.push(c);
+        }
         for (id, k) in &st.slots {
             let (i, lat) = if std::env::var("FW_OVERLAP").is_ok() { let (i, _) = race::slot(np, 0); (i, -0.6 + *k as f64 * 1.2) } else { race::slot(np, *k as usize) };   // FW_OVERLAP: test hook, cars start touching
             if *id == me {
                 self.place_at(w, i); let tn = self.rt.tan[i]; self.car.x += -tn[1] * lat; self.car.z += tn[0] * lat; self.car.y = w.height(self.car.x, self.car.z) + 0.075;
                 let c = race::mk_car(self, None, i, lat); self.race.player = self.race.cars.len(); self.race.cars.push(c);
             } else {
-                let mut c: RCar = race::mk_car(self, Some(colour % 5), i, lat); colour += 1; race::rc_place(&mut c.car, &self.rt, w, i, lat, 0.0);
+                let mut c: RCar = race::mk_car(self, Some(free[colour % free.len()]), i, lat); colour += 1; race::rc_place(&mut c.car, &self.rt, w, i, lat, 0.0);
                 c.remote = Some(*id); c.name = names.iter().find(|n| n.0 == *id).map(|n| n.1.clone()).unwrap_or_else(|| "PLAYER".into());
                 c.model = carsof.iter().find(|n| n.0 == *id).map(|n| n.1).unwrap_or(0) % super::cars::CARS.len(); self.race.cars.push(c);
             }
@@ -148,10 +174,14 @@ impl Game {
                 if let Some(n) = k[5..].parse::<usize>().ok().filter(|n| *n < MAPS.len()) { let m = MAPS[n].0; if m != self.rt.map { self.switch_map(m); } }
                 self.ps.online_ui = OnlineUi::Lobby; }
             ("on_laps", OnlineUi::Lobby) => { self.ps.online_laps = self.ps.online_laps % 5 + 1; }
+            ("on_bots", OnlineUi::Lobby) => { self.ps.online_bots = (self.ps.online_bots + 1) % 6; }
             ("on_start", OnlineUi::Lobby) => {
                 if self.loading.is_some() { return true; }
                 let (map, laps) = (self.rt.map.clone(), self.ps.online_laps);
-                if let Some(Some(st)) = net::with(|s| if s.peers.is_empty() { None } else { s.start_race(&map, laps, 7.0) }) { net::with(|s| s.start_in = Some(st)); }
+                // the AI cars: the rivals, fastest first, as many as picked
+                let mut order: Vec<u8> = (0..race::RIVALS.len() as u8).collect(); order.sort_by(|a, b| race::RIVALS[*b as usize].pace.partial_cmp(&race::RIVALS[*a as usize].pace).unwrap());
+                let bots: Vec<u8> = order.into_iter().take(self.ps.online_bots as usize).collect();
+                if let Some(Some(st)) = net::with(|s| if s.peers.is_empty() { None } else { s.start_race(&map, laps, 7.0, &bots) }) { net::with(|s| s.start_in = Some(st)); }
                 else { self.flash_msg("WAITING FOR PLAYERS", 1.5); } }
             _ => return false,
         }
@@ -209,8 +239,10 @@ pub fn draw(ps: &super::Persist, map: &str, g: &mut Canvas, ui: &mut Vec<(&'stat
             let yb = py + ph - 32.0 * u;
             if host {
                 let half = ((bw - 4.0 * u) / 2.0).floor();
+                let q = ((half - 4.0 * u) / 2.0).floor();
                 button(g, ui, "on_stage", &format!("STAGE: {} >", short_name(map)), bx, yb - 17.0 * u, half, false);
-                button(g, ui, "on_laps", &format!("LAPS: {}", ps.online_laps), bx + half + 4.0 * u, yb - 17.0 * u, half, false);
+                button(g, ui, "on_laps", &format!("LAPS {}", ps.online_laps), bx + half + 4.0 * u, yb - 17.0 * u, q, false);
+                button(g, ui, "on_bots", &if ps.online_bots == 0 { "AI OFF".to_string() } else { format!("AI {}", ps.online_bots) }, bx + half + 8.0 * u + q, yb - 17.0 * u, q, ps.online_bots > 0);
                 button(g, ui, "on_start", "START RACE", bx, yb, half, !peers.is_empty());
                 button(g, ui, "on_leave", "CLOSE ROOM", bx + half + 4.0 * u, yb, half, false);
             } else {

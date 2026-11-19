@@ -11,12 +11,13 @@ use std::sync::mpsc::{channel, Receiver};
 /// the relay (Cloudflare Worker, relay-cf/): clients connect to URL/<room code>. FW_RELAY overrides on desktop builds:
 /// a ws:// or wss:// base URL, or "udp:host:port" for the UDP relay in rust/relay.
 pub const URL: &str = "wss://fogwood-relay.adrien-paul-bonnay.workers.dev/ws";
-/// keep-alive / re-join interval (s), and how long without a word before the relay counts as down
-const JOIN_EVERY: f64 = 4.0;
-const DOWN_AFTER: f64 = 9.0;
+/// keep-alive / re-join interval (s; the relay answers every join), and how long without a word before the relay
+/// counts as down and the socket is dropped and opened again
+const JOIN_EVERY: f64 = 2.0;
+const DOWN_AFTER: f64 = 5.0;
 
 pub struct Client {
-    room: u32, me: u32, last_join: f64, last_rx: f64, pub members: u8,
+    room: u32, me: u32, last_join: f64, last_rx: f64, pub members: u8, last_kick: f64,
     #[cfg(not(target_arch = "wasm32"))] ws: Option<super::ws::Ws>,
     #[cfg(not(target_arch = "wasm32"))] sock: Option<UdpSocket>,
     #[cfg(not(target_arch = "wasm32"))] addr: Option<SocketAddr>,
@@ -35,12 +36,12 @@ impl Client {
                 let sock = UdpSocket::bind("0.0.0.0:0").ok().filter(|s| s.set_nonblocking(true).is_ok());
                 // name lookup can block: on a thread
                 let (t, r) = channel(); std::thread::Builder::new().name("relay dns".into()).spawn(move || { let _ = t.send(host.to_socket_addrs().ok().and_then(|mut a| a.find(|x| x.is_ipv4()))); }).ok();
-                return Client { room, me, last_join: -99.0, last_rx: -99.0, members: 0, ws: None, sock, addr: None, resolving: Some(r) };
+                return Client { room, me, last_join: -99.0, last_rx: -99.0, members: 0, last_kick: 0.0, ws: None, sock, addr: None, resolving: Some(r) };
             }
-            Client { room, me, last_join: -99.0, last_rx: -99.0, members: 0, ws: Some(super::ws::Ws::open(format!("{}/{}", target.trim_end_matches('/'), room))), sock: None, addr: None, resolving: None }
+            Client { room, me, last_join: -99.0, last_rx: -99.0, members: 0, last_kick: 0.0, ws: Some(super::ws::Ws::open(format!("{}/{}", target.trim_end_matches('/'), room))), sock: None, addr: None, resolving: None }
         }
         #[cfg(target_arch = "wasm32")]
-        { Client { room, me, last_join: -99.0, last_rx: -99.0, members: 0, ws: web::Sock::open(web::SOCK, format!("{}/{}", URL, room)) } }
+        { Client { room, me, last_join: -99.0, last_rx: -99.0, members: 0, last_kick: 0.0, ws: web::Sock::open(web::SOCK, format!("{}/{}", URL, room)) } }
     }
     pub fn is_up(&self, now: f64) -> bool { now - self.last_rx < DOWN_AFTER }
     fn raw(&self, b: &[u8]) -> bool {
@@ -74,6 +75,15 @@ impl Client {
             }
         }
         if now - self.last_join > JOIN_EVERY { self.last_join = now; let j = join_msg(self.room, self.me); self.raw(&j); }
+        // connected but no answer to our joins: the connection died without saying so (network switch, sleeping radio):
+        // open a new one rather than sending into it for good
+        if self.last_rx > -99.0 && now - self.last_rx > DOWN_AFTER && now - self.last_kick > DOWN_AFTER {
+            self.last_kick = now; if std::env::var("FW_WSDEBUG").is_ok() { eprintln!("relay silent {:.1}s: reconnect", now - self.last_rx); }
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(w) = &self.ws { w.reconnect(); }
+            #[cfg(target_arch = "wasm32")]
+            self.ws.reconnect();
+        }
         out
     }
     pub fn leave(&self) { self.raw(&[0x04]); }
@@ -116,6 +126,11 @@ pub mod web {
         pub fn take(&self) -> Vec<Vec<u8>> { ST.with(|s| s.borrow_mut().get_mut(&self.0).map(|x| std::mem::take(&mut x.inbox)).unwrap_or_default()) }
         /// just connected
         pub fn fresh(&self) -> bool { ST.with(|s| s.borrow_mut().get_mut(&self.0).map(|x| std::mem::replace(&mut x.fresh, false)).unwrap_or(false)) }
+        /// drop the socket and open a new one
+        pub fn reconnect(&self) {
+            let url = ST.with(|s| { let mut m = s.borrow_mut(); let x = m.get_mut(&self.0)?; x.open = false; x.retry_at = 0.0; Some(x.url.clone()) });
+            if let Some(u) = url { ws_open(self.0, &u); }
+        }
         pub fn tick(&self) {
             let again = ST.with(|s| { let mut m = s.borrow_mut(); let Some(x) = m.get_mut(&self.0) else { return None };
                 if x.live && !x.open && x.retry_at > 0.0 && now() >= x.retry_at { x.retry_at = 0.0; Some(x.url.clone()) } else { None } });

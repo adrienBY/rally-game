@@ -7,25 +7,29 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-pub struct Ws { tx: Sender<Vec<u8>>, inbox: Arc<Mutex<Vec<Vec<u8>>>>, open: Arc<AtomicBool>, fresh: Arc<AtomicBool>, stop: Arc<AtomicBool> }
+pub struct Ws { tx: Sender<Vec<u8>>, inbox: Arc<Mutex<Vec<Vec<u8>>>>, open: Arc<AtomicBool>, fresh: Arc<AtomicBool>, stop: Arc<AtomicBool>, kick: Arc<AtomicBool> }
 
 impl Ws {
     pub fn open(url: String) -> Ws {
         let (tx, rx) = channel::<Vec<u8>>(); let inbox = Arc::new(Mutex::new(Vec::new()));
-        let (open, fresh, stop) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
-        let (i2, o2, f2, s2) = (inbox.clone(), open.clone(), fresh.clone(), stop.clone());
+        let (open, fresh, stop, kick) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+        let (i2, o2, f2, s2, k2) = (inbox.clone(), open.clone(), fresh.clone(), stop.clone(), kick.clone());
         std::thread::Builder::new().name("relay ws".into()).spawn(move || {
             let mut backoff = 1.0f64;
             while !s2.load(Ordering::Relaxed) {
-                let r = session(&url, &rx, &i2, &o2, &f2, &s2);
+                let r = session(&url, &rx, &i2, &o2, &f2, &s2, &k2);
+                if std::env::var("FW_WSDEBUG").is_ok() { eprintln!("ws session ended: {:?} kick={}", r.as_ref().err(), k2.load(Ordering::Relaxed)); }
                 o2.store(false, Ordering::Relaxed);
-                if r.is_ok() { backoff = 1.0; }
+                // a kicked socket (gone silent) reconnects at once; a failed one backs off
+                let kicked = k2.swap(false, Ordering::Relaxed); if r.is_ok() || kicked { backoff = 0.25; }
                 while rx.try_recv().is_ok() {}
                 std::thread::sleep(Duration::from_secs_f64(backoff)); backoff = (backoff * 2.0).min(30.0);
             }
         }).ok();
-        Ws { tx, inbox, open, fresh, stop }
+        Ws { tx, inbox, open, fresh, stop, kick }
     }
+    /// drop the connection and connect again (it has gone silent: a dead TCP connection never reports an error by itself)
+    pub fn reconnect(&self) { if self.open.load(Ordering::Relaxed) { self.kick.store(true, Ordering::Relaxed); } }
     pub fn send(&self, b: &[u8]) -> bool { if self.open.load(Ordering::Relaxed) { self.tx.send(b.to_vec()).is_ok() } else { false } }
     pub fn take(&self) -> Vec<Vec<u8>> { std::mem::take(&mut *self.inbox.lock().unwrap()) }
     /// connected since the last call
@@ -39,7 +43,7 @@ fn tls_config() -> Arc<rustls::ClientConfig> {
     Arc::new(rustls::ClientConfig::builder_with_provider(provider).with_safe_default_protocol_versions().expect("tls versions").with_root_certificates(roots).with_no_client_auth())
 }
 
-fn session(url: &str, rx: &Receiver<Vec<u8>>, inbox: &Mutex<Vec<Vec<u8>>>, open: &AtomicBool, fresh: &AtomicBool, stop: &AtomicBool) -> std::io::Result<()> {
+fn session(url: &str, rx: &Receiver<Vec<u8>>, inbox: &Mutex<Vec<Vec<u8>>>, open: &AtomicBool, fresh: &AtomicBool, stop: &AtomicBool, kick: &AtomicBool) -> std::io::Result<()> {
     let err = |e: &str| std::io::Error::new(ErrorKind::Other, e.to_string());
     let (tls, rest) = if let Some(r) = url.strip_prefix("wss://") { (true, r) } else if let Some(r) = url.strip_prefix("ws://") { (false, r) } else { return Err(err("url")) };
     let hostport = rest.split('/').next().unwrap_or(rest); let host = hostport.split(':').next().unwrap_or(hostport).to_string();
@@ -54,8 +58,10 @@ fn session(url: &str, rx: &Receiver<Vec<u8>>, inbox: &Mutex<Vec<Vec<u8>>>, open:
     let (mut ws, _) = tungstenite::client(url, stream).map_err(|e| err(&e.to_string()))?;
     ws.get_mut().timeout(Some(Duration::from_millis(4)))?;
     open.store(true, Ordering::Relaxed); fresh.store(true, Ordering::Relaxed);
+    if std::env::var("FW_WSDEBUG").is_ok() { eprintln!("ws open"); }
     loop {
         if stop.load(Ordering::Relaxed) { let _ = ws.close(None); return Ok(()); }
+        if kick.load(Ordering::Relaxed) { return Ok(()); }
         match ws.read() {
             Ok(tungstenite::Message::Binary(b)) => { let mut g = inbox.lock().unwrap(); if g.len() < 1024 { g.push(b.to_vec()); } }
             Ok(tungstenite::Message::Close(_)) => return Ok(()),

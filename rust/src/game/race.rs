@@ -30,20 +30,25 @@ pub struct RCar {
     pub remote: Option<u32>, pub name: String,
     /// which body this car is drawn with (garage family)
     pub model: usize,
-    /// online: the player dropped out (hidden, listed as OUT); when this phone last resolved a bump with them (race clock)
-    pub left: bool, pub contact_t: f64,
-    /// online: last time this player's phone pushed our car (race clock); whether, for now, only their phone moves their
-    /// car (a contact their states already include: pushing it here too would make it twitch)
-    pub hit_t: f64, pub owned: bool,
+    /// online: the player dropped out (hidden, listed as OUT)
+    pub left: bool,
+    /// online: whether, for now, only its own phone moves this car (a contact its states already include: pushing it
+    /// here too would make it twitch)
+    pub owned: bool,
+    /// online: one of the host's AI cars (its index in the start message); driven here on the host, shown from the
+    /// host's states on the guests
+    pub bot: Option<u8>,
+    /// online, the host's AI cars: their contact counter (travels with their states: see net::smooth::epoch)
+    pub epoch: u8,
 }
 impl RCar {
     pub fn is_player(&self) -> bool { self.r.is_none() }
     /// driven by this phone's AI (not you, not another player)
     pub fn is_ai(&self) -> bool { self.r.is_some() && self.remote.is_none() }
     /// three-letter tag for standings and name tags
-    pub fn tag(&self) -> String { if self.remote.is_some() { let t: String = self.name.chars().filter(|c| c.is_ascii_alphanumeric()).take(3).collect(); if t.is_empty() { "???".into() } else { t.to_uppercase() } } else { RIVALS[self.r.unwrap_or(0)].tag.to_string() } }
+    pub fn tag(&self) -> String { if self.remote.is_some() && self.bot.is_none() { let t: String = self.name.chars().filter(|c| c.is_ascii_alphanumeric()).take(3).collect(); if t.is_empty() { "???".into() } else { t.to_uppercase() } } else { RIVALS[self.r.unwrap_or(0)].tag.to_string() } }
     /// name on the results board
-    pub fn full_name(&self) -> String { if self.remote.is_some() { self.name.to_uppercase() } else { let nm = RIVALS[self.r.unwrap_or(0)].name; format!("{}. {}", &nm[..1], nm.split(' ').nth(1).unwrap_or("")) } }
+    pub fn full_name(&self) -> String { if self.remote.is_some() && self.bot.is_none() { self.name.to_uppercase() } else { let nm = RIVALS[self.r.unwrap_or(0)].name; format!("{}. {}", &nm[..1], nm.split(' ').nth(1).unwrap_or("")) } }
 }
 
 pub struct Race {
@@ -51,27 +56,38 @@ pub struct Race {
     pub order: Vec<usize>, pub finish_pos: usize, pub rlearn: Vec<f64>, pub shown: bool,
     /// online race: lights out at `go_at` on the host's clock
     pub online: bool, pub go_at: f64,
-    /// online: pushes this phone gave other players' cars this frame (peer, [dvx, dvz, yaw rate, dx, dz], impact), sent to their owners
-    pub hits: Vec<(u32, [f64; 5], f64)>, pub me_id: u32,
-    /// online: pushes other phones gave our car, still to apply (car index of the pusher, [dvx, dvz, yaw rate, dx, dz], impact),
-    /// and our contact counter (it travels with our states: see net::smooth::epoch)
-    pub net_hits: Vec<(usize, [f64; 5], f64)>, pub epoch: u8,
+    /// online: pushes this phone gave cars other phones drive this frame (their id, which of our cars did it: BY_PLAYER or
+    /// an AI car's index, [dvx, dvz, yaw rate, dx, dz], impact), sent to their owners
+    pub hits: Vec<(u32, u8, [f64; 5], f64)>, pub me_id: u32,
+    /// online: pushes other phones gave cars this phone drives, still to apply (our car, the pusher, push, impact), and our
+    /// own car's contact counter (it travels with our states: see net::smooth::epoch)
+    pub net_hits: Vec<(usize, usize, [f64; 5], f64)>, pub epoch: u8,
+    /// online: when this phone last settled a contact between two cars itself, and when another phone last pushed one of
+    /// ours over a contact with the other (race clock, by car pair)
+    pub touch_t: std::collections::HashMap<(usize, usize), f64>, pub pushed_t: std::collections::HashMap<(usize, usize), f64>,
     /// the menu's attract-mode race (AI drives your car too; nothing it does is saved)
     pub demo: bool,
 }
 
 impl Race {
+    fn key(a: usize, b: usize) -> (usize, usize) { (a.min(b), a.max(b)) }
+    /// when this phone last settled a contact between cars a and b itself
+    pub fn touched(&self, a: usize, b: usize) -> f64 { self.touch_t.get(&Race::key(a, b)).copied().unwrap_or(-9.0) }
+    /// a contact of car `ours` (driven here) with `other`: true if it is a new one (nothing between them for 0.3 s)
+    fn new_contact(&self, ours: usize, other: usize) -> bool { let k = Race::key(ours, other); self.t - self.touch_t.get(&k).copied().unwrap_or(-9.0).max(self.pushed_t.get(&k).copied().unwrap_or(-9.0)) > 0.3 }
+    /// moves on the contact counter of car `k` (driven here): the other phones then know its states include the contact
+    pub fn tick_epoch(&mut self, k: usize) { if k == self.player { self.epoch = self.epoch.wrapping_add(1) & 15; } else { let c = &mut self.cars[k]; c.epoch = c.epoch.wrapping_add(1) & 15; } }
     pub fn new(rt: &Rt, ps: &Persist) -> Race {
         let np = rt.np; let n = (np + 9) / 10; let mut rlearn = vec![1.0; n];
         if let Some(v) = ps.saves.get(&format!("fogwood-learn-{}", rt.map)) { if v.len() == n * 2 { for i in 0..n { rlearn[i] = 0.7 + v[i * 2..i * 2 + 2].parse::<f64>().unwrap_or(99.0) / 330.0; } } }
-        Race { on: false, laps: if np > 2300 { 2 } else { 3 }, cars: Vec::new(), player: 0, phase: Phase::Off, t: 0.0, done_t: 0.0, note: String::new(), pos: 0, order: Vec::new(), finish_pos: 0, rlearn, shown: false, online: false, go_at: 0.0, hits: Vec::new(), me_id: 0, net_hits: Vec::new(), epoch: 0, demo: false }
+        Race { on: false, laps: if np > 2300 { 2 } else { 3 }, cars: Vec::new(), player: 0, phase: Phase::Off, t: 0.0, done_t: 0.0, note: String::new(), pos: 0, order: Vec::new(), finish_pos: 0, rlearn, shown: false, online: false, go_at: 0.0, hits: Vec::new(), me_id: 0, net_hits: Vec::new(), epoch: 0, touch_t: Default::default(), pushed_t: Default::default(), demo: false }
     }
 }
 
 pub(crate) fn mk_car(g: &mut Game, r: Option<usize>, k: usize, lat: f64) -> RCar {
     let form = 0.98 + g.rng.f() * 0.04; let mist_cd = 5.0 + g.rng.f() * 5.0; let react = 0.12 + g.rng.f() * 0.4;
     RCar { r, car: Car::new(), prog: k as f64 - g.np as f64, last_idx: k, i: k, lat, v: 0.0, lane: lat, lane_t: lat, pass_t: 3.0, cap: 99.0, pv: 1.0, boost: 0.0, form, mist: 0.0, mist_cd,
-        stuck_t: 0.0, lap_t0: 0.0, laps_done: 0, last: None, best: None, finished: false, finish_t: 0.0, react, tag_x: -99.0, tag_y: -99.0, tag_on: false, err: 0.0, trust: 1.0, off_at: None, resets: 0, remote: None, name: String::new(), left: false, contact_t: -9.0, hit_t: -9.0, owned: false,
+        stuck_t: 0.0, lap_t0: 0.0, laps_done: 0, last: None, best: None, finished: false, finish_t: 0.0, react, tag_x: -99.0, tag_y: -99.0, tag_on: false, err: 0.0, trust: 1.0, off_at: None, resets: 0, remote: None, name: String::new(), left: false, owned: false, bot: None, epoch: 0,
         model: match r { Some(i) => super::cars::rival_model(i), None => g.ps.car } }
 }
 /// rcPlace: on the road at index i, lat metres right of the centre line, optionally already rolling
@@ -105,10 +121,13 @@ fn plan(g: &mut Game, w: &World, dt: f64) {
     for k in 0..n { let st = *state(g, k); let i = path_idx(w, st.x, st.z); let p = g.rt.path[i]; let tn = g.rt.tan[i];
         let c = &mut g.race.cars[k]; c.i = i; c.lat = (st.x - p[0]) * -tn[1] + (st.z - p[1]) * tn[0]; c.v = (st.vx * tn[0] + st.vz * tn[1]).max(0.0); }
     let pprog = g.race.cars[g.race.player].prog; let skill = match g.ps.rivals { 0 => 0.87, 2 => 1.07, _ => g.ps.race_skill }; let br = 6.5 * g.tune.mu_road;
+    // online, the AI cars keep close to the players: each measures its gap to the nearest player still racing
+    let humans: Vec<f64> = if g.race.online { g.race.cars.iter().filter(|c| c.bot.is_none() && !c.left && !c.finished).map(|c| c.prog).collect() } else { Vec::new() };
     for k in 0..n {
         if !g.race.cars[k].is_ai() { continue; }
         let (cprog, clat, cv, ci, clane, aggr) = { let c = &g.race.cars[k]; (c.prog, c.lat, c.v, c.i, c.lane, RIVALS[c.r.unwrap()].aggr) };
-        let gap = pprog - cprog; let band = clamp(gap / 1100.0, -0.07, 0.07);
+        let gap = if humans.is_empty() { pprog - cprog } else { humans.iter().map(|p| p - cprog).fold(f64::MAX, |m, d| if d.abs() < m.abs() { d } else { m }) };
+        let band = clamp(gap / 1100.0, -0.07, 0.07);
         let pv = { let c = &g.race.cars[k]; RIVALS[c.r.unwrap()].pace * skill * (1.0 + band) * c.form };
         let boost = clamp((gap - 60.0) / 900.0, 0.0, 0.22);
         let mut block: Option<usize> = None; let mut bd = 99.0; let mut side = 0.0;
@@ -203,33 +222,38 @@ fn contacts(g: &mut Game) {
     let mut st: Vec<Car> = (0..n).map(|k| *state(g, k)).collect();
     let pl = g.race.player;
     let online = g.race.online;
-    // pushes another player's phone gave our car (contacts this phone did not see itself): applied here, after the physics
+    // cars this phone drives: ours, and the AI cars when we are the host (offline, every car)
+    let local: Vec<bool> = (0..n).map(|k| !online || k == pl || g.race.cars[k].is_ai()).collect();
+    // pushes other phones gave cars we drive (contacts this phone did not see itself): applied here, after the physics
     // step like every other contact, so the crash damage and the knock effects see them
-    for (k, d, imp) in std::mem::take(&mut g.race.net_hits) {
-        if k >= n || g.race.cars[k].left { continue; }
-        let c = &mut st[pl]; c.vx += d[0]; c.vz += d[1]; c.r += d[2];
+    for (k, from, d, imp) in std::mem::take(&mut g.race.net_hits) {
+        if k >= n || from >= n || g.race.cars[from].left { continue; }
+        let c = &mut st[k]; c.vx += d[0]; c.vz += d[1]; c.r += d[2];
         // the position part was their screen's overlap, already over by now: only a little of it, so nothing pops
         let s = (d[3].hypot(d[4]) / 0.25).max(1.0); c.x += d[3] * 0.5 / s; c.z += d[4] * 0.5 / s;
-        if imp > 0.3 { c.impact = c.impact.max(imp); c.hb_t = c.hb_t.max(clamp((imp - 2.0) / 6.0, 0.0, 0.6)); g.car_hit = g.car_hit.max(imp); }
-        g.race.cars[k].hit_t = g.race.t;
+        if imp > 0.3 { c.impact = c.impact.max(imp); c.hb_t = c.hb_t.max(clamp((imp - 2.0) / 6.0, 0.0, 0.6)); if k == pl { g.car_hit = g.car_hit.max(imp); } }
+        g.race.pushed_t.insert(Race::key(k, from), g.race.t);
     }
     for a in 0..n { for b in (a + 1)..n {
-        // online: each phone settles only the bumps its own car is part of (other players settle theirs)
-        if online && ((a != pl && b != pl) || g.race.cars[a].left || g.race.cars[b].left) { continue; }
-        // between two players, each phone settles the bump for its own car at once (no waiting for the other phone);
-        // the other car's push is only shown here, until its own phone's states (which settled it too) arrive
+        // online: each phone settles the bumps of the cars it drives (the other phones settle theirs)
+        if online && ((!local[a] && !local[b]) || g.race.cars[a].left || g.race.cars[b].left) { continue; }
+        // with a car another phone drives, this phone settles the bump for its own car at once (no waiting); the other
+        // car's push is shown here and sent to its phone, until that phone's states (which took it in) arrive
         let (sa0, sb0) = (st[a], st[b]);
         let (dx0, dz0) = (st[a].x - st[b].x, st[a].z - st[b].z); if dx0 * dx0 + dz0 * dz0 > 30.0 || (st[a].y - st[b].y).abs() > 1.6 { continue; }
         let hit = { let (l, r) = st.split_at_mut(b); bump(&mut l[a], &mut r[0], m, iz) };
         if hit > 0.3 { for x in [a, b] { st[x].impact = st[x].impact.max(hit); st[x].hb_t = st[x].hb_t.max(clamp((hit - 2.0) / 6.0, 0.0, 0.6)); }
             if a == pl || b == pl { g.car_hit = g.car_hit.max(hit); } }
-        if online { let (o, o0) = if a == pl { (b, sb0) } else { (a, sa0) }; let s1 = st[o];
-            let d = [s1.vx - o0.vx, s1.vz - o0.vz, s1.r - o0.r, s1.x - o0.x, s1.z - o0.z];
-            if d.iter().any(|v| v.abs() > 1e-6) { if let Some(id) = g.race.cars[o].remote { g.race.hits.push((id, d, hit));
-                // a new contact moves our contact counter on: the other phones then know our states include it
-                let rc = &mut g.race.cars[o]; if g.race.t - rc.contact_t.max(rc.hit_t) > 0.3 { g.race.epoch = g.race.epoch.wrapping_add(1) & 15; } rc.contact_t = g.race.t; } } }
+        if online { for (x, o, x0) in [(a, b, sa0), (b, a, sb0)] {
+            if local[x] { continue; } let s1 = st[x];
+            let d = [s1.vx - x0.vx, s1.vz - x0.vz, s1.r - x0.r, s1.x - x0.x, s1.z - x0.z];
+            if d.iter().any(|v| v.abs() > 1e-6) { if let Some(id) = g.race.cars[x].remote {
+                let by = if o == pl { crate::net::proto::BY_PLAYER } else { g.race.cars[o].bot.unwrap_or(crate::net::proto::BY_PLAYER) };
+                g.race.hits.push((id, by, d, hit));
+                if g.race.new_contact(o, x) { g.race.tick_epoch(o); } g.race.touch_t.insert(Race::key(o, x), g.race.t); } }
+        } }
     } }
-    // a player's car whose own phone is already handling this contact is not moved here (it would jump back next frame)
+    // a car whose own phone is already handling this contact is not moved here (it would jump back next frame)
     for k in 0..n { if k == pl { g.car = st[k]; } else if !(online && g.race.cars[k].owned) { g.race.cars[k].car = st[k]; } }
 }
 
@@ -333,12 +357,13 @@ pub fn hide(g: &mut Game, r: &mut Renderer) {
 pub fn audio(g: &mut Game) {
     let fwd = [-g.cam_rot[8], -g.cam_rot[9], -g.cam_rot[10]]; let (rx, rz) = (-fwd[2], fwd[0]); let rl = { let l = rx.hypot(rz); if l == 0.0 { 1.0 } else { l } };
     let cp = g.cam_pos; let mut v: Vec<f32> = vec![8.0, 0.0]; let mut n = 0;
+    // one voice per car (players and AI cars can share a rival's colour, so not one per rival); the mixer has eight
     for c in &g.race.cars { let Some(ri) = c.r else { continue }; let s = &c.car; let gone = c.left;
         let (dx, dz) = (s.x - cp[0], s.z - cp[2]); let d = (dx * dx + dz * dz + (s.y - cp[1]).powi(2)).sqrt().max(1.0);
         let nn = clamp((s.rpm - 900.0) / 6400.0, 0.0, 1.05); let vr = ((s.vx - g.car.vx) * dx + (s.vz - g.car.vz) * dz) / d;
         let rate = (0.95 + nn * 2.6) * ENG_PITCH[ri] * clamp(343.0 / (343.0 + vr), 0.8, 1.25);
         let gain = if g.ps.sound_on && !gone && !g.settings_paused() { g.ps.rvol as f64 / 10.0 * g.ps.vol as f64 / 10.0 * 0.85 / (1.0 + (d / 17.0) * (d / 17.0)) * (0.6 + 0.4 * nn) } else { 0.0 };
         let lp = (1200.0 + nn * 3000.0 - d * 12.0).max(500.0); let pan = clamp((dx * rx + dz * rz) / rl / d, -1.0, 1.0) * 0.85;
-        v.extend_from_slice(&[ri as f32, rate as f32, (0.15 + nn * 0.5) as f32, gain as f32, lp as f32, pan as f32]); n += 1; }
+        if n >= 8 { break; } v.extend_from_slice(&[n as f32, rate as f32, (0.15 + nn * 0.5) as f32, gain as f32, lp as f32, pan as f32]); n += 1; }
     v[1] = n as f32; g.audio_msg(&v);
 }
