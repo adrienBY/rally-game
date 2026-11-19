@@ -2,8 +2,11 @@
 use crate::noise::*;
 
 pub const ROAD: f64 = 3.4;
-/// Prism: where the deck ends, the outer edge of the glowing kerb the page draws (1.08 x the half-width + 0.5 m); past it is the void
-pub const PRISM_EDGE: f64 = PRISM_ROAD * 1.08 + 0.5;
+/// Prism: the outer edge of the glowing kerb the page draws (1.08 x the half-width + 0.5 m)
+pub const PRISM_KERB: f64 = PRISM_ROAD * 1.08 + 0.5;
+/// Prism: where the ground ends for everything that asks the world (shadows, the camera, a car already falling): a little past the kerb,
+/// so the shadow of a wheel hanging over the edge still lands. Whether a car is on the deck is decided by its centre (see Car::step).
+pub const PRISM_EDGE: f64 = PRISM_KERB + 1.1;
 /// Prism: the road's half-width (wider than the rally stages: room for one more car across; the page uses the same)
 pub const PRISM_ROAD: f64 = 4.5;
 /// the road's half-width on a map
