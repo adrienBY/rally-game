@@ -4,6 +4,8 @@ use crate::noise::*;
 pub const ROAD: f64 = 3.4;
 /// Prism: the barriers' distance from the centreline (the fence the page draws stands here)
 pub const PRISM_RAIL: f64 = ROAD * 1.08 + 0.62;
+/// Prism: the fence's height above the deck, top rail included (the page draws posts to 0.9 m and the rail to 1.01 m)
+pub const PRISM_FENCE: f64 = 1.01;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Map { Forest = 0, Snow = 1, Canyon = 2, Lakes = 3, Iceland = 4, Touge = 5, Riviera = 6, Prism = 7 }

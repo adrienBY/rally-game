@@ -1,7 +1,9 @@
 //! Vehicle dynamics: a straight port of the JavaScript model (same order of operations, same constants),
 //! so a car driven by the native engine behaves exactly like the browser build.
 use crate::noise::{clamp, js_round, sgn, vnoise, wrap_a};
-use crate::world::{Map, World, PRISM_RAIL, ROAD, WL};
+use crate::world::{Map, World, PRISM_FENCE, PRISM_RAIL, ROAD, WL};
+/// prism: the car's underside above its reference height (the body clears the fence once this is over the top rail)
+const PRISM_UNDER: f64 = 0.2;
 use std::collections::HashMap;
 
 #[inline] fn sin(x: f64) -> f64 { libm::sin(x) }
@@ -294,17 +296,18 @@ impl Car {
         self.u = u; self.vl = vl; self.slide = slide / 4.0;
     }
 
-    /// prism barriers: the body's three circles against a wall on each edge of the deck. The wall has no top - a car thrown high by a
-    /// crest or a wave comes down on the deck, never beyond it. A firm, low-bounce hit that lets the car slide along.
+    /// prism barriers: the body's three circles against the fence on each edge of the deck, as tall as the fence the page draws (a car
+    /// thrown high enough by a crest or a wave can clear it). A firm, low-bounce hit that lets the car slide along.
     fn prism_rails(&mut self, world: &World, t: &Tune) {
         let Some(wv) = world.wave.get() else { return }; if wv.path.is_empty() { return; }
         let (m, iz) = (M, t.iz);
         for off in [1.35, 0.0, -1.35] {
             let (sh, ch) = (sin(self.h), cos(self.h)); let cr = 0.9; let cx = self.x + sh * off; let cz = self.z + ch * off;
             let (k, lat, _) = world.road_frame(wv, cx, cz); let pen = lat.abs() + cr - PRISM_RAIL; if pen <= 0.0 { continue; }
-            let (px, pz) = wv.path[k]; let (tx, tz) = wv.tan[k]; let (rx, rz) = (-tz, tx); let lc = clamp(lat, -ROAD, ROAD);
-            let deck = world.height(px + rx * lc, pz + rz * lc); if self.y < deck - 3.0 { continue; }   // already dropping into the void (only a respawn helps then)
-            let sg = sgn(lat); let (nx, nz) = (-rx * sg, -rz * sg);   // back towards the road
+            if lat.abs() > PRISM_RAIL { continue; }   // already past the fence (over the top): it doesn't pull you back
+            let (px, pz) = wv.path[k]; let (tx, tz) = wv.tan[k]; let (rx, rz) = (-tz, tx); let sg = sgn(lat);
+            // the fence is only as tall as it looks: a car whose underside clears the top rail sails over it
+            let base = world.height(px + rx * sg * PRISM_RAIL, pz + rz * sg * PRISM_RAIL); if self.y + PRISM_UNDER > base + PRISM_FENCE { continue; } let (nx, nz) = (-rx * sg, -rz * sg);   // back towards the road
             self.x += nx * pen; self.z += nz * pen;
             let qx = cx + nx * pen - nx * cr - self.x; let qz = cz + nz * pen - nz * cr - self.z;   // the contact point, from the car's centre
             let vpx = self.vx + self.r * qz; let vpz = self.vz - self.r * qx; let vn = vpx * nx + vpz * nz; if vn >= 0.0 { continue; }

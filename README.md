@@ -49,7 +49,8 @@ builds a bare stage from a test fixture, then two `game_host` runs talk through 
 `FW_CUT=from,to` loses the direct packets in that window (a dying path), to check nobody drops out.
 
 Prism Skyway check: `cargo run --release --bin prism_check <rt.bin>` (a runtime packet dumped from the page) drives cars into both
-barriers at many speeds, angles and wave phases (none may get past), then checks steering, throttle and brake work in the air.
+barriers at many speeds, steering amounts and wave phases (none may get through the fence; only a car flying above its top rail
+may go over), then checks steering, throttle and brake work in the air.
 
 Online netcode check (no phones needed): `cargo run --release --bin net_sim` drives a car round each stage, sends it
 through a simulated link and reports how far off and how smooth the other player's car looks, plus data per hour.
