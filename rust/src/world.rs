@@ -3,7 +3,11 @@ use crate::noise::*;
 
 pub const ROAD: f64 = 3.4;
 /// Prism: the barriers' distance from the centreline (the fence the page draws stands here)
-pub const PRISM_RAIL: f64 = ROAD * 1.08 + 0.62;
+pub const PRISM_RAIL: f64 = PRISM_ROAD * 1.08 + 0.62;
+/// Prism: the road's half-width (wider than the rally stages: room for one more car across; the page uses the same)
+pub const PRISM_ROAD: f64 = 4.5;
+/// the road's half-width on a map
+pub fn road_half(map: Map) -> f64 { if map == Map::Prism { PRISM_ROAD } else { ROAD } }
 /// Prism: the fence's height above the deck, top rail included (the page draws posts to 0.9 m and the rail to 1.01 m)
 pub const PRISM_FENCE: f64 = 1.01;
 
@@ -123,7 +127,7 @@ pub fn build(map: Map, path: &[(f64, f64)], roadh: &[f64], gxh: i32, gzh: i32) -
             let id = j * gnx + i; let x = i as f64 - gxh as f64; let z = j as f64 - gzh as f64; let pdv = pd_r[id] as f64;
             if map == Map::Prism {
                 let k = pi_r[id] as usize; let (px, pz) = path[k]; let (tx, tz) = tan[k];
-                let lat = (x - px) * -tz + (z - pz) * tx; let w2 = 1.0 - smooth(ROAD + 2.4, ROAD + 3.0, pdv);
+                let lat = (x - px) * -tz + (z - pz) * tx; let w2 = 1.0 - smooth(PRISM_ROAD + 2.4, PRISM_ROAD + 3.0, pdv);
                 row[i] = ((roadh[k] - 0.12 + lat * bank[k]) * w2 + PRISM_VOID * (1.0 - w2)) as f32; continue;
             }
             let mut hv = terrain(map, x, z);
@@ -200,6 +204,8 @@ impl World {
         wv.at(self.road_s(wv, x, z), self.wave_time())
     }
     #[inline] pub fn path_dist(&self, x: f64, z: f64) -> f64 { self.bil(&self.pd, x, z) }
+    /// the road's half-width here
+    #[inline] pub fn road(&self) -> f64 { road_half(self.map) }
 
     /// Packed for the JS side: [pd f32 * n][h f32 * n][pi i16 * n], little endian.
     pub fn to_bytes(&self) -> Vec<u8> {

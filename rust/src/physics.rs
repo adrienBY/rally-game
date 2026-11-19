@@ -182,7 +182,7 @@ impl Car {
         let (mut fsum, mut contacts, mut road_n) = (0.0f64, 0.0f64, 0);
         for w in self.wh.iter_mut() {
             let wx = self.x + ch * w.lx + sh * w.lz; let wz = self.z - sh * w.lx + ch * w.lz; w.wx = wx; w.wz = wz;
-            let wpd = world.path_dist(wx, wz); w.road = wpd < ROAD + 0.25; w.bank = snow && !w.road && wpd < ROAD + 1.8; if w.road { road_n += 1; }
+            let wpd = world.path_dist(wx, wz); w.road = wpd < world.road() + 0.25; w.bank = snow && !w.road && wpd < ROAD + 1.8; if w.road { road_n += 1; }
             let hg = world.height(wx, wz) + (vnoise(wx * 0.45 + 3.1, wz * 0.45) - 0.5) * (if w.road { 0.05 } else { 0.16 });
             let d = self.y + w.lz * sp + w.lx * sr - hg; let comp = REST - d; let rate = (comp - w.comp) / dt;
             w.comp = comp; w.d = d; w.hg = hg;

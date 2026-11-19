@@ -33,7 +33,7 @@
 //! Rates follow tyre physics: more speed, more slip and more load throw more; far cars emit fewer, bigger puffs; past 160 m none.
 //! Everything lives in flat arrays sent to the GPU as one point cloud; the shader draws soft, sun-lit, pixel-noise puffs.
 use crate::physics::Car;
-use crate::world::{World, ROAD};
+use crate::world::World;
 
 pub const DUST: u8 = 0; pub const GRIT: u8 = 1; pub const SMOKE: u8 = 2; pub const POWDER: u8 = 3; pub const CHUNK: u8 = 4; pub const SPRAY: u8 = 5;
 /// drawn as crisp specks (their colour is the actual rgb), not as part of the dust cloud
@@ -183,7 +183,7 @@ impl Dust {
             let (slip, load) = slips[k]; if load <= 0.0 { continue; }
             let wh = &c.wh[k]; let (lx, lz) = (wh.lx as f32, wh.lz as f32);
             let wx = c.x as f32 + ch * lx + sh * lz; let wz = c.z as f32 - sh * lx + ch * lz;
-            let road = w.path_dist(wx as f64, wz as f64) < ROAD; let tarmac = env.tarmac && road;
+            let road = w.path_dist(wx as f64, wz as f64) < w.road(); let tarmac = env.tarmac && road;
             let gy = w.height(wx as f64, wz as f64) as f32; let lk = (load / 2900.0).sqrt().min(1.6); let front = if wh.f { 0.6 } else { 1.0 };
             // how loose the surface is and what it is made of
             let (loose, earth) = if env.snow { (if road { 1.15 } else { 1.4 }, 0.0) } else if tarmac { (0.0, 0.0) }
@@ -259,7 +259,7 @@ impl Dust {
 
     /// landing from a jump: a ring of dust blown outwards
     pub fn landing(&mut self, w: &World, env: &Env, c: &Car, v: f32) {
-        if env.tarmac && w.path_dist(c.x, c.z) < ROAD { return; }
+        if env.tarmac && w.path_dist(c.x, c.z) < w.road() { return; }
         // the body slams down and the air under it rushes out: a low ring blown outwards, many small puffs (not a few big ones,
         // which would read as discs), and on snow a burst of grains
         let n = ((v - 1.5) * 5.0).clamp(6.0, 28.0) as usize; let gy = w.height(c.x, c.z) as f32;

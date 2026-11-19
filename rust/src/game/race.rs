@@ -117,6 +117,7 @@ fn state<'a>(g: &'a Game, k: usize) -> &'a Car { if g.race.cars[k].is_player() {
 
 /// the drivers' heads: who is ahead, can I pass, who is alongside, when do I make a mistake
 fn plan(g: &mut Game, w: &World, dt: f64) {
+    let wk = w.road() / ROAD;   // lanes spread over a wider road (prism)
     let n = g.race.cars.len(); let np = g.np;
     for k in 0..n { let st = *state(g, k); let i = path_idx(w, st.x, st.z); let p = g.rt.path[i]; let tn = g.rt.tan[i];
         let c = &mut g.race.cars[k]; c.i = i; c.lat = (st.x - p[0]) * -tn[1] + (st.z - p[1]) * tn[0]; c.v = (st.vx * tn[0] + st.vz * tn[1]).max(0.0); }
@@ -138,14 +139,14 @@ fn plan(g: &mut Game, w: &World, dt: f64) {
         let c = &mut g.race.cars[k]; c.pv = pv; c.boost = boost; c.cap = 99.0;
         if let Some(b) = block {
             let (blat, bv) = { let bc = &g.race.cars[b]; (bc.lat, bc.v) }; let c = &mut g.race.cars[k];
-            let room = |sg: f64| -> Option<f64> { let t = clamp(blat + sg * 2.45, -2.35, 2.35); if (t - blat).abs() > 1.95 { Some(t) } else { None } };
+            let room = |sg: f64| -> Option<f64> { let t = clamp(blat + sg * 2.45, -2.35 * wk, 2.35 * wk); if (t - blat).abs() > 1.95 { Some(t) } else { None } };
             let keen = aggr > 0.6 || cv - bv > 1.2 || bv < rprof_ci * pv * 0.8;
             let mut t = None; if keen && bd < 24.0 && vc25 > 13.0 { let pref = if clane >= blat { 1.0 } else { -1.0 }; t = room(pref); if t.is_none() { t = room(-pref); } }
             if let Some(t) = t { c.lane_t = t; c.pass_t = 2.2; c.cap = if (blat - clat).abs() > 1.5 { 99.0 } else { (bv * bv + 2.0 * br * (bd - 6.0).max(0.0)).sqrt() + 2.0 }; }
             else { c.cap = (bv * bv + 2.0 * br * (bd - 7.5).max(0.0)).sqrt(); }
         } else { c.pass_t -= dt; if c.pass_t <= 0.0 { c.lane_t = 0.0; } }
         let c = &mut g.race.cars[k];
-        if side != 0.0 { c.lane_t = clamp(c.lane_t + side * 0.9, -2.35, 2.35); }
+        if side != 0.0 { c.lane_t = clamp(c.lane_t + side * 0.9, -2.35 * wk, 2.35 * wk); }
         let ls = if c.pass_t > 0.0 { 2.4 } else { 1.6 }; c.lane += clamp(c.lane_t - c.lane, -ls * dt, ls * dt);
         c.mist_cd -= dt; c.mist = (c.mist - dt).max(0.0);
         if c.mist_cd <= 0.0 && g.rt.vcurve[(ci + 45) % np] < 18.0 && g.rt.vcurve[ci] > 24.0 { c.mist_cd = 7.0; let cons = RIVALS[c.r.unwrap()].cons; let q = g.rng.f(); let c = &mut g.race.cars[k]; if q < (1.0 - cons) * 0.5 { c.mist = 1.7; } }
@@ -157,7 +158,7 @@ fn rival_input(g: &mut Game, w: &World, k: usize) -> Input {
     let c = &mut g.race.cars[k]; let s = c.car;
     if phase == Phase::Grid || race_t < c.react { return Input { steer: 0.0, throttle: 0.0, brake: 0.0, hb: true }; }
     let i = path_idx(w, s.x, s.z); let u = s.u.max(0.0); let ld = 7.0 + u * 0.42; let kk = (i + (ld + 0.5).floor() as usize) % np;
-    let lat = clamp(c.lane + rt.rline[kk] * (1.0 - (c.lane.abs() / 2.2).min(1.0)), -1.9, 1.9); let p = rt.path[kk]; let tn = rt.tan[kk];
+    let wk = w.road() / ROAD; let lat = clamp(c.lane + rt.rline[kk] * (1.0 - (c.lane.abs() / 2.2).min(1.0)), -1.9 * wk, 1.9 * wk); let p = rt.path[kk]; let tn = rt.tan[kk];
     { let p0 = rt.path[i]; let t0 = rt.tan[i]; let now = (s.x - p0[0]) * -t0[1] + (s.z - p0[1]) * t0[0]; c.err = (now - lat).abs(); }
     let (dx, dz) = (p[0] - tn[1] * lat - s.x, p[1] + tn[0] * lat - s.z); let sp = s.vx.hypot(s.vz); let vh = if sp > 2.0 { s.vx.atan2(s.vz) } else { s.h };
     let al = wrap_a(dx.atan2(dz) - vh); let r_want = 2.0 * sp.max(1.0) * al.sin() / ld;
@@ -183,8 +184,8 @@ fn recover(g: &mut Game, w: &World, k: usize, dt: f64) {
     let fwd = s.h.sin() * tn[0] + s.h.cos() * tn[1];
     let fell = g.pri && s.y < g.rt.roadh[i] - 6.0;   // prism: dropped off the skyway
     let c = &mut g.race.cars[k];
-    if pd < ROAD + 1.0 { c.off_at = Some(i); }
-    let off = pd > ROAD + 5.0; let bad = off || (sp < 1.5 && g.race.t > c.react + 2.0) || s.roll.abs() > 0.9 || s.pitch.abs() > 0.9 || (fwd < -0.2 && sp < 8.0);
+    if pd < w.road() + 1.0 { c.off_at = Some(i); }
+    let off = pd > w.road() + 5.0; let bad = off || (sp < 1.5 && g.race.t > c.react + 2.0) || s.roll.abs() > 0.9 || s.pitch.abs() > 0.9 || (fwd < -0.2 && sp < 8.0);
     c.stuck_t = if bad { c.stuck_t + dt } else { (c.stuck_t - dt * 2.0).max(0.0) };
     if fell { c.stuck_t = 9.0; if std::env::var("FW_FALLS").is_ok() { eprintln!("FALL car {} at {} off_at {:?} sp {:.1}", k, i, c.off_at, sp); } }
     if c.stuck_t > if off { 1.6 } else { 2.6 } {

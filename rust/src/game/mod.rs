@@ -439,7 +439,7 @@ impl Game {
         if shifted { if self.state == State::Drive { self.buzz("shift", 0.45); } self.audio_msg(&[7.0, 2.0]); }
         // prism: off the edge of the skyway is a long way down - back on the deck a few metres before where you left it
         if self.pri && !paused && (self.state == State::Drive || self.race.demo) {
-            let np = self.np; let k = path_idx(w, self.car.x, self.car.z); if w.path_dist(self.car.x, self.car.z) < ROAD { self.pri_last = Some(k); }
+            let np = self.np; let k = path_idx(w, self.car.x, self.car.z); if w.path_dist(self.car.x, self.car.z) < w.road() { self.pri_last = Some(k); }
             if self.car.y < self.rt.roadh[k] - 8.0 { let back = (self.pri_last.unwrap_or(k) + np - 4) % np; self.place_at(w, back); if self.state == State::Drive { self.flash_msg("RESPAWN", 1.0); self.buzz("land", 0.7); } }
         }
         if self.state == State::Drive && !paused { if self.race.on { race::step(self, w, obs, dt); } else { self.update_lap(w, dt); } }

@@ -24,13 +24,17 @@ fn main() {
     for &i in &[200usize, 640, 1000, 1300, 1700] { for &side in &[-1.0f64, 1.0] { for &yaw in &[0.15f64, 0.35, 0.6, 1.0] { for &v in &[12.0f64, 25.0, 40.0] { for &tw in &[0.0f64, 1.3, 2.6] {
         // a settled car (0.6 s on the deck first, holding its speed), then the driver steers into the fence and keeps the throttle down
         w.set_wave_time(tw - 0.6); let mut c = place((i + np - 20) % np, 0.0, 0.0, v, 0.0);
-        for f in 0..36 { w.set_wave_time(tw - 0.6 + f as f64 * dt); let sp = c.vx.hypot(c.vz); c.update(w, &e.obstacles, &tune, dt, &Input { steer: 0.0, throttle: if sp < v { 1.0 } else { 0.0 }, brake: 0.0, hb: false }); }
         let mut maxlat = 0.0f64; let mut fell = false; let mut airborne_at_rail = false; let steer = -side * (yaw / 1.0).min(1.0);
-        for f in 0..(2.5 / dt) as usize { w.set_wave_time(tw + f as f64 * dt); let pre = c; c.update(w, &e.obstacles, &tune, dt, &Input { steer, throttle: 1.0, brake: 0.0, hb: false });
+        for f0 in 0..(3.1 / dt) as usize { let settle = f0 < 36; let f = f0 as i64 - 36; w.set_wave_time(tw + f as f64 * dt); let pre = c; let sp = c.vx.hypot(c.vz);
+            let inp = if settle { Input { steer: 0.0, throttle: if sp < v { 1.0 } else { 0.0 }, brake: 0.0, hb: false } } else { Input { steer, throttle: 1.0, brake: 0.0, hb: false } };
+            c.update(w, &e.obstacles, &tune, dt, &inp);
             let (k, lat, _) = w.road_frame(wv, c.x, c.z); maxlat = maxlat.max(lat.abs());
             // crossed the rail line this frame: was the underside above the top rail? (then it went over, as it may)
             if lat.abs() > PRISM_RAIL - 0.9 && !airborne_at_rail { let (k0, l0, _) = w.road_frame(wv, pre.x, pre.z); let (px, pz) = wv.path[k0]; let (tx, tz) = wv.tan[k0]; let sg = l0.signum();
                 let base = w.height(px - tz * sg * PRISM_RAIL, pz + tx * sg * PRISM_RAIL); if pre.y + 0.2 > base + PRISM_FENCE { airborne_at_rail = true; } }
+            if std::env::var("DBG2").map(|d| d == format!("{}:{}:{}:{}:{}", i, side, yaw, v, tw)).unwrap_or(false) && f0 % 2 == 0 {
+                let (px, pz) = wv.path[k]; let (tx, tz) = wv.tan[k]; let sg = lat.signum(); let base = w.height(px - tz * sg * PRISM_RAIL, pz + tx * sg * PRISM_RAIL);
+                println!("{:.2} k {} lat {:+.2} y-base {:+.2} sp {:.1} vy {:+.1} contacts {} h {:+.2}", f0 as f64 * dt, k, lat, c.y - base, c.vx.hypot(c.vz), c.vy, c.contacts, c.h); }
             if c.y < rt.roadh[k] - 6.0 { fell = true; break; } }
         n += 1; worst = worst.max(maxlat); if (fell || maxlat > PRISM_RAIL) && airborne_at_rail { over += 1; *by_v.entry(v as i64).or_insert(0) += 1; if v < 20.0 { println!("  slow over: idx {} side {} yaw {} tw {}", i, side, yaw, tw); } } else if fell || maxlat > PRISM_RAIL { fails += 1; if fails <= 12 { println!("  through/over: idx {} side {} yaw {} v {} -> max lat {:.2} fell {}", i, side, yaw, v, maxlat, fell); } }
     } } } } }
