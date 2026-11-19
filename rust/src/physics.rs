@@ -1,9 +1,7 @@
 //! Vehicle dynamics: a straight port of the JavaScript model (same order of operations, same constants),
 //! so a car driven by the native engine behaves exactly like the browser build.
 use crate::noise::{clamp, js_round, sgn, vnoise, wrap_a};
-use crate::world::{Map, World, PRISM_FENCE, PRISM_RAIL, ROAD, WL};
-/// prism: the car's underside above its reference height (the body clears the fence once this is over the top rail)
-const PRISM_UNDER: f64 = 0.2;
+use crate::world::{Map, World, ROAD, WL};
 use std::collections::HashMap;
 
 #[inline] fn sin(x: f64) -> f64 { libm::sin(x) }
@@ -174,7 +172,7 @@ impl Car {
     }
 
     fn step(&mut self, world: &World, t: &Tune, dt: f64, ctl: &Ctl, gx: f64, gz: f64) {
-        let snow = world.map == Map::Snow; let can = world.map == Map::Canyon; let lak = world.map == Map::Lakes; let ice = world.map == Map::Iceland; let tou = world.map == Map::Touge; let riv = world.map == Map::Riviera;
+        let snow = world.map == Map::Snow; let can = world.map == Map::Canyon; let lak = world.map == Map::Lakes; let ice = world.map == Map::Iceland; let tou = world.map == Map::Touge; let riv = world.map == Map::Riviera; let prism = world.map == Map::Prism;
         let sh = sin(self.h); let ch = cos(self.h); let lxw = ch; let lzw = -sh;
         let u = self.vx * sh + self.vz * ch; let vl = self.vx * lxw + self.vz * lzw;
         let (m, iz, r_, g) = (M, t.iz, TIRE_R, 9.81);
@@ -184,7 +182,14 @@ impl Car {
             let wx = self.x + ch * w.lx + sh * w.lz; let wz = self.z - sh * w.lx + ch * w.lz; w.wx = wx; w.wz = wz;
             let wpd = world.path_dist(wx, wz); w.road = wpd < world.road() + 0.25; w.bank = snow && !w.road && wpd < ROAD + 1.8; if w.road { road_n += 1; }
             let hg = world.height(wx, wz) + (vnoise(wx * 0.45 + 3.1, wz * 0.45) - 0.5) * (if w.road { 0.05 } else { 0.16 });
-            let d = self.y + w.lz * sp + w.lx * sr - hg; let comp = REST - d; let rate = (comp - w.comp) / dt;
+            // prism: a wheel that has swung back under the deck (the car already dropping past the edge) finds no ground there - the deck
+            // is a thin ribbon, not a block to be shoved out of
+            // (and one coming in from over the void below the deck's surface stays in the void: no ground appears inside the tyre)
+            let wy = self.y + w.lz * sp + w.lx * sr;
+            let hg = if prism && (wy < hg - 0.6 || (w.hg < -300.0 && wy < hg + REST * 0.5)) { crate::world::PRISM_VOID } else { hg };
+            let d = wy - hg; let comp = REST - d;
+            // prism: the ground under a wheel can appear or vanish at the edge - damp from where the tyre is now, not from the void
+            let rate = (comp - if prism { w.comp.max(comp.min(0.0) - 0.05) } else { w.comp }) / dt;
             w.comp = comp; w.d = d; w.hg = hg;
             let mut f = 0.0;
             if comp > 0.0 { f = t.k * comp + t.c * rate; if comp > STOP { f += t.k * 10.0 * (comp - STOP) + t.c * 2.0 * rate.max(0.0); } }
@@ -267,15 +272,15 @@ impl Car {
             if ctl.hb && gr > 0.0 && uu.abs() > 4.0 { self.r += ctl.steer * t.a_hb_yaw * ar * gr * dt; }
             if contacts == 0.0 { self.pr += (-self.pitch * 3.0 - self.pr * 1.6) * ar * dt; self.rr += (-self.roll * 4.0 - self.rr * 2.0) * ar * dt; self.r += ctl.steer * 1.4 * ar * dt; }
         }
-        // prism: you can fly the car - steer to turn it (and its course follows the nose), throttle and brake push it along, and it levels out
+        // prism: a little say in the air - steering nudges the nose round and the course drifts after it, throttle and brake a touch of push
         if contacts == 0.0 && world.map == Map::Prism {
-            let k = 1.0 - exp(-4.0 * dt); self.r += (ctl.steer * 1.9 - self.r) * k;
+            let k = 1.0 - exp(-1.5 * dt); self.r += (ctl.steer * 0.6 - self.r) * k;
             // the course swings round after the nose (speed kept), then throttle pushes along the nose and brake slows
             let sp = js_hypot(self.vx, self.vz);
-            if sp > 0.5 { let course = atan2(self.vx, self.vz); let nc = course + wrap_a(self.h - course) * (1.0 - exp(-3.2 * dt)); self.vx = sin(nc) * sp; self.vz = cos(nc) * sp; }
+            if sp > 0.5 { let course = atan2(self.vx, self.vz); let nc = course + wrap_a(self.h - course) * (1.0 - exp(-0.7 * dt)); self.vx = sin(nc) * sp; self.vz = cos(nc) * sp; }
             let uu = self.vx * sh + self.vz * ch;
-            let push = if self.gear > 0.0 { 9.0 * ctl.throttle * (1.0 - uu / 52.0).max(0.0) } else { -5.0 * ctl.throttle };
-            let slow = if ctl.brake > 0.0 && uu > 0.0 { (9.0 * ctl.brake * dt).min(uu) } else { 0.0 };
+            let push = if self.gear > 0.0 { 2.0 * ctl.throttle * (1.0 - uu / 52.0).max(0.0) } else { -1.5 * ctl.throttle };
+            let slow = if ctl.brake > 0.0 && uu > 0.0 { (2.5 * ctl.brake * dt).min(uu) } else { 0.0 };
             self.vx += sh * (push * dt - slow); self.vz += ch * (push * dt - slow);
             self.pr += (-self.pitch * 6.0 - self.pr * 3.0) * dt; self.rr += (-self.roll * 7.0 - self.rr * 3.5) * dt;
         }
@@ -296,28 +301,6 @@ impl Car {
         self.u = u; self.vl = vl; self.slide = slide / 4.0;
     }
 
-    /// prism barriers: the body's three circles against the fence on each edge of the deck, as tall as the fence the page draws (a car
-    /// thrown high enough by a crest or a wave can clear it). A firm, low-bounce hit that lets the car slide along.
-    fn prism_rails(&mut self, world: &World, t: &Tune) {
-        let Some(wv) = world.wave.get() else { return }; if wv.path.is_empty() { return; }
-        let (m, iz) = (M, t.iz);
-        for off in [1.35, 0.0, -1.35] {
-            let (sh, ch) = (sin(self.h), cos(self.h)); let cr = 0.9; let cx = self.x + sh * off; let cz = self.z + ch * off;
-            let (k, lat, _) = world.road_frame(wv, cx, cz); let pen = lat.abs() + cr - PRISM_RAIL; if pen <= 0.0 { continue; }
-            if lat.abs() > PRISM_RAIL { continue; }   // already past the fence (over the top): it doesn't pull you back
-            let (px, pz) = wv.path[k]; let (tx, tz) = wv.tan[k]; let (rx, rz) = (-tz, tx); let sg = sgn(lat);
-            // the fence is only as tall as it looks: a car whose underside clears the top rail sails over it
-            let base = world.height(px + rx * sg * PRISM_RAIL, pz + rz * sg * PRISM_RAIL); if self.y + PRISM_UNDER > base + PRISM_FENCE { continue; } let (nx, nz) = (-rx * sg, -rz * sg);   // back towards the road
-            self.x += nx * pen; self.z += nz * pen;
-            let qx = cx + nx * pen - nx * cr - self.x; let qz = cz + nz * pen - nz * cr - self.z;   // the contact point, from the car's centre
-            let vpx = self.vx + self.r * qz; let vpz = self.vz - self.r * qx; let vn = vpx * nx + vpz * nz; if vn >= 0.0 { continue; }
-            let crn = qz * nx - qx * nz; let jn = -1.15 * vn / (1.0 / m + crn * crn / iz);
-            self.vx += jn * nx / m; self.vz += jn * nz / m; self.r += jn * crn / iz;
-            let (ux, uz) = (-nz, nx); let vt = vpx * ux + vpz * uz; let crt = qz * ux - qx * uz;
-            let jt = clamp(-vt / (1.0 / m + crt * crt / iz), -0.2 * jn, 0.2 * jn); self.vx += jt * ux / m; self.vz += jt * uz / m; self.r += jt * crt / iz;
-            self.impact = self.impact.max(-vn * 0.6);
-        }
-    }
     fn collide(&mut self, world: &World, obs: &Obstacles, t: &Tune) {
         self.impact = 0.0; self.hay = 0.0;
         let sh = sin(self.h); let ch = cos(self.h); let m = M; let iz = t.iz;
@@ -347,7 +330,6 @@ impl Car {
                 }
             } }
         }
-        if world.map == Map::Prism { self.prism_rails(world, t); }
         let gxh = world.gxh as f64; let gzh = world.gzh as f64;
         if self.x.abs() > gxh - 10.0 { self.impact = self.impact.max(self.vx.abs()); self.x = sgn(self.x) * (gxh - 10.0); self.vx *= -0.3; }
         if self.z.abs() > gzh - 10.0 { self.impact = self.impact.max(self.vz.abs()); self.z = sgn(self.z) * (gzh - 10.0); self.vz *= -0.3; }

@@ -1,7 +1,8 @@
-//! prism_check <rt.bin>: the Prism Skyway's barriers and air control, on the stage's own world. Drives a car into each barrier at a
-//! range of speeds and steering amounts (none may get through the fence - only a car whose underside is above the top rail may go over), then throws a car into the air and checks steering and throttle move it.
+//! prism_check <rt.bin>: the Prism Skyway's edge and air control, on the stage's own world. Drives cars off the deck edge at a range of
+//! speeds and steering amounts (they must just drop off, not be flicked up or sideways), then throws a car into the air and measures
+//! how much steering, throttle and brake move it.
 use fogwood_core::physics::{Car, Input, Tune};
-use fogwood_core::world::{Wave, PRISM_FENCE, PRISM_RAIL};
+use fogwood_core::world::{Wave, PRISM_EDGE};
 
 fn main() {
     let a: Vec<String> = std::env::args().collect();
@@ -14,31 +15,29 @@ fn main() {
     tv[29] = rt.susp[0]; tv[30] = rt.susp[1]; tv[31] = rt.susp[2]; tv[32] = rt.iz;
     let tune = Tune::from_slice(&tv);
     let g = fogwood_core::bridge::lock(); let e = g.as_ref().unwrap(); let w = &e.world;
-    let wv = w.wave.get_or_init(|| Wave { path: rt.path.iter().map(|p| (p[0], p[1])).collect(), tan: rt.tan.iter().map(|t| (t[0], t[1])).collect(), secs: rt.wave_secs.clone() });
+    let wv = w.wave.get_or_init(|| Wave::new(&rt.path, &rt.tan, &rt.roadh, &rt.wave_secs));
     let np = rt.np; let dt = 1.0 / 60.0;
     let place = |i: usize, lat: f64, yaw: f64, v: f64, up: f64| { let mut c = Car::new(); let (tx, tz) = (rt.tan[i][0], rt.tan[i][1]);
         c.x = rt.path[i][0] - tz * lat; c.z = rt.path[i][1] + tx * lat; c.h = tx.atan2(tz) + yaw; c.vx = c.h.sin() * v; c.vz = c.h.cos() * v;
         c.gear = 3.0; c.rpm = 5000.0; c.y = w.height(c.x, c.z) + 0.075 + up; for wh in c.wh.iter_mut() { wh.comp = 0.135; wh.d = 0.075; wh.fz = 2900.0; wh.w = v / 0.32; } c };
-    // barriers
-    let (mut worst, mut fails, mut n, mut over) = (0.0f64, 0, 0, 0); let mut by_v = std::collections::BTreeMap::new();
+    // the edge: drive off it at a range of speeds and steering amounts and look for a flick - the car thrown up or sideways as it goes
+    // over (it should just drop off: no more upward speed than it had, no sideways shove beyond what it carried)
+    let (mut n, mut off, mut worst_up, mut worst_side) = (0, 0, 0.0f64, 0.0f64); let mut worst_where = String::new();
     for &i in &[200usize, 640, 1000, 1300, 1700] { for &side in &[-1.0f64, 1.0] { for &yaw in &[0.15f64, 0.35, 0.6, 1.0] { for &v in &[12.0f64, 25.0, 40.0] { for &tw in &[0.0f64, 1.3, 2.6] {
-        // a settled car (0.6 s on the deck first, holding its speed), then the driver steers into the fence and keeps the throttle down
-        w.set_wave_time(tw - 0.6); let mut c = place((i + np - 20) % np, 0.0, 0.0, v, 0.0);
-        let mut maxlat = 0.0f64; let mut fell = false; let mut airborne_at_rail = false; let steer = -side * (yaw / 1.0).min(1.0);
-        for f0 in 0..(3.1 / dt) as usize { let settle = f0 < 36; let f = f0 as i64 - 36; w.set_wave_time(tw + f as f64 * dt); let pre = c; let sp = c.vx.hypot(c.vz);
+        w.set_wave_time(tw - 0.6); let mut c = place((i + np - 20) % np, 0.0, 0.0, v, 0.0); let steer = -side * yaw.min(1.0); let mut left: Option<(f64, f64, f64, usize)> = None;
+        for f0 in 0..(3.1 / dt) as usize { let settle = f0 < 36; w.set_wave_time(tw + (f0 as f64 - 36.0) * dt); let sp = c.vx.hypot(c.vz);
             let inp = if settle { Input { steer: 0.0, throttle: if sp < v { 1.0 } else { 0.0 }, brake: 0.0, hb: false } } else { Input { steer, throttle: 1.0, brake: 0.0, hb: false } };
-            c.update(w, &e.obstacles, &tune, dt, &inp);
-            let (k, lat, _) = w.road_frame(wv, c.x, c.z); maxlat = maxlat.max(lat.abs());
-            // crossed the rail line this frame: was the underside above the top rail? (then it went over, as it may)
-            if lat.abs() > PRISM_RAIL - 0.9 && !airborne_at_rail { let (k0, l0, _) = w.road_frame(wv, pre.x, pre.z); let (px, pz) = wv.path[k0]; let (tx, tz) = wv.tan[k0]; let sg = l0.signum();
-                let base = w.height(px - tz * sg * PRISM_RAIL, pz + tx * sg * PRISM_RAIL); if pre.y + 0.2 > base + PRISM_FENCE { airborne_at_rail = true; } }
-            if std::env::var("DBG2").map(|d| d == format!("{}:{}:{}:{}:{}", i, side, yaw, v, tw)).unwrap_or(false) && f0 % 2 == 0 {
-                let (px, pz) = wv.path[k]; let (tx, tz) = wv.tan[k]; let sg = lat.signum(); let base = w.height(px - tz * sg * PRISM_RAIL, pz + tx * sg * PRISM_RAIL);
-                println!("{:.2} k {} lat {:+.2} y-base {:+.2} sp {:.1} vy {:+.1} contacts {} h {:+.2}", f0 as f64 * dt, k, lat, c.y - base, c.vx.hypot(c.vz), c.vy, c.contacts, c.h); }
-            if c.y < rt.roadh[k] - 6.0 { fell = true; break; } }
-        n += 1; worst = worst.max(maxlat); if (fell || maxlat > PRISM_RAIL) && airborne_at_rail { over += 1; *by_v.entry(v as i64).or_insert(0) += 1; if v < 20.0 { println!("  slow over: idx {} side {} yaw {} tw {}", i, side, yaw, tw); } } else if fell || maxlat > PRISM_RAIL { fails += 1; if fails <= 12 { println!("  through/over: idx {} side {} yaw {} v {} -> max lat {:.2} fell {}", i, side, yaw, v, maxlat, fell); } }
+            let pre = c; c.update(w, &e.obstacles, &tune, dt, &inp);
+            let (k, lat, _) = w.road_frame(wv, c.x, c.z);
+            if left.is_none() && lat.abs() > PRISM_EDGE && c.contacts == 0.0 { left = Some((pre.vy.max(0.0), pre.vx, pre.vz, f0)); }
+            if let Some((vy0, vx0, vz0, f1)) = left { if f0 < f1 + 30 && lat.abs() > PRISM_EDGE { let dv = (c.vx - vx0).hypot(c.vz - vz0); worst_up = worst_up.max(c.vy - vy0);
+                if dv > worst_side { worst_side = dv; worst_where = format!("idx {} side {} steer {} v {}", i, side, yaw, v); } } }
+            if std::env::var("DBG3").map(|d| d == format!("{}:{}:{}:{}:{}", i, side, yaw, v, tw)).unwrap_or(false) && f0 > 36 {
+                println!("{} lat {:+.2} y-deck {:+.2} v ({:+.1},{:+.1}) vy {:+.1} contacts {} roll {:+.2} pitch {:+.2} r {:+.2} fz {:?}", f0, lat, c.y - w.height(wv.path[k].0, wv.path[k].1), c.vx, c.vz, c.vy, c.contacts, c.roll, c.pitch, c.r, c.wh.iter().map(|q| q.fz as i64).collect::<Vec<_>>()); }
+            if c.y < rt.roadh[k] - 6.0 { break; } }
+        n += 1; if left.is_some() { off += 1; }
     } } } } }
-    println!("barriers: {} runs, {} went over the top (airborne above the fence), {} got through it, worst centre offset {:.2} m (rail at {:.2})", n, over, fails, worst, PRISM_RAIL); println!("  over the top by speed (m/s, of 120 each): {:?}", by_v);
+    println!("edge: {} runs, {} went off; over the void, in the half second after the last wheel leaves the deck: most upward speed gained {:+.2} m/s, largest change of horizontal velocity {:.2} m/s ({})", n, off, worst_up, worst_side, worst_where);
     // air control: 6 m up at 30 m/s on the straightest stretch, 0.5 s of input
     w.set_wave_time(0.0);
     for (name, inp) in [("none", Input::default()), ("steer right", Input { steer: 1.0, ..Default::default() }), ("steer left", Input { steer: -1.0, ..Default::default() }), ("throttle", Input { throttle: 1.0, ..Default::default() }), ("brake", Input { brake: 1.0, ..Default::default() })] {
@@ -47,11 +46,5 @@ fn main() {
         for _ in 0..(0.5 / dt) as usize { c.update(w, &e.obstacles, &tune, dt, &inp); }
         let wr = |a: f64| fogwood_core::noise::wrap_a(a).to_degrees(); println!("air {:12}: nose turned {:+.1} deg, course turned {:+.1} deg, speed {:.1} m/s, contacts {}", name, wr(c.h - h0), wr(c.vx.atan2(c.vz) - c0), c.vx.hypot(c.vz), c.contacts);
     }
-    if let Ok(dbg) = std::env::var("DBG") { let v: Vec<f64> = dbg.split(',').map(|x| x.parse().unwrap()).collect();
-        w.set_wave_time(v[4]); let mut c = place(v[0] as usize, 0.0, -v[1] * v[2], v[3], 0.0);
-        for f in 0..(2.5 / dt) as usize { c.update(w, &e.obstacles, &tune, dt, &Input { steer: 0.0, throttle: 1.0, brake: 0.0, hb: false });
-            let (k, lat, _) = w.road_frame(wv, c.x, c.z); let lc = lat.clamp(-3.4, 3.4); let (px, pz) = wv.path[k]; let (tx, tz) = wv.tan[k];
-            let deck = w.height(px - tz * lc, pz + tx * lc);
-            if f % 3 == 0 { println!("{:.2} k {} lat {:+.2} y-deck {:+.2} vy {:+.1} sp {:.1} contacts {} pitch {:+.2} roll {:+.2}", f as f64 * dt, k, lat, c.y - deck, c.vy, c.vx.hypot(c.vz), c.contacts, c.pitch, c.roll); } } }
     let _ = np;
 }

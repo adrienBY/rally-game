@@ -349,7 +349,7 @@ impl Game {
     /// meshes heaved to match (rest shape + lift at each vertex's place along the road; only vertices a wave can reach are touched)
     fn wave_step(&mut self, r: &mut Renderer, w: &World) {
         if self.rt.wave_secs.is_empty() { return; }
-        let wv = w.wave.get_or_init(|| crate::world::Wave { path: self.rt.path.iter().map(|p| (p[0], p[1])).collect(), tan: self.rt.tan.iter().map(|t| (t[0], t[1])).collect(), secs: self.rt.wave_secs.clone() });
+        let wv = w.wave.get_or_init(|| crate::world::Wave::new(&self.rt.path, &self.rt.tan, &self.rt.roadh, &self.rt.wave_secs));
         let t = if self.wave_sim { self.time } else { web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| (d.as_millis() % 60_000) as f64 / 1000.0).unwrap_or(self.time) };
         w.set_wave_time(t);
         if self.wave_mesh.is_empty() { for &id in &self.rt.wave_objs { let Some((rest, _)) = r.car_rest(id) else { continue };

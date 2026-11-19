@@ -1201,22 +1201,6 @@ function prismFurniture() {
     const gg = new THREE.BufferGeometry(); gg.setAttribute("position", new THREE.Float32BufferAttribute(GP, 3)); gg.setAttribute("color", new THREE.Float32BufferAttribute(GC, 3)); gg.setIndex(GI);
     const gm = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }); gm.userData.blend = 2;
     const glow = new THREE.Mesh(gg, gm); glow.frustumCulled = false; glow.userData.dyn = glow.userData.wave = true; scene.add(glow); }
-  // barriers: a glowing fence on both edges (the app holds cars inside it, up to 2.6 m above the deck): posts every 4 m, a bright top rail,
-  // and a faint light panel between - it heaves with the deck like the rest
-  { const RL = ROAD * 1.08 + 0.62, HT = 0.9, P = [], C = [], I = [], FP = [], FC = [], FI = [];
-    const quad = (A, B, Cc, D, col, L, Lc, LI) => { const b = L.length / 3; L.push(...A, ...B, ...Cc, ...D); for (let q = 0; q < 4; q++) Lc.push(...col[q]); LI.push(b, b + 1, b + 2, b, b + 2, b + 3); };
-    for (const sd of [-1, 1]) for (let i = 0; i < NP; i++) { const n = (i + 1) % NP, h = i / 180 + (sd > 0 ? 0.5 : 0), w = hue(h, 1.3), w2 = hue(h + 1 / 180, 1.3);
-      const a0 = at(i, sd * RL, 0), b0 = at(n, sd * RL, 0), a1 = at(i, sd * RL, HT), b1 = at(n, sd * RL, HT), a2 = at(i, sd * RL, HT + 0.11), b2 = at(n, sd * RL, HT + 0.11);
-      quad(a1, b1, b2, a2, [w, w2, [1, 1, 1], [1, 1, 1]], P, C, I);   // top rail
-      if (i % 4 === 0) { const t = TAN[i], d = 0.06; const p0 = at(i, sd * RL, 0), p1 = at(i, sd * RL, HT);
-        quad([p0[0] - t[0] * d, p0[1], p0[2] - t[1] * d], [p0[0] + t[0] * d, p0[1], p0[2] + t[1] * d], [p1[0] + t[0] * d, p1[1], p1[2] + t[1] * d], [p1[0] - t[0] * d, p1[1], p1[2] - t[1] * d], [w, w, [1, 1, 1], [1, 1, 1]].map(c => c.map(v => v * 0.8)), P, C, I); }
-      const k0 = w.map(v => v * 0.05), k1 = w.map(v => v * 0.32), k3 = w2.map(v => v * 0.05), k2 = w2.map(v => v * 0.32);
-      quad(a0, b0, b1, a1, [k0, k3, k2, k1], FP, FC, FI); }
-    const mk = (L, Lc, LI, mat) => { const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute(L, 3)); g.setAttribute("color", new THREE.Float32BufferAttribute(Lc, 3)); g.setIndex(LI);
-      const o = new THREE.Mesh(g, mat); o.frustumCulled = false; o.userData.dyn = o.userData.wave = true; scene.add(o); };
-    mk(P, C, I, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide }));
-    const fm = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }); fm.userData.blend = 2;
-    mk(FP, FC, FI, fm); }
   // start line
   { const cq = canvasTex(16, (g, S) => { for (let y = 0; y < 4; y++) for (let x = 0; x < 16; x++) { g.fillStyle = (x + y) % 2 ? "#141418" : "#f4f2ff"; g.fillRect(x, y * 4, 1, 4); } });
     const P = [], UV = [], I = [], n = 8;

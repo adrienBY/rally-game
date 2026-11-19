@@ -2,14 +2,12 @@
 use crate::noise::*;
 
 pub const ROAD: f64 = 3.4;
-/// Prism: the barriers' distance from the centreline (the fence the page draws stands here)
-pub const PRISM_RAIL: f64 = PRISM_ROAD * 1.08 + 0.62;
+/// Prism: where the deck ends, the outer edge of the glowing kerb the page draws (1.08 x the half-width + 0.5 m); past it is the void
+pub const PRISM_EDGE: f64 = PRISM_ROAD * 1.08 + 0.5;
 /// Prism: the road's half-width (wider than the rally stages: room for one more car across; the page uses the same)
 pub const PRISM_ROAD: f64 = 4.5;
 /// the road's half-width on a map
 pub fn road_half(map: Map) -> f64 { if map == Map::Prism { PRISM_ROAD } else { ROAD } }
-/// Prism: the fence's height above the deck, top rail included (the page draws posts to 0.9 m and the rail to 1.01 m)
-pub const PRISM_FENCE: f64 = 1.01;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Map { Forest = 0, Snow = 1, Canyon = 2, Lakes = 3, Iceland = 4, Touge = 5, Riviera = 6, Prism = 7 }
@@ -159,10 +157,21 @@ pub fn prism_bank(path: &[(f64, f64)]) -> Vec<f64> {
     raw.iter().map(|&v| v as f32 as f64).collect()
 }
 
-/// Prism: travelling waves along the road. `secs` = [from, to, amplitude, wavelength, period] in metres of road and seconds; a section
-/// covering the whole lap has no ramps (its wavelength divides the lap so it closes on itself).
-pub struct Wave { pub path: Vec<(f64, f64)>, pub tan: Vec<(f64, f64)>, pub secs: Vec<[f64; 5]> }
+/// Prism: the deck as the engine drives on it - the road line, its height and banking, and the travelling waves along it. `secs` =
+/// [from, to, amplitude, wavelength, period] in metres of road and seconds; a section covering the whole lap has no ramps (its
+/// wavelength divides the lap so it closes on itself).
+pub struct Wave { pub path: Vec<(f64, f64)>, pub tan: Vec<(f64, f64)>, pub roadh: Vec<f64>, pub bank: Vec<f64>, pub secs: Vec<[f64; 5]> }
 impl Wave {
+    pub fn new(path: &[[f64; 2]], tan: &[[f64; 2]], roadh: &[f64], secs: &[[f64; 5]]) -> Wave {
+        let path: Vec<(f64, f64)> = path.iter().map(|p| (p[0], p[1])).collect(); let bank = prism_bank(&path);
+        Wave { tan: tan.iter().map(|t| (t[0], t[1])).collect(), roadh: roadh.to_vec(), bank, secs: secs.to_vec(), path }
+    }
+    /// the still deck at `s` metres along the road and `lat` across it (as the page draws it: height and banking blended between points)
+    pub fn deck(&self, s: f64, lat: f64) -> f64 {
+        let np = self.path.len(); let k0 = (s.floor() as usize).min(np - 1); let k1 = (k0 + 1) % np; let f = s - k0 as f64;
+        let h = self.roadh[k0] + (self.roadh[k1] - self.roadh[k0]) * f; let b = self.bank[k0] + (self.bank[k1] - self.bank[k0]) * f;
+        h - 0.12 + lat * b
+    }
     /// deck lift at `s` metres along the road, at time `t`
     pub fn at(&self, s: f64, t: f64) -> f64 {
         let np = self.path.len() as f64; let tau = std::f64::consts::TAU; let mut h = 0.0;
@@ -186,7 +195,8 @@ impl World {
         let i = fx as usize; let j = fz as usize; let u = fx - i as f64; let v = fz - j as f64; let k = j * self.gnx + i;
         (g[k] as f64 * (1.0 - u) + g[k + 1] as f64 * u) * (1.0 - v) + (g[k + self.gnx] as f64 * (1.0 - u) + g[k + self.gnx + 1] as f64 * u) * v
     }
-    #[inline] pub fn height(&self, x: f64, z: f64) -> f64 { self.bil(&self.h, x, z) + self.wave_h(x, z) }
+    /// ground height. Prism: the deck itself, exact to its drawn edge, and nothing beyond it (no grid slope to trip a wheel at the edge)
+    #[inline] pub fn height(&self, x: f64, z: f64) -> f64 { if self.map == Map::Prism { if let Some(h) = self.prism_height(x, z) { return h; } } self.bil(&self.h, x, z) }
     /// the static ground only (no prism waves)
     #[inline] pub fn base_height(&self, x: f64, z: f64) -> f64 { self.bil(&self.h, x, z) }
     pub fn set_wave_time(&self, t: f64) { self.wave_t.store(t.to_bits(), std::sync::atomic::Ordering::Relaxed); }
@@ -199,9 +209,10 @@ impl World {
         let np = wv.path.len(); let k = (self.pi[j * self.gnx + i].max(0) as usize).min(np.saturating_sub(1)); let (px, pz) = wv.path[k]; let (tx, tz) = wv.tan[k];
         (k, (x - px) * -tz + (z - pz) * tx, (k as f64 + (x - px) * tx + (z - pz) * tz).rem_euclid(np as f64))
     }
-    #[inline] fn wave_h(&self, x: f64, z: f64) -> f64 {
-        let Some(wv) = self.wave.get() else { return 0.0 }; if wv.path.is_empty() { return 0.0; }
-        wv.at(self.road_s(wv, x, z), self.wave_time())
+    fn prism_height(&self, x: f64, z: f64) -> Option<f64> {
+        let wv = self.wave.get()?; if wv.path.is_empty() || wv.roadh.len() != wv.path.len() { return None; }
+        let (_, lat, s) = self.road_frame(wv, x, z);
+        Some(if lat.abs() <= PRISM_EDGE { wv.deck(s, lat) + wv.at(s, self.wave_time()) } else { PRISM_VOID })
     }
     #[inline] pub fn path_dist(&self, x: f64, z: f64) -> f64 { self.bil(&self.pd, x, z) }
     /// the road's half-width here
