@@ -1203,6 +1203,7 @@ function prismFurniture() {
     const glow = new THREE.Mesh(gg, gm); glow.frustumCulled = false; glow.userData.dyn = glow.userData.wave = true; scene.add(glow); }
   // start line
   { const cq = canvasTex(16, (g, S) => { for (let y = 0; y < 4; y++) for (let x = 0; x < 16; x++) { g.fillStyle = (x + y) % 2 ? "#141418" : "#f4f2ff"; g.fillRect(x, y * 4, 1, 4); } });
+    cq.minFilter = THREE.NearestFilter; cq.generateMipmaps = false;   // crisp chequers from far off too (mipmaps fade them to grey)
     const P = [], UV = [], I = [], n = 8;
     for (let r = 0; r < 2; r++) for (let a = 0; a <= n; a++) { const lat = (a / n * 2 - 1) * ROAD; P.push(...at((r ? 1 : NP - 1) % NP, lat, 0.06)); UV.push(a / n, r); }
     for (let a = 0; a < n; a++) I.push(a, a + n + 1, a + 1, a + 1, a + n + 1, a + n + 2);

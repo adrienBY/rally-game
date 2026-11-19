@@ -182,11 +182,11 @@ impl Car {
             let wx = self.x + ch * w.lx + sh * w.lz; let wz = self.z - sh * w.lx + ch * w.lz; w.wx = wx; w.wz = wz;
             let wpd = world.path_dist(wx, wz); w.road = wpd < world.road() + 0.25; w.bank = snow && !w.road && wpd < ROAD + 1.8; if w.road { road_n += 1; }
             let hg = world.height(wx, wz) + (vnoise(wx * 0.45 + 3.1, wz * 0.45) - 0.5) * (if w.road { 0.05 } else { 0.16 });
-            // prism: a wheel that has swung back under the deck (the car already dropping past the edge) finds no ground there - the deck
-            // is a thin ribbon, not a block to be shoved out of
-            // (and one coming in from over the void below the deck's surface stays in the void: no ground appears inside the tyre)
+            // prism: a wheel coming back in from over the void (the car already dropping past the edge) below the deck's surface finds no
+            // ground there - the deck is a thin ribbon, not a block to be shoved out of. A wheel that was on the deck always keeps it, even
+            // if the deck rose a little past it (a spawn, a wave).
             let wy = self.y + w.lz * sp + w.lx * sr;
-            let hg = if prism && (wy < hg - 0.6 || (w.hg < -300.0 && wy < hg + REST * 0.5)) { crate::world::PRISM_VOID } else { hg };
+            let hg = if prism && w.hg < -300.0 && wy < hg - 0.05 { crate::world::PRISM_VOID } else { hg };
             let d = wy - hg; let comp = REST - d;
             // prism: the ground under a wheel can appear or vanish at the edge - damp from where the tyre is now, not from the void
             let rate = (comp - if prism { w.comp.max(comp.min(0.0) - 0.05) } else { w.comp }) / dt;

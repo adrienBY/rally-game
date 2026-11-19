@@ -51,7 +51,7 @@ fn main() {
             for c in 0..chs { for i in 0..frames { let q = (i * ch as usize + c) * 2; m.extend_from_slice(&data[q..q + 2]); } }
             fogwood_audio::native::message(&m); println!("loaded {} {} ch {} Hz {} frames", f, chs, rate, frames);
         }
-        let mut g = Game::new(rt, Persist::new("/tmp/game_host.sav")); g.wave_sim = std::env::var("FW_REALTIME").is_err(); if let Ok(n) = std::env::var("DUSTN") { g.dust = fogwood_core::game::dust::Dust::new(n.parse().unwrap_or(6000), 0x5EED); }   // a scene dumped from the browser build has the browser's small dust buffer
+        let mut g = Game::new(rt, Persist::new("/tmp/game_host.sav")); g.wave_sim = std::env::var("FW_REALTIME").is_err(); g.wave_t0 = std::env::var("FW_WAVE_T0").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0); if let Ok(n) = std::env::var("DUSTN") { g.dust = fogwood_core::game::dust::Dust::new(n.parse().unwrap_or(6000), 0x5EED); }   // a scene dumped from the browser build has the browser's small dust buffer
         g.resize(w as f64, h as f64, [0.0; 4]); if std::env::var("NOLOD").is_err() { g.attach(&mut r); }
         let gl = r.gl();
         let tex = gl.create_texture().unwrap(); gl.bind_texture(glow::TEXTURE_2D, Some(tex));
@@ -111,7 +111,8 @@ fn main() {
                     "cars" => { let pl = g.race.player; for (k, c) in g.race.cars.iter().enumerate() { let s = if k == pl { &g.car } else { &c.car };
                         println!("t={:.2} car {} {} x={:.2} z={:.2} u={:.1} prog={:.0} bot={:?} remote={} ai={} left={} fin={}", t, k, if k == pl { "YOU".to_string() } else { c.tag() }, s.x, s.z, s.u, c.prog, c.bot, c.remote.map(|r| format!("{:08x}", r)).unwrap_or("-".into()), c.is_ai(), c.left, c.finished); }
                         if let Some((b, r, np, links)) = fogwood_core::net::with(|s| (s.race_bots, s.car_rate(), s.peers.len(), s.peers.values().map(|p| format!("{:?}", p.link())).collect::<Vec<_>>())) { println!("t={:.2} race_bots={} rate={:?} peers={} {:?} msg={:?}", t, b, r, np, links, g.msg); } }
-                    "state" => { let c = &g.car; println!("t={:.2} state={} x={:.3} z={:.3} h={:.4} u={:.2} gear={} rpm={:.0} lap={} best={:?} race={} pos={} phase={:?}", t, if g.state == State::Drive { "drive" } else { "title" }, c.x, c.z, c.h, c.u, c.gear, c.rpm, g.lap, g.best, g.race.on, g.race.pos, g.race.phase); if g.race.on { println!("  rival resets {:?}", g.race.cars.iter().map(|c| c.resets).collect::<Vec<_>>()); } }
+                    "state" => { let c = &g.car; println!("t={:.2} state={} x={:.3} z={:.3} h={:.4} u={:.2} gear={} rpm={:.0} lap={} best={:?} race={} pos={} phase={:?}", t, if g.state == State::Drive { "drive" } else { "title" }, c.x, c.z, c.h, c.u, c.gear, c.rpm, g.lap, g.best, g.race.on, g.race.pos, g.race.phase); if g.race.on { println!("  rival resets {:?}", g.race.cars.iter().map(|c| c.resets).collect::<Vec<_>>()); }
+                        { let gd = fogwood_core::bridge::lock(); if let Some(e) = gd.as_ref() { println!("  car above ground {:+.3} m", g.car.y - e.world.height(g.car.x, g.car.z)); } } }
                     _ => println!("unknown {}", act),
                 }
             }

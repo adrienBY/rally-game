@@ -136,7 +136,7 @@ impl Persist {
 pub struct Game {
     pub rt: Rt, pub np: usize, pub snow: bool, pub can: bool, pub lak: bool, pub tou: bool, pub riv: bool, pub pri: bool, pub pri_last: Option<usize>,
     /// prism waves: run on the game clock instead of the wall clock (headless runs faster than real time); the heaving deck meshes
-    pub wave_sim: bool, wave_mesh: Vec<WaveMesh>, wave_tab: Vec<f32>,
+    pub wave_sim: bool, pub wave_t0: f64, wave_mesh: Vec<WaveMesh>, wave_tab: Vec<f32>,
     pub tune: Tune, pub cam_follow: f64, pub car: Car, pub rpm_shown: f64, pub shake: f64, pub car_hit: f64, pub prev_throttle: f64,
     pub state: State, pub g_t: f64, pub lap: i32, pub lap_start: f64, pub best: Option<f64>, pub flags: [bool; 3], pub last_idx: usize,
     pub msg: String, pub msg_t: f64, pub wrong_t: f64, pub started: bool, pub go: f64,
@@ -198,7 +198,7 @@ impl Game {
         let race = Race::new(&rt, &ps);
         let ncull = rt.cull.len(); let nglit = rt.glit.len();
         let mut g = Game {
-            np, snow: mid == 1, can: mid == 2, lak: mid == 3, tou: mid == 5, riv: mid == 6, pri: mid == 7, pri_last: None, wave_sim: false, wave_mesh: Vec::new(), wave_tab: Vec::new(),
+            np, snow: mid == 1, can: mid == 2, lak: mid == 3, tou: mid == 5, riv: mid == 6, pri: mid == 7, pri_last: None, wave_sim: false, wave_t0: 0.0, wave_mesh: Vec::new(), wave_tab: Vec::new(),
             tune: cars::tune_for(&Tune::from_slice(&tv), ps.car), base_tune: Tune::from_slice(&tv), gar: Default::default(), car_vis: None, paint_vis: None, menu: menu::fresh(), crash: crash::Crash::new(), cam_follow, car: Car::new(), rpm_shown: 900.0, shake: 0.0, car_hit: 0.0, prev_throttle: 0.0,
             state: State::Title, g_t: 0.0, lap: 1, lap_start: 0.0, best, flags: [false; 3], last_idx: 0, msg: String::new(), msg_t: 0.0, wrong_t: 0.0, started: false, go: 0.0,
             cam: CamState { y: 0.0, h: 0.0, init: false, mode: ps.cam_mode as i32, fov: 56.0, lag: 0.0, cp: None, cr: None, shot: -1, cut_t: 0.0, passed: 0.0, anchor: [0.0; 3], target: 0, side: 1.0 },
@@ -241,7 +241,7 @@ impl Game {
         car.x = p[0]; car.z = p[1]; car.h = t[0].atan2(t[1]); car.vx = 0.0; car.vz = 0.0; car.r = 0.0; car.gear = 1.0; car.rpm = 900.0; car.steer = 0.0;
         car.ax_f = 0.0; car.ay_f = 0.0; car.y = w.height(car.x, car.z) + 0.075; car.vy = 0.0; car.pitch = 0.0; car.roll = 0.0; car.pr = 0.0; car.rr = 0.0;
         car.air_t = 0.0; car.landed = false; car.land_v = 0.0;
-        for wh in car.wh.iter_mut() { wh.w = 0.0; wh.comp = 0.135; wh.d = 0.075; wh.fz = 2900.0; }
+        for wh in car.wh.iter_mut() { wh.w = 0.0; wh.comp = 0.135; wh.d = 0.075; wh.fz = 2900.0; wh.hg = car.y - 0.075; }
         car.hb_t = 0.0; car.p_t = 0.0; car.p_b = 0.0; car.impact = 0.0;
     }
     pub fn place_at(&mut self, w: &World, i: usize) { Self::place_raw(&mut self.car, &self.rt, w, i); self.cam.init = false; self.crash.repair(); }
@@ -350,7 +350,7 @@ impl Game {
     fn wave_step(&mut self, r: &mut Renderer, w: &World) {
         if self.rt.wave_secs.is_empty() { return; }
         let wv = w.wave.get_or_init(|| crate::world::Wave::new(&self.rt.path, &self.rt.tan, &self.rt.roadh, &self.rt.wave_secs));
-        let t = if self.wave_sim { self.time } else { web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| (d.as_millis() % 60_000) as f64 / 1000.0).unwrap_or(self.time) };
+        let t = if self.wave_sim { self.wave_t0 + self.time } else { web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| (d.as_millis() % 60_000) as f64 / 1000.0).unwrap_or(self.time) };
         w.set_wave_time(t);
         if self.wave_mesh.is_empty() { for &id in &self.rt.wave_objs { let Some((rest, _)) = r.car_rest(id) else { continue };
             let mut live = Vec::new(); let mut s = Vec::new();
@@ -411,6 +411,7 @@ impl Game {
         let guard = bridge::lock(); let Some(eng) = guard.as_ref() else { return };
         let w = &eng.world; let obs = &eng.obstacles;
         self.time += dt;
+        if self.pri { self.wave_step(r, w); }   // first: the deck (and its waves) must be in place before anything is put on it
         self.fps_acc += dt; self.fps_n += 1;
         if self.fps_n == 90 { if !self.ps.downgraded && self.fps_acc / 90.0 > 1.0 / 36.0 && self.ps.pix_idx > 0 { self.ps.pix_idx -= 1; let (a, b, c) = (self.w, self.h, self.inset_px); self.resize(a, b, c); self.ps.downgraded = true; } self.fps_acc = 0.0; self.fps_n = 0; }
         let gust = clamp(0.5 + (fbm(self.time * 0.06, 3.3, 3) - 0.5) * 1.8, 0.0, 1.0); self.wind = gust;
@@ -432,7 +433,6 @@ impl Game {
         let pk = self.ps.paint.get(want).copied().unwrap_or(0);
         if self.paint_vis != Some((want, pk)) { if let Some((paint, alt)) = self.rt.liveries.get(want) {
             let tex = if pk == 0 { None } else { alt.get(pk - 1).map(|&o| r.obj_map(o)) }; for &o in paint { r.set_map(o, tex); } } self.paint_vis = Some((want, pk)); }
-        if self.pri { self.wave_step(r, w); }
         let paused = self.settings_paused();   // settings open while driving alone: the world holds still
         let pre = (self.car.vx, self.car.vz, self.car.r);
         let shifted = if paused { false } else { self.car.update(w, obs, &self.tune, dt, &inp) }; lap!(0);

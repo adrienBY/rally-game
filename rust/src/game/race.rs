@@ -92,7 +92,7 @@ pub(crate) fn mk_car(g: &mut Game, r: Option<usize>, k: usize, lat: f64) -> RCar
 }
 /// rcPlace: on the road at index i, lat metres right of the centre line, optionally already rolling
 pub(crate) fn rc_place(c: &mut Car, rt: &Rt, w: &World, i: usize, lat: f64, speed: f64) {
-    Game::place_raw(c, rt, w, i); let tn = rt.tan[i]; c.x += -tn[1] * lat; c.z += tn[0] * lat; c.y = w.height(c.x, c.z) + 0.075;
+    Game::place_raw(c, rt, w, i); let tn = rt.tan[i]; c.x += -tn[1] * lat; c.z += tn[0] * lat; c.y = w.height(c.x, c.z) + 0.075; for wh in c.wh.iter_mut() { wh.hg = c.y - 0.075; }
     if speed > 0.0 { c.vx = tn[0] * speed; c.vz = tn[1] * speed; c.gear = if speed > 20.0 { 3.0 } else { 2.0 }; c.rpm = 4300.0; for wh in c.wh.iter_mut() { wh.w = speed / super::TIRE_R; } }
 }
 
