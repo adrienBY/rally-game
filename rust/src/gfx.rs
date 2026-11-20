@@ -107,13 +107,13 @@ impl Bench {
             ivc.iter().filter(|v| **v > 34.0).count(), ivc.iter().filter(|v| **v > 34.0).count() as f32 / n * 100.0);
         let avg = |f: &dyn Fn(&Row) -> f32| self.rows.iter().map(f).sum::<f32>() / n;
         let gpu: Vec<&Row> = self.rows.iter().filter(|r| r.gpu.0 >= 0.0).collect();
-        let _ = writeln!(out, "# averages ms: game tick {:.2} [physics {:.2} race {:.2} sound {:.2} fx {:.2} camera {:.2} rivals {:.2} world {:.2} hud {:.2}] draw cpu {:.2} gpu scene {} gpu post {}",
+        let _ = writeln!(out, "# averages ms: game tick {:.2} [physics {:.2} race {:.2} body+sound {:.2} fx {:.2} camera {:.2} car+dust uploads {:.2} world {:.2} hud {:.2}] draw cpu {:.2} gpu scene {} gpu post {}",
             avg(&|r| r.tick), avg(&|r| r.prof[0]), avg(&|r| r.prof[1]), avg(&|r| r.prof[2]), avg(&|r| r.prof[3]), avg(&|r| r.prof[4]), avg(&|r| r.prof[5]), avg(&|r| r.prof[6]), avg(&|r| r.prof[7]), avg(&|r| r.draw),
             if gpu.is_empty() { "n/a".into() } else { format!("{:.2}", gpu.iter().map(|r| r.gpu.0).sum::<f32>() / gpu.len() as f32) },
             if gpu.is_empty() { "n/a".into() } else { format!("{:.2}", gpu.iter().map(|r| r.gpu.1).sum::<f32>() / gpu.len() as f32) });
         let mut worst: Vec<&Row> = self.rows.iter().skip(1).collect(); worst.sort_by(|a, b| b.dt.partial_cmp(&a.dt).unwrap());
         let _ = writeln!(out, "# worst frames (frame: frame time ms): {}", worst.iter().take(12).map(|r| format!("{}: {:.1}", r.id, r.dt)).collect::<Vec<_>>().join(", "));
-        let _ = writeln!(out, "frame,t_ms,dt_ms,interval_ms,native_ms,tick_ms,physics_ms,race_ms,sound_ms,fx_ms,camera_ms,rivals_ms,world_ms,hud_ms,draw_cpu_ms,gpu_scene_ms,gpu_post_ms,calls,tris,state,kmh,race,rivals,dust,hud_upload,lw,lh,thermal,battery_c");
+        let _ = writeln!(out, "frame,t_ms,dt_ms,interval_ms,native_ms,tick_ms,physics_ms,race_ms,body_sound_ms,fx_ms,camera_ms,car_dust_upload_ms,world_ms,hud_ms,draw_cpu_ms,gpu_scene_ms,gpu_post_ms,calls,tris,state,kmh,race,rivals,dust,hud_upload,lw,lh,thermal,battery_c");
         for r in &self.rows {
             let g = |v: f32| if v >= 0.0 { format!("{:.3}", v) } else { String::new() };
             let _ = writeln!(out, "{},{:.1},{:.2},{:.2},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{},{},{},{},{},{:.0},{},{},{},{},{},{},{},{:.1}",

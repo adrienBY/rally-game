@@ -62,7 +62,7 @@ fn main() {
         steps.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap());
         let end = steps.last().map(|s| s.0).unwrap_or(1.0) + 0.05; let dt = 1.0 / 60.0; let mut t = 0.0; let wall0 = std::time::Instant::now(); let mut k = 0; let mut log = false; let mut next_log = 0.0; let mut burst: i32 = 0;
         let mut fuzz: Option<u64> = std::env::var("FUZZ").ok().and_then(|v| v.parse().ok()).map(|v: u64| v | 1);
-        let mut tick_ms = 0.0f64; let mut ticks = 0;
+        let mut tick_ms = 0.0f64; let mut ticks = 0; let mut profs: Vec<[f32; 8]> = Vec::new();
         let mut audio = vec![0f32; 800 * 2]; let (mut arms, mut apk, mut anb, mut aclip) = (0f64, 0f32, 0f64, 0f64);
         while t < end {
             while k < steps.len() && steps[k].0 <= t {
@@ -129,7 +129,7 @@ fn main() {
                 else if p < 0.105 { g.garage_paint(1); } else if p < 0.107 { g.resize((200.0 + rnd() * 1800.0), (150.0 + rnd() * 900.0), [0.0; 4]); }
                 else if p < 0.108 { g.to_title(); } else if p < 0.109 { g.start_game(); g.auto = true; }
             }
-            let t0 = std::time::Instant::now(); let m0 = g.msg.clone(); g.tick(&mut r, dt); if g.msg != m0 && !g.msg.is_empty() { println!("t={:.2} msg {}", t, g.msg); } if std::env::var("HUDCHECK").is_ok() && !g.hud.verify() { println!("HUD MISMATCH at t={:.2}", t); } tick_ms += t0.elapsed().as_secs_f64() * 1000.0; ticks += 1;
+            let t0 = std::time::Instant::now(); let m0 = g.msg.clone(); g.tick(&mut r, dt); if g.msg != m0 && !g.msg.is_empty() { println!("t={:.2} msg {}", t, g.msg); } if std::env::var("HUDCHECK").is_ok() && !g.hud.verify() { println!("HUD MISMATCH at t={:.2}", t); } tick_ms += t0.elapsed().as_secs_f64() * 1000.0; ticks += 1; if g.state == fogwood_core::game::State::Drive { profs.push(g.prof); }
             fogwood_audio::native::render(&mut audio); { let (mut s2, mut pk) = (0f64, 0f32); for v in &audio { s2 += (*v as f64) * (*v as f64); pk = pk.max(v.abs()); if !v.is_finite() { println!("audio NaN"); break; } } arms += s2 / audio.len() as f64; apk = apk.max(pk); anb += 1.0; if pk >= 0.999 { aclip += 1.0; } }
             if log && t >= next_log { next_log = t + 1.0; r.draw(Some(fb), w, h).expect("draw"); let c = &g.car; println!("log calls={} tris={} t={:.1} x={:.2} z={:.2} kmh={:.0} gear={} sunvis={:.2} race_t={:.1} pos={} cars={:?}", r.stats.0, r.stats.1, t, c.x, c.z, c.u * 3.6, c.gear, g.sun_vis, g.race.t, g.race.pos,
                 g.race.cars.iter().map(|q| (q.r.map(|i| fogwood_core::game::race::RIVALS[i].tag).unwrap_or("YOU"), (q.prog as i64), q.resets)).collect::<Vec<_>>()); }
@@ -142,5 +142,8 @@ fn main() {
             if std::env::var("FW_REALTIME").is_ok() { let target = wall0.elapsed().as_secs_f64(); if t > target { std::thread::sleep(std::time::Duration::from_secs_f64(t - target)); } }
         }
         println!("tick avg {:.3} ms over {} frames (incl. hud)", tick_ms / ticks as f64, ticks);
+        if !profs.is_empty() { let names = ["physics", "race", "sound+crash", "fx", "camera", "rivals", "world", "hud"];
+            for (k, nm) in names.iter().enumerate() { let mut v: Vec<f32> = profs.iter().map(|p| p[k]).collect(); v.sort_by(|a, b| a.partial_cmp(b).unwrap()); let n = v.len();
+                println!("  {:12} mean {:.3} p50 {:.3} p95 {:.3} p99 {:.3} max {:.3} ms", nm, v.iter().sum::<f32>() / n as f32, v[n / 2], v[n * 95 / 100], v[n * 99 / 100], v[n - 1]); } }
     }
 }

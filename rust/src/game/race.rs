@@ -354,12 +354,15 @@ pub fn gfx(g: &mut Game, r: &mut Renderer, w: &World) {
         let c = &mut g.race.cars[k]; c.tag_on = v[2] < 1.0 && v[0].abs() < 1.0 && v[1].abs() < 1.0 && d < 70.0 && d > 3.0;
         c.tag_x = (v[0] * 0.5 + 0.5) * g.lw as f64; c.tag_y = (0.5 - v[1] * 0.5) * g.lh as f64;
     }
-    for (pi, p) in g.rt.rg_parts.iter().enumerate() { r.set_instances(p.obj, (mats[pi].len() / 16) as i32, &mats[pi]); if !cols[pi].is_empty() { r.set_instance_colors(p.obj, &cols[pi]); } }
+    // the tints only change when the field does: upload them then, not every frame
+    if g.rg_cols.len() != cols.len() { g.rg_cols = vec![Vec::new(); cols.len()]; }
+    for (pi, p) in g.rt.rg_parts.iter().enumerate() { r.set_instances(p.obj, (mats[pi].len() / 16) as i32, &mats[pi]);
+        if !cols[pi].is_empty() && cols[pi] != g.rg_cols[pi] { r.set_instance_colors(p.obj, &cols[pi]); g.rg_cols[pi] = cols[pi].clone(); } }
     if let Some(s) = g.rt.rg_shadow { r.set_instances(s, (sh.len() / 16) as i32, &sh); }
 }
 /// hide the rivals again (back on the menu)
 pub fn hide(g: &mut Game, r: &mut Renderer) {
-    if !g.race.shown { return; } for p in &g.rt.rg_parts { r.set_vis(p.obj, false); } if let Some(s) = g.rt.rg_shadow { r.set_vis(s, false); } g.race.shown = false;
+    if !g.race.shown { return; } g.rg_cols.clear(); for p in &g.rt.rg_parts { r.set_vis(p.obj, false); } if let Some(s) = g.rt.rg_shadow { r.set_vis(s, false); } g.race.shown = false;
 }
 
 /// rival engines: pitched from revs, doppler-shifted, panned, fading with distance (message 8: per rival rate, hi gain, gain, lowpass, pan)

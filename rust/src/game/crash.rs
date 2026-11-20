@@ -81,7 +81,8 @@ impl Shape {
 }
 
 /// one body mesh tied to the nodes
-struct Skin { obj: usize, rest_p: Vec<f32>, rest_n: Vec<f32>, nodes: Vec<[u16; 4]>, w: Vec<[f32; 4]>, pos: Vec<f32>, nrm: Vec<f32> }
+/// `wr`: each vertex's crease pattern (wave, gradient), fixed by its rest position - worked out once, not on every re-skin
+struct Skin { obj: usize, rest_p: Vec<f32>, rest_n: Vec<f32>, nodes: Vec<[u16; 4]>, w: Vec<[f32; 4]>, pos: Vec<f32>, nrm: Vec<f32>, wr: Vec<(f32, [f32; 3])> }
 
 pub struct Crash {
     x0: Vec<[f32; 3]>, x: Vec<[f32; 3]>, v: Vec<[f32; 3]>, home: Vec<[f32; 3]>,
@@ -230,7 +231,8 @@ impl Crash {
             let Some((p, n)) = r.car_rest(obj) else { continue };
             let (mut nodes, mut w) = (Vec::with_capacity(p.len() / 3), Vec::with_capacity(p.len() / 3));
             for v in p.chunks_exact(3) { let (a, b) = self.weights([v[0], v[1], v[2]]); nodes.push(a); w.push(b); }
-            self.skins.push(Skin { obj, rest_p: p.clone(), rest_n: n.clone(), nodes, w, pos: p.clone(), nrm: n.clone() });
+            let wr = p.chunks(3).map(|q| wrinkle([q[0], q[1], q[2]])).collect();
+            self.skins.push(Skin { obj, rest_p: p.clone(), rest_n: n.clone(), nodes, w, pos: p.clone(), nrm: n.clone(), wr });
         }
         self.dirty = self.damaged;
     }
@@ -253,7 +255,7 @@ impl Crash {
                 // crumpled metal: creases where the beams yielded
                 let amp = (cr * 0.12).min(0.06);
                 if amp > 1e-4 && has_n {
-                    let (wv, g) = wrinkle(rp); for q in 0..3 { p[q] += nn[q] * amp * wv; }
+                    let (wv, g) = sk.wr[v]; for q in 0..3 { p[q] += nn[q] * amp * wv; }
                     let gn = dot(g, nn); let k = (amp * 0.9).min(0.05);
                     for q in 0..3 { nn[q] -= (g[q] - gn * nn[q]) * k; } let nl = len(nn); if nl > 1e-6 { for q in 0..3 { nn[q] /= nl; } }
                 }

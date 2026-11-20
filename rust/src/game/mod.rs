@@ -138,6 +138,8 @@ pub struct Game {
     pub rt: Rt, pub np: usize, pub snow: bool, pub can: bool, pub lak: bool, pub tou: bool, pub riv: bool, pub pri: bool, pub pri_last: Option<usize>,
     /// Ember Peak: the volcano's hazards are on; the shared clock's reading last frame (fireballs that landed in between kick)
     pub vol: bool, volc_tp: f64,
+    /// the rivals' tint colours as last uploaded (they only change when the field changes), and the crash damage's half-rate clock
+    pub rg_cols: Vec<Vec<f32>>, crash_flip: bool, crash_dt: f64,
     /// prism waves: run on the game clock instead of the wall clock (headless runs faster than real time); the heaving deck meshes
     pub wave_sim: bool, pub wave_t0: f64, wave_mesh: Vec<WaveMesh>, wave_tab: Vec<f32>,
     pub tune: Tune, pub cam_follow: f64, pub car: Car, pub rpm_shown: f64, pub shake: f64, pub car_hit: f64, pub prev_throttle: f64,
@@ -201,7 +203,7 @@ impl Game {
         let race = Race::new(&rt, &ps);
         let ncull = rt.cull.len(); let nglit = rt.glit.len();
         let mut g = Game {
-            np, snow: mid == 1, can: mid == 2, lak: mid == 3, tou: mid == 5, riv: mid == 6, pri: mid == 7, pri_last: None, vol: mid == 8, volc_tp: -1.0, wave_sim: false, wave_t0: 0.0, wave_mesh: Vec::new(), wave_tab: Vec::new(),
+            np, snow: mid == 1, can: mid == 2, lak: mid == 3, tou: mid == 5, riv: mid == 6, pri: mid == 7, pri_last: None, vol: mid == 8, volc_tp: -1.0, rg_cols: Vec::new(), crash_flip: false, crash_dt: 0.0, wave_sim: false, wave_t0: 0.0, wave_mesh: Vec::new(), wave_tab: Vec::new(),
             tune: cars::tune_for(&Tune::from_slice(&tv), ps.car), base_tune: Tune::from_slice(&tv), gar: Default::default(), car_vis: None, paint_vis: None, menu: menu::fresh(), crash: crash::Crash::new(), cam_follow, car: Car::new(), rpm_shown: 900.0, shake: 0.0, car_hit: 0.0, prev_throttle: 0.0,
             state: State::Title, g_t: 0.0, lap: 1, lap_start: 0.0, best, flags: [false; 3], last_idx: 0, msg: String::new(), msg_t: 0.0, wrong_t: 0.0, started: false, go: 0.0,
             cam: CamState { y: 0.0, h: 0.0, init: false, mode: ps.cam_mode as i32, fov: 56.0, lag: 0.0, cp: None, cr: None, shot: -1, cut_t: 0.0, passed: 0.0, anchor: [0.0; 3], target: 0, side: 1.0 },
@@ -228,7 +230,7 @@ impl Game {
     /// the GPU copy of the scene was rebuilt (lost GL context): push every object state again
     pub fn scene_reloaded(&mut self) {
         self.tile_lod.clear(); self.obj_last.clear(); for v in self.cull_vis.iter_mut() { *v = !*v; } self.shadow_op = -1.0; for v in self.glit_op.iter_mut() { *v = -1.0; }
-        self.race.shown = false; self.race_was = self.race.on; self.hud.invalidate(); self.car_vis = None; self.paint_vis = None; self.crash.rebind();
+        self.race.shown = false; self.race_was = self.race.on; self.hud.invalidate(); self.rg_cols.clear(); self.car_vis = None; self.paint_vis = None; self.crash.rebind();
     }
     pub fn clock_ms(&self) -> f64 { self.clock.elapsed().as_secs_f64() * 1000.0 }
     pub fn stage_km(&self) -> String { format!("{:.2}", self.np as f64 / 1000.0) }
@@ -477,7 +479,10 @@ impl Game {
             if let Some((p, d)) = crash::locate(self.car.vx - pre.0, self.car.vz - pre.1, self.car.r - pre.2, self.car.h, crate::physics::M, self.tune.iz) {
                 let shape = self.what_hit(w, obs, p, d); self.crash.hit(shape, d, self.car.impact as f32); } }
         if self.crash.model != Some(want) { if let Some(objs) = self.rt.car_models.get(want) { let objs = objs.clone(); self.crash.bind(r, want, &objs); } }
-        if !paused { self.crash.step(dt as f32); } self.crash.upload(r);
+        // the bodywork settles at 30 Hz, its spring simulation on one frame and re-skinning the body on the next: together they were
+        // the frame's other big spike on phones
+        if !paused { self.crash_dt += dt; } self.crash_flip = !self.crash_flip;
+        if self.crash_flip { if self.crash_dt > 0.0 { self.crash.step(self.crash_dt as f32); } self.crash_dt = 0.0; } else { self.crash.upload(r); }
         if self.tel.is_some() && !paused { let ti = path_idx(w, self.car.x, self.car.z); self.tel_frame(&inp, dt, ti); }
         self.update_audio(w, dt, &inp, gust); lap!(2);
         if self.car.landed { let v = -self.car.land_v; self.car.landed = false;
@@ -810,7 +815,9 @@ impl Game {
 
     fn hud_frame(&mut self, r: &mut Renderer) {
         self.hud_tick = !self.hud_tick;
-        if !(self.hud_tick || self.state != State::Drive || !self.touches.is_empty() || self.loading.is_some()) { return; }
+        // driving, the HUD redraws every other frame (30 Hz) - touching the controls included: a pad lighting up a frame later is not
+        // felt, and the HUD was the biggest single cost of a frame on phones
+        if !(self.hud_tick || self.state != State::Drive || self.loading.is_some()) { return; }
         draw::hud(self);
         if let Some(rects) = self.hud.finish() { r.set_hud_rects(&self.hud.bytes, self.hud.w, self.hud.h, &rects); self.hud_uploaded = true; }
     }

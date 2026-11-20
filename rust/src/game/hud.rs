@@ -14,12 +14,32 @@ pub const EDGE: Col = rgba(233, 236, 226, 0.4);
 pub const SHADOW: Col = rgba(0, 0, 0, 0.55);
 
 /// Draw calls are recorded (integer pixel bounds + colour); when a frame's list equals the last one nothing is rasterized or uploaded.
-pub struct Canvas { pub w: i32, pub h: i32, pub bytes: Vec<u8>, ops: Vec<[u32; 6]>, last_ops: Vec<[u32; 6]>, pub last: Vec<u8>, pub fill: Col, dirty: bool }
+pub struct Canvas { pub w: i32, pub h: i32, pub bytes: Vec<u8>, ops: Vec<[u32; 6]>, last_ops: Vec<[u32; 6]>, pub last: Vec<u8>, pub fill: Col, dirty: bool, diff: Diff }
+
+/// The frame-to-frame op diff: a counting hash table kept between frames (open addressing, a cheap multiply-rotate hash, slots
+/// stamped with a generation instead of cleared) - a few thousand ops a frame, so the general-purpose HashMap was most of the HUD's cost.
+#[derive(Default)]
+struct Diff { keys: Vec<[u32; 6]>, cnt: Vec<i32>, gen: Vec<u32>, now: u32, used: Vec<u32> }
+impl Diff {
+    #[inline] fn hash(k: &[u32; 6]) -> u32 { let mut h: u32 = 0; for v in k { h = (h.rotate_left(5) ^ v).wrapping_mul(0x9E37_79B9); } h ^ (h >> 15) }
+    fn begin(&mut self, n: usize) {
+        let want = (n * 2).next_power_of_two().max(1024);
+        if self.keys.len() < want { self.keys = vec![[0; 6]; want]; self.cnt = vec![0; want]; self.gen = vec![0; want]; self.now = 0; }
+        self.now = self.now.wrapping_add(1); if self.now == 0 { for g in self.gen.iter_mut() { *g = 0; } self.now = 1; }
+        self.used.clear();
+    }
+    /// the slot for `k` (claimed for this generation if new)
+    #[inline] fn slot(&mut self, k: &[u32; 6]) -> usize {
+        let m = self.keys.len() - 1; let mut i = Self::hash(k) as usize & m;
+        loop { if self.gen[i] != self.now { self.gen[i] = self.now; self.keys[i] = *k; self.cnt[i] = 0; self.used.push(i as u32); return i; }
+            if self.keys[i] == *k { return i; } i = (i + 1) & m; }
+    }
+}
 
 impl Default for Canvas { fn default() -> Self { Canvas::new(1, 1) } }
 
 impl Canvas {
-    pub fn new(w: i32, h: i32) -> Canvas { let n = (w.max(1) * h.max(1)) as usize; Canvas { w, h, bytes: vec![0; n * 4], ops: Vec::new(), last_ops: Vec::new(), last: Vec::new(), fill: INK, dirty: true } }
+    pub fn new(w: i32, h: i32) -> Canvas { let n = (w.max(1) * h.max(1)) as usize; Canvas { w, h, bytes: vec![0; n * 4], ops: Vec::new(), last_ops: Vec::new(), last: Vec::new(), fill: INK, dirty: true, diff: Diff::default() } }
     pub fn resize(&mut self, w: i32, h: i32) { if w != self.w || h != self.h { *self = Canvas::new(w, h); } }
     pub fn clear(&mut self) { self.ops.clear(); }
     /// force the next frame through (the texture was lost)
@@ -35,17 +55,25 @@ impl Canvas {
         let col = (c.r as u32) | (c.g as u32) << 8 | (c.b as u32) << 16; let a = (c.a.min(1.0) * 65535.0) as u32;
         self.ops.push([xa as u32, ya as u32, xb as u32, yb as u32, col, a]);
     }
-    /// draw one op, clipped to a tile
+    /// draw one op, clipped to a tile. Source-over in integers: an opaque op is a straight copy, a translucent one over an empty
+    /// pixel is the op itself, and only translucent over painted pixels blends (one reciprocal per pixel instead of three divisions).
     fn fill_clip(bytes: &mut [u8], w: usize, op: &[u32; 6], cx0: usize, cy0: usize, cx1: usize, cy1: usize) {
         let (xa, ya, xb, yb) = ((op[0] as usize).max(cx0), (op[1] as usize).max(cy0), (op[2] as usize).min(cx1), (op[3] as usize).min(cy1));
         if xa >= xb || ya >= yb { return; }
-        let (sr, sg, sb) = ((op[4] & 255) as f32, ((op[4] >> 8) & 255) as f32, ((op[4] >> 16) & 255) as f32); let sa = op[5] as f32 / 65535.0;
-        for yy in ya..yb { let row = yy * w;
-            for xx in xa..xb { let q = (row + xx) * 4; let p = &mut bytes[q..q + 4];
-                if sa >= 0.9999 { p[0] = sr as u8; p[1] = sg as u8; p[2] = sb as u8; p[3] = 255; continue; }
-                let da = p[3] as f32 / 255.0; let oa = sa + da * (1.0 - sa); if oa <= 0.0 { continue; } let k = da * (1.0 - sa);
-                p[0] = ((sr * sa + p[0] as f32 * k) / oa + 0.5) as u8; p[1] = ((sg * sa + p[1] as f32 * k) / oa + 0.5) as u8; p[2] = ((sb * sa + p[2] as f32 * k) / oa + 0.5) as u8;
-                p[3] = (oa * 255.0 + 0.5) as u8; } }
+        let (sr, sg, sb) = (op[4] & 255, (op[4] >> 8) & 255, (op[4] >> 16) & 255); let sa = op[5] as f32 / 65535.0;
+        let sa8 = (sa * 255.0 + 0.5) as u32;
+        if sa >= 0.9999 { let px = [sr as u8, sg as u8, sb as u8, 255];
+            for yy in ya..yb { let r = (yy * w + xa) * 4; for p in bytes[r..r + (xb - xa) * 4].chunks_exact_mut(4) { p.copy_from_slice(&px); } } return; }
+        if sa8 == 0 { return; }
+        let ia = 255 - sa8; let (wr, wg, wb) = (sr * sa8 * 255, sg * sa8 * 255, sb * sa8 * 255);
+        for yy in ya..yb { let r = (yy * w + xa) * 4;
+            for p in bytes[r..r + (xb - xa) * 4].chunks_exact_mut(4) {
+                let da = p[3] as u32;
+                if da == 0 { p[0] = sr as u8; p[1] = sg as u8; p[2] = sb as u8; p[3] = sa8 as u8; continue; }
+                let k = da * ia; let oa = sa8 * 255 + k;   // out alpha x 255
+                let inv = (1u64 << 32) / oa as u64; let mixc = |s: u32, d: u8| (((s + d as u32 * k) as u64 * inv + (1u64 << 31)) >> 32) as u8;
+                p[0] = mixc(wr, p[0]); p[1] = mixc(wg, p[1]); p[2] = mixc(wb, p[2]); p[3] = ((oa + 127) / 255) as u8;
+            } }
     }
     /// test hook: does the incrementally updated buffer equal a full redraw of the last frame?
     pub fn verify(&self) -> bool { let w = self.w as usize; let mut b = vec![0u8; self.bytes.len()]; for op in &self.last_ops { Self::fill_clip(&mut b, w, op, 0, 0, w, self.h as usize); } b == self.bytes }
@@ -57,10 +85,10 @@ impl Canvas {
         let mut dirty = vec![self.dirty; tw * th];
         let mark = |op: &[u32; 6], dirty: &mut Vec<bool>| { for ty in (op[1] as usize / T)..=(((op[3] as usize).max(1) - 1) / T).min(th - 1) { for tx in (op[0] as usize / T)..=(((op[2] as usize).max(1) - 1) / T).min(tw - 1) { dirty[ty * tw + tx] = true; } } };
         if !self.dirty {
-            let mut old: std::collections::HashMap<[u32; 6], u32> = std::collections::HashMap::with_capacity(self.last_ops.len());
-            for op in &self.last_ops { *old.entry(*op).or_insert(0) += 1; }
-            for op in &self.ops { match old.get_mut(op) { Some(c) if *c > 0 => *c -= 1, _ => mark(op, &mut dirty) } }
-            for (op, c) in old.iter() { if *c > 0 { mark(op, &mut dirty); } }
+            let df = &mut self.diff; df.begin(self.last_ops.len().max(self.ops.len()));
+            for op in &self.last_ops { let i = df.slot(op); df.cnt[i] += 1; }
+            for op in &self.ops { let i = df.slot(op); if df.cnt[i] > 0 { df.cnt[i] -= 1; } else { mark(op, &mut dirty); } }
+            for &i in &df.used { if df.cnt[i as usize] > 0 { let k = df.keys[i as usize]; mark(&k, &mut dirty); } }
             // an op that stayed but now sits under or over a changed one is redrawn too, because whole tiles are redrawn in order
         }
         for ty in 0..th { for tx in 0..tw { if !dirty[ty * tw + tx] { continue; }
@@ -101,7 +129,9 @@ impl Canvas {
     fn glyphs(&mut self, s: &str, x: f64, y: f64, sc: f64, c: Col) {
         for (n, ch) in s.chars().enumerate() { if ch == ' ' { continue; } let gl = glyph(ch.to_ascii_uppercase());
             for (r, row) in gl.iter().enumerate() { if *row == 0 { continue; }
-                for b in 0..5 { if row & (16 >> b) != 0 { self.rect_c(x + (n as f64 * 6.0 + b as f64) * sc, y + r as f64 * sc, sc, sc, c); } } } }
+                // one rect per run of lit pixels in the row (the same pixels as one per pixel: the runs tile exactly)
+                let mut b = 0; while b < 5 { if row & (16 >> b) == 0 { b += 1; continue; } let s0 = b; while b < 5 && row & (16 >> b) != 0 { b += 1; }
+                    self.rect_c(x + (n as f64 * 6.0 + s0 as f64) * sc, y + r as f64 * sc, (b - s0) as f64 * sc, sc, c); } } }
     }
     /// text(g, s, x, y, sc, col, shadow): the shadow (one pixel down-right) under every glyph, then the glyphs
     pub fn text(&mut self, s: &str, x: f64, y: f64, sc: f64, c: Col, shadow: Option<Col>) {
@@ -117,7 +147,8 @@ impl Canvas {
         let pass = |g: &mut Canvas, ox: f64, oy: f64, solid: Option<Col>| {
             for (n, ch) in s.chars().enumerate() { if ch == ' ' { continue; } let gl = glyph(ch);
                 for (r, row) in gl.iter().enumerate() { if *row == 0 { continue; } let lean = js_round((6 - r) as f64 * sc / 3.0); let c = solid.unwrap_or(rows[r]);
-                    for b in 0..5 { if row & (16 >> b) != 0 { g.rect_c(x + ox + n as f64 * adv + b as f64 * sc + lean, y + oy + r as f64 * sc, sc, sc, c); } } } } };
+                    let mut b = 0; while b < 5 { if row & (16 >> b) == 0 { b += 1; continue; } let s0 = b; while b < 5 && row & (16 >> b) != 0 { b += 1; }
+                        g.rect_c(x + ox + n as f64 * adv + s0 as f64 * sc + lean, y + oy + r as f64 * sc, (b - s0) as f64 * sc, sc, c); } } } };
         if let Some((c, d)) = sh { pass(self, d, d, Some(c)); }
         pass(self, 0.0, 0.0, None);
     }
