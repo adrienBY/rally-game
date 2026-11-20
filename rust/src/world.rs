@@ -13,8 +13,8 @@ pub const PRISM_ROAD: f64 = 4.5;
 pub fn road_half(map: Map) -> f64 { if map == Map::Prism { PRISM_ROAD } else { ROAD } }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Map { Forest = 0, Snow = 1, Canyon = 2, Lakes = 3, Iceland = 4, Touge = 5, Riviera = 6, Prism = 7 }
-impl Map { pub fn from_id(i: i32) -> Map { match i { 1 => Map::Snow, 2 => Map::Canyon, 3 => Map::Lakes, 4 => Map::Iceland, 5 => Map::Touge, 6 => Map::Riviera, 7 => Map::Prism, _ => Map::Forest } } }
+pub enum Map { Forest = 0, Snow = 1, Canyon = 2, Lakes = 3, Iceland = 4, Touge = 5, Riviera = 6, Prism = 7, Ember = 8 }
+impl Map { pub fn from_id(i: i32) -> Map { match i { 1 => Map::Snow, 2 => Map::Canyon, 3 => Map::Lakes, 4 => Map::Iceland, 5 => Map::Touge, 6 => Map::Riviera, 7 => Map::Prism, 8 => Map::Ember, _ => Map::Forest } } }
 /// Prism: the floor of space, far below the skyway (falling to it means a respawn)
 pub const PRISM_VOID: f64 = -400.0;
 /// Lakes: water level
@@ -31,6 +31,7 @@ pub struct World {
 fn terrain(map: Map, x: f64, z: f64) -> f64 {
     match map {
         Map::Prism => PRISM_VOID,
+        Map::Ember => vol_mount(x, z),
         Map::Riviera => riv_land(x, z, true),
         Map::Iceland => { let b = ice_base(x, z); b - ice_riv(x, z) * (b + 1.0) }
         Map::Touge => { let k = (x * x + z * z) / 90000.0; 66.0 / (1.0 + k) - (k - 0.62).max(0.0).min(2.5) * 46.0 + tou_hill(x, z) }
@@ -70,6 +71,12 @@ pub fn riv_land(x: f64, z: f64, spur: bool) -> f64 {
     let k = smooth(-7.0, 5.0, s); h + (-15.0 - h) * k
 }
 
+/// Ember Peak: a lone volcano - a broad cone, a deep crater inside a raised rim, lava ridges down the flanks (as the page's volMount)
+fn vol_mount(x: f64, z: f64) -> f64 {
+    let r = (x * x + z * z + 1.0).sqrt(); let k = (x * x + z * z) / 108900.0;
+    250.0 / (1.0 + k) - 95.0 * (1.0 - smooth(35.0, 100.0, r)) + 12.0 * smooth(60.0, 95.0, r) * (1.0 - smooth(95.0, 140.0, r))
+        + ridged(x * 0.009 + 2.0, z * 0.009 - 5.0) * 16.0 * smooth(90.0, 220.0, r) + (fbm(x * 0.03 + 7.0, z * 0.03, 3) - 0.5) * 6.0 + (fbm(x * 0.11, z * 0.11, 2) - 0.5) * 0.8
+}
 /// Touge: the wooded mountain the pass is cut into
 fn tou_hill(x: f64, z: f64) -> f64 { ridged(x * 0.006 + 4.0, z * 0.006 - 9.0) * 16.0 + (fbm(x * 0.02, z * 0.02, 4) - 0.5) * 8.0 + (fbm(x * 0.08, z * 0.08, 4) - 0.5) * 0.8 }
 
@@ -136,7 +143,7 @@ pub fn build(map: Map, path: &[(f64, f64)], roadh: &[f64], gxh: i32, gzh: i32) -
             if map == Map::Iceland { hv += ice_cliff(x, z) * smooth(ROAD + 7.0, ROAD + 16.5, pdv); }
             let w = 1.0 - match map { Map::Snow => smooth(ROAD + 1.5, ROAD + 22.0, pdv), Map::Canyon => smooth(ROAD + 1.0, ROAD + 9.0, pdv),
                 Map::Lakes => smooth(ROAD + 1.0, ROAD + 14.0, pdv), Map::Iceland => smooth(ROAD + 1.0, ROAD + 12.0, pdv),
-                Map::Touge => smooth(ROAD + 1.2, ROAD + 8.0, pdv), Map::Riviera => smooth(ROAD + 1.0, ROAD + 7.0, pdv), Map::Prism => 1.0, Map::Forest => smooth(ROAD + 1.0, ROAD + 10.0, pdv) };
+                Map::Touge => smooth(ROAD + 1.2, ROAD + 8.0, pdv), Map::Riviera => smooth(ROAD + 1.0, ROAD + 7.0, pdv), Map::Prism => 1.0, Map::Ember => smooth(ROAD + 1.2, ROAD + 14.0, pdv), Map::Forest => smooth(ROAD + 1.0, ROAD + 10.0, pdv) };
             hv = hv + (roadh[pi_r[id] as usize] - 0.12 - hv) * w;
             if map == Map::Lakes && hv < WL { hv = WL - (1.6f64).min((WL - hv) * 0.2); }
             row[i] = hv as f32;

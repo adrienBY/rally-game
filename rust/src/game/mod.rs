@@ -12,6 +12,7 @@ pub mod garage;
 pub mod dust;
 pub mod crash;
 pub mod menu;
+pub mod volc;
 mod draw;
 
 use crate::bridge;
@@ -32,7 +33,7 @@ const REST: f64 = 0.21; const STOP: f64 = 0.33;
 pub(crate) const PIX: [f64; 3] = [170.0, 220.0, 340.0];
 /// one heaving prism deck mesh: its object, working positions, the vertices a wave reaches with their rest height and road position
 struct WaveMesh { id: usize, pos: Vec<f32>, live: Vec<u32>, rest_y: Vec<f32>, s: Vec<f32> }
-pub const MAPS: [&str; 7] = ["forest", "snow", "canyon", "lakes", "touge", "riviera", "prism"];
+pub const MAPS: [&str; 8] = ["forest", "snow", "canyon", "lakes", "touge", "riviera", "prism", "ember"];
 
 /// xorshift64*: the page's Math.random / seeded rnd() stand-in (particles, mistakes, grid reactions)
 pub struct Rng(u64);
@@ -135,6 +136,8 @@ impl Persist {
 
 pub struct Game {
     pub rt: Rt, pub np: usize, pub snow: bool, pub can: bool, pub lak: bool, pub tou: bool, pub riv: bool, pub pri: bool, pub pri_last: Option<usize>,
+    /// Ember Peak: the volcano's hazards are on; the shared clock's reading last frame (fireballs that landed in between kick)
+    pub vol: bool, volc_tp: f64,
     /// prism waves: run on the game clock instead of the wall clock (headless runs faster than real time); the heaving deck meshes
     pub wave_sim: bool, pub wave_t0: f64, wave_mesh: Vec<WaveMesh>, wave_tab: Vec<f32>,
     pub tune: Tune, pub cam_follow: f64, pub car: Car, pub rpm_shown: f64, pub shake: f64, pub car_hit: f64, pub prev_throttle: f64,
@@ -198,7 +201,7 @@ impl Game {
         let race = Race::new(&rt, &ps);
         let ncull = rt.cull.len(); let nglit = rt.glit.len();
         let mut g = Game {
-            np, snow: mid == 1, can: mid == 2, lak: mid == 3, tou: mid == 5, riv: mid == 6, pri: mid == 7, pri_last: None, wave_sim: false, wave_t0: 0.0, wave_mesh: Vec::new(), wave_tab: Vec::new(),
+            np, snow: mid == 1, can: mid == 2, lak: mid == 3, tou: mid == 5, riv: mid == 6, pri: mid == 7, pri_last: None, vol: mid == 8, volc_tp: -1.0, wave_sim: false, wave_t0: 0.0, wave_mesh: Vec::new(), wave_tab: Vec::new(),
             tune: cars::tune_for(&Tune::from_slice(&tv), ps.car), base_tune: Tune::from_slice(&tv), gar: Default::default(), car_vis: None, paint_vis: None, menu: menu::fresh(), crash: crash::Crash::new(), cam_follow, car: Car::new(), rpm_shown: 900.0, shake: 0.0, car_hit: 0.0, prev_throttle: 0.0,
             state: State::Title, g_t: 0.0, lap: 1, lap_start: 0.0, best, flags: [false; 3], last_idx: 0, msg: String::new(), msg_t: 0.0, wrong_t: 0.0, started: false, go: 0.0,
             cam: CamState { y: 0.0, h: 0.0, init: false, mode: ps.cam_mode as i32, fov: 56.0, lag: 0.0, cp: None, cr: None, shot: -1, cut_t: 0.0, passed: 0.0, anchor: [0.0; 3], target: 0, side: 1.0 },
@@ -207,7 +210,7 @@ impl Game {
             node_base, node_world: vec![ID; rt.nodes.len()], obj_last: HashMap::new(), named, cull_vis: vec![true; ncull], glit_op: vec![-1.0; nglit],
             dust: dust::Dust::new(dn, 0x5EED ^ mid as u64), dust_env: dust::Env { tarmac: mid == 5 || mid == 6 || mid == 7, snow: mid == 1, sand: mid == 2, lush: mid == 0, alpha: if mid == 5 || mid == 6 || mid == 7 { 0.16 } else if mid == 1 { 0.14 } else if mid == 2 { 0.17 } else if mid == 3 { 0.17 } else { 0.15 },
                 dry: if mid == 2 { 1.0 } else if mid == 3 { 0.8 } else { 0.7 },
-                grit: if mid == 2 { [0.62, 0.36, 0.22] } else if mid == 0 { [0.34, 0.28, 0.21] } else if mid == 5 || mid == 6 || mid == 7 { [0.46, 0.42, 0.37] } else { [0.5, 0.43, 0.33] } },
+                grit: if mid == 8 { [0.3, 0.27, 0.26] } else if mid == 2 { [0.62, 0.36, 0.22] } else if mid == 0 { [0.34, 0.28, 0.21] } else if mid == 5 || mid == 6 || mid == 7 { [0.46, 0.42, 0.37] } else { [0.5, 0.43, 0.33] } },
             sf_pos, sf_init: false, boats,
             sun_vis: 0.0, expo: 1.0, dim: 1.0, expo_tun: false, sun_uv: [0.5, 0.8],
             hap_t: 0.0, hap_cool: 0.0, aud_wet: 0.0, car_audio_on: false, race_was: false, pop_cool: 0.0, fps_acc: 0.0, fps_n: 0, hud_tick: false, hud: hud::Canvas::new(320, 180),
@@ -268,19 +271,20 @@ impl Game {
     pub fn ai_input(&self, w: &World) -> Input {
         use libm::{atan, atan2, sin}; use crate::physics::js_hypot;
         let s = &self.car; let np = self.np; let i = path_idx(w, s.x, s.z); let u = s.u.max(0.0); let ld = 7.0 + u * 0.42;
-        let tgt = self.rt.path[(i + (ld + 0.5).floor() as usize) % np];
-        let (dx, dz) = (tgt[0] - s.x, tgt[1] - s.z);
+        let kk = (i + (ld + 0.5).floor() as usize) % np; let tgt = self.rt.path[kk];
+        let lat = if self.vol { volc::dodge(&self.rt, i).unwrap_or(0.0) } else { 0.0 };   // Ember Peak: across the lava on the crust side
+        let (dx, dz) = (tgt[0] - self.rt.tan[kk][1] * lat - s.x, tgt[1] + self.rt.tan[kk][0] * lat - s.z);
         let sp = js_hypot(s.vx, s.vz); let vh = if sp > 2.0 { atan2(s.vx, s.vz) } else { s.h };
         let al = wrap_a(atan2(dx, dz) - vh); let r_want = 2.0 * sp.max(1.0) * sin(al) / ld;
         let delta = wrap_a(vh - s.h) + atan(2.0 * VEH_L * sin(al) / ld) - (s.r - r_want) * 0.12; let lock = self.steer_lock(u);
-        let vt = self.rt.vprof[(i + 4) % np] * 0.9; let slide_cut = clamp(1.0 - (s.vl.abs() - 1.5) / 3.0, 0.15, 1.0);
+        let vt = self.rt.vprof[(i + 4) % np] * 0.9; let vt = if self.vol && volc::dodge(&self.rt, i).is_some() { vt.min(17.0) } else { vt }; let slide_cut = clamp(1.0 - (s.vl.abs() - 1.5) / 3.0, 0.15, 1.0);
         Input { steer: clamp(delta / lock, -1.0, 1.0), throttle: clamp((vt - u) * 0.5, 0.0, 1.0) * slide_cut, brake: clamp((u - vt - 1.5) * 0.3, 0.0, 1.0), hb: false }
     }
     pub fn steer_lock(&self, u: f64) -> f64 { self.tune.lock / (1.0 + u.max(0.0) / self.tune.lock_fall) }
 
     fn hit_button(&self, x: f64, y: f64) -> Option<&'static str> {
         let inb = |b: &Rect, l: f64, r: f64, t: f64, bt: f64| x >= b.x - l && x <= b.x + b.w + r && y >= b.y - t && y <= b.y + b.h + bt;
-        if self.state == State::Title { for k in ["mapF", "mapS", "mapC", "mapL", "mapT", "mapR", "mapP", "mode", "garage"].iter().chain(online::KEYS.iter()).chain(menu::KEYS.iter()) { if let Some(b) = self.ui.get(k) { if inb(b, 2.0, 2.0, 3.0, 3.0) { return Some(k); } } } }
+        if self.state == State::Title { for k in ["mapF", "mapS", "mapC", "mapL", "mapT", "mapR", "mapP", "mapE", "mode", "garage"].iter().chain(online::KEYS.iter()).chain(menu::KEYS.iter()) { if let Some(b) = self.ui.get(k) { if inb(b, 2.0, 2.0, 3.0, 3.0) { return Some(k); } } } }
         for k in TOPB { if let Some(b) = self.ui.get(k) { if inb(b, 2.0, 2.0, 2.0, 3.0) { return Some(k); } } }
         let (Some(hb), Some(left), Some(right), Some(gas)) = (self.ui.get("hb"), self.ui.get("left"), self.ui.get("right"), self.ui.get("gas")) else { return None };
         if !self.ps.touch_used { return None; }
@@ -318,7 +322,7 @@ impl Game {
                     Some("mode") => self.toggle_mode(),
                     Some("rec") => { self.bench_req = true; }   // temporary: benchmark recording on / off
                     Some("tel") => self.tel_toggle(),
-                    Some(k) if k.starts_with("map") => { let want = match k { "mapF" => "forest", "mapS" => "snow", "mapC" => "canyon", "mapL" => "lakes", "mapT" => "touge", "mapP" => "prism", _ => "riviera" }; if want != self.rt.map { self.switch_map(want); } }
+                    Some(k) if k.starts_with("map") => { let want = match k { "mapF" => "forest", "mapS" => "snow", "mapC" => "canyon", "mapL" => "lakes", "mapT" => "touge", "mapP" => "prism", "mapE" => "ember", _ => "riviera" }; if want != self.rt.map { self.switch_map(want); } }
                     _ if self.state == State::Title && self.online_open() => {}
                     _ if self.state == State::Title && crate::net::active() => { self.ps.online_ui = online::OnlineUi::Lobby; }
                     _ if self.state == State::Title => {}
@@ -347,6 +351,27 @@ impl Game {
     fn cycle_cam(&mut self) { self.cam.mode = (self.cam.mode + 1) % 3; self.cam.init = false; self.ps.cam_mode = self.cam.mode as u8; self.ps.store(); self.flash_msg(["CHASE CAM", "CLOSE CAM", "BONNET CAM"][self.cam.mode as usize], 1.2); }
     /// prism: the wave clock (wall clock mod 60 s, so every phone in a race sees the same deck), the physics' copy of the waves, and the deck
     /// meshes heaved to match (rest shape + lift at each vertex's place along the road; only vertices a wave can reach are touched)
+    /// Ember Peak, each frame: fly and draw the fireballs, kick the cars a landing one catches, and put a car that drove into lava back on
+    /// the road before the crossing
+    fn volc_step(&mut self, r: &mut Renderer, w: &World, dt: f64) {
+        let Some(ims) = self.rt.volc.as_ref().map(|v| v.ims) else { return };
+        let t = if self.wave_sim { (self.wave_t0 + self.time).rem_euclid(volc::PERIOD) } else { web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| (d.as_millis() % (volc::PERIOD as u128 * 1000)) as f64 / 1000.0).unwrap_or(self.time % volc::PERIOD) };
+        let tp = if self.volc_tp < 0.0 || self.volc_tp > t || t - self.volc_tp > 1.0 { t - dt.max(0.0) } else { self.volc_tp }; self.volc_tp = t;
+        let f = volc::frame(&self.rt, w, t, tp);
+        r.set_instances(ims[0], (f.core.len() / 16) as i32, &f.core); r.set_instances(ims[1], (f.halo.len() / 16) as i32, &f.halo);
+        r.set_instances(ims[2], (f.ring.len() / 16) as i32, &f.ring); if !f.ring_c.is_empty() { r.set_instance_colors(ims[2], &f.ring_c); }
+        r.set_instances(ims[3], (f.boom.len() / 16) as i32, &f.boom); if !f.boom_c.is_empty() { r.set_instance_colors(ims[3], &f.boom_c); }
+        let live = (self.state == State::Drive || self.race.demo) && !(self.race.on && self.race.phase == race::Phase::Grid);   // not while the grid waits for the lights
+        for b in &f.landed {
+            if live { let k = volc::kick(&mut self.car, b); if k > 0.0 && self.state == State::Drive { self.flash_msg("BOOM!", 0.8); self.buzz("land", 0.5 + 0.5 * k); }
+                else if self.state == State::Drive && (self.car.x - b.to[0]).hypot(self.car.z - b.to[2]) < 22.0 { self.buzz("shift", 0.35); } }
+            for c in self.race.cars.iter_mut() { if c.is_ai() { volc::kick(&mut c.car, b); } }
+        }
+        if live { if let Some(rv) = volc::in_lava(&self.rt, w, self.car.x, self.car.z) {
+            let back = volc::back_from(&self.rt, rv, path_idx(w, self.car.x, self.car.z)); self.place_at(w, back);
+            if self.state == State::Drive { self.flash_msg("LAVA!", 1.2); self.buzz("land", 0.9); }
+        } }
+    }
     fn wave_step(&mut self, r: &mut Renderer, w: &World) {
         if self.rt.wave_secs.is_empty() { return; }
         let wv = w.wave.get_or_init(|| crate::world::Wave::new(&self.rt.path, &self.rt.tan, &self.rt.roadh, &self.rt.wave_secs));
@@ -412,6 +437,7 @@ impl Game {
         let w = &eng.world; let obs = &eng.obstacles;
         self.time += dt;
         if self.pri { self.wave_step(r, w); }   // first: the deck (and its waves) must be in place before anything is put on it
+        if self.vol { self.volc_step(r, w, dt); }
         self.fps_acc += dt; self.fps_n += 1;
         if self.fps_n == 90 { if !self.ps.downgraded && self.fps_acc / 90.0 > 1.0 / 36.0 && self.ps.pix_idx > 0 { self.ps.pix_idx -= 1; let (a, b, c) = (self.w, self.h, self.inset_px); self.resize(a, b, c); self.ps.downgraded = true; } self.fps_acc = 0.0; self.fps_n = 0; }
         let gust = clamp(0.5 + (fbm(self.time * 0.06, 3.3, 3) - 0.5) * 1.8, 0.0, 1.0); self.wind = gust;

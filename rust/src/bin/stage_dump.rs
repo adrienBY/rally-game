@@ -25,7 +25,7 @@ fn main() {
     let mut rline: Vec<f64> = (0..np).map(|i| { let a = tan[(i + np - 10) % np]; let b = tan[(i + 10) % np]; ((a[0] * b[1] - a[1] * b[0]) * 3.0).clamp(-1.8, 1.8) }).collect();
     for _ in 0..3 { let c = rline.clone(); for i in 0..np { rline[i] = (0..25).map(|k| c[(i + k + np - 12) % np]).sum::<f64>() / 25.0; } }
     let tune: serde_json::Map<String, serde_json::Value> = PARAM_NAMES.iter().zip(tv.iter()).map(|(n, v)| (n.to_string(), serde_json::json!(v))).collect();
-    let mapname = match mid { 0 => "forest", 1 => "snow", 2 => "canyon", 3 => "lakes", 5 => "touge", 6 => "riviera", 7 => "prism", _ => "forest" };
+    let mapname = match mid { 0 => "forest", 1 => "snow", 2 => "canyon", 3 => "lakes", 5 => "touge", 6 => "riviera", 7 => "prism", 8 => "ember", _ => "forest" };
     let j = serde_json::json!({ "map": mapname, "mapId": mid, "NP": np, "GXH": gxh, "GZH": gzh, "sun": [0.4, 0.8, 0.3], "near": 0.12, "far": 1900.0,
         "path": path.iter().flat_map(|p| [p[0], p[1]]).collect::<Vec<_>>(), "tan": tan.iter().flat_map(|p| [p[0], p[1]]).collect::<Vec<_>>(), "roadh": roadh,
         "vprof": vprof, "vcurve": vcurve, "jcap": vec![99.0; np], "drop": vec![0; np], "rline": rline, "rprof": rprof, "tune": tune,

@@ -7,10 +7,11 @@ use super::hud::*;
 use super::{fmt, js_round, Game, Rect, State};
 
 /// the stages, in menu order: map key, number, name, surface
-pub const STAGES: [(&str, &str, &str, &str); 7] = [
+pub const STAGES: [(&str, &str, &str, &str); 8] = [
     ("forest", "SS1", "FOGWOOD", "GRAVEL"), ("snow", "SS2", "COL DE GIVRE", "SNOW"), ("canyon", "SS3", "CANYON ROUGE", "SAND"),
     ("lakes", "SS4", "LAKELAND", "GRAVEL"), ("touge", "SS5", "MOMIJI TOUGE", "TARMAC"), ("riviera", "SS6", "RIVIERA CORNICHE", "TARMAC"),
     ("prism", "SS7", "PRISM SKYWAY", "LIGHT"),
+    ("ember", "SS8", "EMBER PEAK", "ASH"),
 ];
 pub fn stage_of(map: &str) -> usize { STAGES.iter().position(|s| s.0 == map).unwrap_or(0) }
 
@@ -23,8 +24,8 @@ pub const ITEMS: [(Item, &str, &str); 5] = [
 
 /// every hit key the menu draws, in hit order: the arrows of a setting box first (they sit beside an entry), then the
 /// entries, the stage list and its BACK
-pub const KEYS: [&str; 17] = ["m_mprev", "m_mnext", "m_sprev", "m_snext", "m_drive", "m_stage", "m_online", "m_garage", "m_opts", "m_s0", "m_s1", "m_s2", "m_s3", "m_s4", "m_s5", "m_s6", "m_back"];
-const SKEYS: [&str; 8] = ["m_s0", "m_s1", "m_s2", "m_s3", "m_s4", "m_s5", "m_s6", "m_back"];
+pub const KEYS: [&str; 18] = ["m_mprev", "m_mnext", "m_sprev", "m_snext", "m_drive", "m_stage", "m_online", "m_garage", "m_opts", "m_s0", "m_s1", "m_s2", "m_s3", "m_s4", "m_s5", "m_s6", "m_s7", "m_back"];
+const SKEYS: [&str; 9] = ["m_s0", "m_s1", "m_s2", "m_s3", "m_s4", "m_s5", "m_s6", "m_s7", "m_back"];
 
 /// where a chequered wipe leads, at the moment the screen is covered
 #[derive(Clone, Copy, PartialEq, Debug)]

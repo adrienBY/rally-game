@@ -17,7 +17,7 @@ pub fn hud(gm: &mut Game) {
     let km_total = gm.stage_km();
     let res = if gm.race.on && gm.race.phase == Phase::Done && gm.race.done_t > 1.2 { race::results(gm) } else { Vec::new() };
     for k in super::online::KEYS { gm.ui.remove(k); } for k in super::menu::KEYS { gm.ui.remove(k); } gm.ui.remove("garage");
-    if gm.ps.online_ui != super::online::OnlineUi::Closed || gm.gar.open { for k in ["mapF", "mapS", "mapC", "mapL", "mapT", "mapR", "mapP", "mode"] { gm.ui.remove(k); } }
+    if gm.ps.online_ui != super::online::OnlineUi::Closed || gm.gar.open { for k in ["mapF", "mapS", "mapC", "mapL", "mapT", "mapR", "mapP", "mapE", "mode"] { gm.ui.remove(k); } }
     let g = &mut gm.hud; g.clear();
     let (bw, bh, gap) = (22.0 * u, 13.0 * u, 3.0 * u); let mut bx = lw - pr - bw;
     let mut btn = |g: &mut Canvas, ui: &mut Vec<(&'static str, Rect)>, k: &'static str, label: &str, on: bool| {

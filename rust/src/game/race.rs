@@ -158,7 +158,9 @@ fn rival_input(g: &mut Game, w: &World, k: usize) -> Input {
     let c = &mut g.race.cars[k]; let s = c.car;
     if phase == Phase::Grid || race_t < c.react { return Input { steer: 0.0, throttle: 0.0, brake: 0.0, hb: true }; }
     let i = path_idx(w, s.x, s.z); let u = s.u.max(0.0); let ld = 7.0 + u * 0.42; let kk = (i + (ld + 0.5).floor() as usize) % np;
-    let wk = w.road() / ROAD; let lat = clamp(c.lane + rt.rline[kk] * (1.0 - (c.lane.abs() / 2.2).min(1.0)), -1.9 * wk, 1.9 * wk); let p = rt.path[kk]; let tn = rt.tan[kk];
+    let wk = w.road() / ROAD; let lat = clamp(c.lane + rt.rline[kk] * (1.0 - (c.lane.abs() / 2.2).min(1.0)), -1.9 * wk, 1.9 * wk);
+    let lat = if rt.volc.is_some() { super::volc::dodge(rt, i).unwrap_or(lat) } else { lat };   // Ember Peak: across the lava on the crust side
+    let p = rt.path[kk]; let tn = rt.tan[kk];
     { let p0 = rt.path[i]; let t0 = rt.tan[i]; let now = (s.x - p0[0]) * -t0[1] + (s.z - p0[1]) * t0[0]; c.err = (now - lat).abs(); }
     let (dx, dz) = (p[0] - tn[1] * lat - s.x, p[1] + tn[0] * lat - s.z); let sp = s.vx.hypot(s.vz); let vh = if sp > 2.0 { s.vx.atan2(s.vz) } else { s.h };
     let al = wrap_a(dx.atan2(dz) - vh); let r_want = 2.0 * sp.max(1.0) * al.sin() / ld;
@@ -166,6 +168,7 @@ fn rival_input(g: &mut Game, w: &World, k: usize) -> Input {
     let q = (i + 4) % np; let mut vt = rt.rprof[q] * g.race.rlearn[q / 10] * c.pv * (1.0 + c.boost * 0.5); if c.mist > 0.0 { vt *= 1.1; }
     c.trust = clamp(c.trust + ((if c.err > 1.3 || s.vl.abs() > 2.6 { 0.82 } else { 1.0 }) - c.trust) * 0.05, 0.8, 1.0);
     vt = (vt * c.trust * clamp(1.12 - c.err * 0.09, 0.72, 1.0)).min(c.cap);
+    if rt.volc.is_some() && super::volc::dodge(rt, i).is_some() { vt = vt.min(17.0); }   // Ember Peak: steady over the crust
     let slide_cut = clamp(1.0 - (s.vl.abs() - 1.5) / 3.0, 0.15, 1.0);
     let lock = g.tune.lock / (1.0 + u / g.tune.lock_fall);
     Input { steer: clamp(delta / lock, -1.0, 1.0), throttle: clamp((vt - u) * 0.5, 0.0, 1.0) * slide_cut, brake: clamp((u - vt - 0.8) * 0.45, 0.0, 1.0), hb: false }
@@ -183,15 +186,18 @@ fn recover(g: &mut Game, w: &World, k: usize, dt: f64) {
     let np = g.np; let s = g.race.cars[k].car; let i = path_idx(w, s.x, s.z); let pd = w.path_dist(s.x, s.z); let sp = s.vx.hypot(s.vz); let tn = g.rt.tan[i];
     let fwd = s.h.sin() * tn[0] + s.h.cos() * tn[1];
     let fell = g.pri && s.y < g.rt.roadh[i] - 6.0;   // prism: dropped off the skyway
+    let lava_kc = if g.vol { super::volc::in_lava(&g.rt, w, s.x, s.z).map(|rv| super::volc::back_from(&g.rt, rv, i)) } else { None };   // Ember Peak: in the lava
     let c = &mut g.race.cars[k];
     if pd < w.road() + 1.0 { c.off_at = Some(i); }
     let off = pd > w.road() + 5.0; let bad = off || (sp < 1.5 && g.race.t > c.react + 2.0) || s.roll.abs() > 0.9 || s.pitch.abs() > 0.9 || (fwd < -0.2 && sp < 8.0);
     c.stuck_t = if bad { c.stuck_t + dt } else { (c.stuck_t - dt * 2.0).max(0.0) };
+    if lava_kc.is_some() { c.stuck_t = 9.0; }
     if fell { c.stuck_t = 9.0; if std::env::var("FW_FALLS").is_ok() { eprintln!("FALL car {} at {} off_at {:?} sp {:.1}", k, i, c.off_at, sp); } }
     if c.stuck_t > if off { 1.6 } else { 2.6 } {
         c.stuck_t = 0.0; let off_at = c.off_at.unwrap_or(i);
+        if std::env::var("FW_RESETS").is_ok() { let lt = { let p0 = g.rt.path[i]; let t0 = g.rt.tan[i]; (s.x - p0[0]) * -t0[1] + (s.z - p0[1]) * t0[0] }; eprintln!("RESET car {} at {} lava {} off {} sp {:.1} lat {:+.2} dodge {:?} lane {:.2}", k, i, lava_kc.is_some(), off, sp, lt, super::volc::dodge(&g.rt, i), g.race.cars[k].lane); }
         if off { learn(g, off_at); }
-        let kk = (i + np - 6) % np; let mut lat = 0.0;
+        let kk = lava_kc.unwrap_or((i + np - 6) % np); let mut lat = 0.0;
         for o in 0..g.race.cars.len() { if o == k { continue; } let st = state(g, o); if (st.x - g.rt.path[kk][0]).hypot(st.z - g.rt.path[kk][1]) < 6.0 { lat = if lat != 0.0 { -lat } else { 2.0 }; } }
         let speed = (g.rt.rprof[kk] * 0.6).min(16.0);
         let mut car = g.race.cars[k].car; rc_place(&mut car, &g.rt, w, kk, lat, speed);

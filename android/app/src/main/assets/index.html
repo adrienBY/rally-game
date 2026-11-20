@@ -133,8 +133,8 @@ const wrapA = (a) => Math.atan2(Math.sin(a), Math.cos(a));
 const smooth = (e0, e1, x) => { const t = clamp((x - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t); };
 
 /* ================= map: #snow selects the mountain stage, anything else the forest ================= */
-const SNOW = MAPN === "snow", CAN = MAPN === "canyon", LAK = MAPN === "lakes", ICE = MAPN === "iceland", TOU = MAPN === "touge", RIV = MAPN === "riviera", PRI = MAPN === "prism", WARM = CAN || LAK;
-const GC = CAN || LAK || ICE || TOU || RIV;   // stages whose ground colour comes from groundCol()
+const SNOW = MAPN === "snow", CAN = MAPN === "canyon", LAK = MAPN === "lakes", ICE = MAPN === "iceland", TOU = MAPN === "touge", RIV = MAPN === "riviera", PRI = MAPN === "prism", VOL = MAPN === "ember", WARM = CAN || LAK;
+const GC = CAN || LAK || ICE || TOU || RIV || VOL;   // stages whose ground colour comes from groundCol()
 const WL = -4.5;   // lakes: water level
 const ridged = (x, z) => { let s = 0, a = 0.5, f = 1; for (let i = 0; i < 4; i++) { const n = 1 - Math.abs(vnoise(x * f, z * f) * 2 - 1); s += a * n * n; f *= 2.1; a *= 0.5; } return s; };
 
@@ -187,6 +187,8 @@ if (RIV) rivPath(PATH); else {
       raw.push([1.1 * r * Math.cos(t), r * Math.sin(t)]); continue; }
     if (PRI) { const r = 1.36 * (160 + 52 * Math.sin(2 * t + 0.6) + 30 * Math.sin(3 * t + 2.0) + 18 * Math.sin(5 * t + 1.2) + 10 * Math.sin(8 * t + 0.4) + 4.5 * Math.sin(13 * t + 1.1));   // three hairpins and a run of tight esses
       raw.push([1.18 * r * Math.cos(t), r * Math.sin(t)]); continue; }
+    if (VOL) { const r = 245 + 75 * Math.cos(t + 0.3) + 10 * Math.sin(6 * t + 1) + 6 * Math.sin(11 * t + 2) + 3 * Math.sin(15 * t);   // round the volcano: up its flank in switchbacks to under the crater rim, down the far side
+      raw.push([r * Math.cos(t), r * Math.sin(t)]); continue; }
     if (LAK) { const r = 1.2 * (158 + 30 * Math.sin(3 * t + 1.4) + 22 * Math.sin(2 * t + 0.2) + 12 * Math.sin(5 * t + 2.6) + 5 * Math.sin(9 * t + 0.9));
       raw.push([1.1 * r * Math.cos(t), r * Math.sin(t)]); continue; }
     const r = 1.25 * (150 + 42 * Math.sin(2 * t + 1) + 24 * Math.sin(3 * t + 0.3) + 11 * Math.sin(7 * t + 2) + 5 * Math.sin(11 * t + 0.7));
@@ -261,6 +263,11 @@ const iceRiv = (x, z) => 1 - smooth(0.012, 0.03, Math.abs(fbm(x * 0.0032 + 41, z
 const iceCliff = (x, z) => smooth(0.55, 0.585, fbm(x * 0.0042 + 27, z * 0.0042 - 31)) * (38 + fbm(x * 0.02 + 3, z * 0.02, 3) * 16);
 const iceBase = (x, z) => 3 + (fbm(x * 0.006 + 13, z * 0.006 - 7) - 0.5) * 7 + ridged(x * 0.035 + 2, z * 0.035 + 5) * 1.6 + (fbm(x * 0.08, z * 0.08) - 0.5) * 0.6;
 /* touge: the road is cut into the flanks of a wooded mountain */
+/* ember peak: a lone volcano - a broad cone, a deep crater inside a raised rim, lava ridges down the flanks (exact arithmetic + the
+   shared noise only, so the Rust core builds the same grid) */
+const volMount = (x, z) => { const r = Math.sqrt(x * x + z * z + 1), k = (x * x + z * z) / 108900;
+  return 250 / (1 + k) - 95 * (1 - smooth(35, 100, r)) + 12 * smooth(60, 95, r) * (1 - smooth(95, 140, r))
+    + ridged(x * 0.009 + 2, z * 0.009 - 5) * 16 * smooth(90, 220, r) + (fbm(x * 0.03 + 7, z * 0.03, 3) - 0.5) * 6 + (fbm(x * 0.11, z * 0.11, 2) - 0.5) * 0.8; };
 const touMount = (x, z) => { const k = (x * x + z * z) / 90000; return 66 / (1 + k) - Math.min(2.5, Math.max(0, k - 0.62)) * 46 + touHill(x, z); };
 const touHill = (x, z) => ridged(x * 0.006 + 4, z * 0.006 - 9) * 16 + (fbm(x * 0.02, z * 0.02) - 0.5) * 8 + (fbm(x * 0.08, z * 0.08) - 0.5) * 0.8;
 const RIV_CO = [365.0943089645332, 11.436903918090803, 4.545725825613665, 113.1855404692721, 3.5734199846815837, 3.985531199612783, -12.617522459756444, -4.700187825096951, 24.485745853738244, -4.1766535012051635, -2.8397619313238534, -8.227522873444984, 7.426301383840519, -2.7763978739119093, -6.637529415252545, -4.710651589545555, -5.776624135423112, -4.665001169047276, 1.9423783806500399, 5.676152373037559, -4.566612283315319, 0.756121770018548, -4.584140164551264, 1.9514458472883758, -1.868534773179199, -0.6026043725066449, 0.5503129741098648, 1.5881490516580001, 2.2857083143419112, 1.2341923187040604, 0.005228537432869059, -1.7935242357328982, 1.315808959662767], RIV_CL = [31.81134008102376, 12.41158534922303, 3.5275303935796125, 3.7753895871459235, 1.8256511098772177, -3.4063965472223505, 0.8009726687413219, 2.1537015290667467, 1.94814461591344, 0.28048831502508087, -2.222168807077778, -1.3767467974531142, 0.74358329361819];
@@ -289,6 +296,7 @@ function rivLand(x, z, spur) {
 const VOID = -400;   // prism: nothing under the road
 const terrain = PRI ? () => VOID : RIV ? (x, z) => rivLand(x, z, true) : ICE ? (x, z) => { const b = iceBase(x, z); return b - iceRiv(x, z) * (b + 1); }
   : TOU ? touMount
+  : VOL ? volMount
   : CAN
   ? (x, z) => (fbm(x * 0.008 + 3, z * 0.008 - 2) - 0.5) * 18 + (fbm(x * 0.05, z * 0.05) - 0.5) * 1.2
   : LAK
@@ -312,8 +320,8 @@ if (ICE) {   // where the road meets a river it drops into a gravel ford, 30 cm 
   for (let i = 0; i < NP; i++) if (f[i] > 0.5 && !(f[(i + NP - 1) % NP] > 0.5)) FORDS.push(i);
   for (const c of FORDS) for (let d = -40; d <= 25; d++) { const k = (c + d + NP) % NP; VPROF[k] = Math.min(VPROF[k], 22); JCAP[k] = Math.min(JCAP[k], 24); }
 }
-if (SNOW || TOU || RIV || PRI) {   // mountain pass: cap the gradient so the road climbs and descends like a real col (prism: a roller coaster)
-  const gmax = TOU ? 0.09 : RIV ? 0.085 : PRI ? 0.15 : 0.11;
+if (SNOW || TOU || RIV || PRI || VOL) {   // mountain pass: cap the gradient so the road climbs and descends like a real col (prism: a roller coaster)
+  const gmax = TOU ? 0.09 : RIV ? 0.085 : PRI ? 0.15 : VOL ? 0.13 : 0.11;
   for (let pass = 0; pass < 8; pass++) {
     for (let i = 1; i <= NP * 2; i++) { const a = ROADH[(i - 1) % NP], k = i % NP; ROADH[k] = clamp(ROADH[k], a - gmax, a + gmax); }
     for (let i = NP * 2; i > 0; i--) { const a = ROADH[i % NP], k = (i - 1) % NP; ROADH[k] = clamp(ROADH[k], a - gmax, a + gmax); }
@@ -325,6 +333,7 @@ const JUMPS = [], RAMP = { i: -1, L: 8, H: 1.4 };
 { // the two new stages are built around their bumps: more and bigger crests, more kickers, stronger undulation
   const JP = ICE ? { n: 8, gap: 130, bigA: 2.1, smallA: 1.1, suB: 14, sdB: 5.5, suS: 7, sdS: 3.6, vB: 25, vS: 28, kick: 0.12, kickA: 0.5, und: 0.3 }
                   : PRI ? { n: 0, gap: 300, bigA: 0, smallA: 0, suB: 14, sdB: 8, suS: 8, sdS: 4, vB: 36, vS: 36, kick: 0, kickA: 0, und: 0 }
+                  : VOL ? { n: 1, gap: 400, bigA: 0.8, smallA: 0.5, suB: 12, sdB: 6, suS: 8, sdS: 4, vB: 28, vS: 30, kick: 0, kickA: 0, und: 0.04 }
                   : RIV ? { n: 1, gap: 300, bigA: 0.5, smallA: 0.4, suB: 14, sdB: 8, suS: 8, sdS: 4, vB: 36, vS: 36, kick: 0, kickA: 0, und: 0.03 }
                   : TOU ? { n: 2, gap: 300, bigA: 0.9, smallA: 0.6, suB: 12, sdB: 6, suS: 8, sdS: 4, vB: 30, vS: 32, kick: 0, kickA: 0, und: 0.05 }
                   : WARM ? { n: 9, gap: 115, bigA: LAK ? 2.3 : 1.9, smallA: 1.0, suB: 13, sdB: 5.5, suS: 7, sdS: 3.6, vB: 23, vS: 26, kick: 0.16, kickA: 0.55, und: 0.34 }
@@ -347,7 +356,7 @@ const JUMPS = [], RAMP = { i: -1, L: 8, H: 1.4 };
   const cdist = (a, b) => { const d = Math.abs(a - b) % NP; return Math.min(d, NP - d); };
   for (let i = Math.round(NP * 0.3); i < NP * 0.92 && !RIV && !PRI; i += 3) { if (!straight(i) || !straight((i + 40) % NP) || JUMPS.some(j => cdist(j.i, i) < 80)) continue;
     RAMP.i = i; break; }
-  if (RAMP.i < 0 && !TOU && !RIV && !PRI) RAMP.i = Math.round(NP * 0.6);
+  if (RAMP.i < 0 && !TOU && !RIV && !PRI && !VOL) RAMP.i = Math.round(NP * 0.6);
   if (RAMP.i >= 0) for (let s = 0; s <= RAMP.L; s++) ROADH[(RAMP.i - RAMP.L + s + NP) % NP] += RAMP.H * s / RAMP.L;
   if (RAMP.i >= 0) for (let s = -50; s <= 45; s++) { const k = (RAMP.i + s + NP) % NP; VPROF[k] = Math.min(VPROF[k], 25); JCAP[k] = Math.min(JCAP[k], 27); }
   for (let pass = 0; pass < 3; pass++) for (let i = NP - 1; i >= 0; i--) VPROF[i] = Math.min(VPROF[i], Math.sqrt(VPROF[(i + 1) % NP] ** 2 + 2 * 5.0));
@@ -360,7 +369,7 @@ if (PRI) {   // prism: crests over the void - no faster than keeps the wheels pr
 if (NATIVE) {
   try {
     const t0 = performance.now(), pc = new Array(NP * 2); for (let i = 0; i < NP; i++) { pc[i * 2] = PATH[i][0]; pc[i * 2 + 1] = PATH[i][1]; }
-    const res = String(NATIVE.prepare(SNOW ? 1 : CAN ? 2 : LAK ? 3 : ICE ? 4 : TOU ? 5 : RIV ? 6 : PRI ? 7 : 0, pc.join(","), Array.prototype.join.call(ROADH, ","), GXH, GZH));
+    const res = String(NATIVE.prepare(SNOW ? 1 : CAN ? 2 : LAK ? 3 : ICE ? 4 : TOU ? 5 : RIV ? 6 : PRI ? 7 : VOL ? 8 : 0, pc.join(","), Array.prototype.join.call(ROADH, ","), GXH, GZH));
     if (!res.startsWith("ok")) throw new Error(res);
     const n = GNX * GNZ; let u8;
     if (NATIVE.gridBytes) { u8 = new Uint8Array(NATIVE.gridBytes()); if (u8.length !== n * 10) throw new Error("grid size " + u8.length); }   // the browser build: straight from the engine
@@ -377,7 +386,7 @@ for (let j = 0; j < GNZ; j++) for (let i = 0; i < GNX; i++) {
   let h = terrain(x, z);
   if (CAN) h += canyonMesa(x, z) * smooth(ROAD + 6, ROAD + 16, pd);
   if (ICE) h += iceCliff(x, z) * smooth(ROAD + 7, ROAD + 16.5, pd);
-  const w = 1 - (SNOW ? smooth(ROAD + 1.5, ROAD + 22, pd) : CAN ? smooth(ROAD + 1, ROAD + 9, pd) : LAK ? smooth(ROAD + 1, ROAD + 14, pd) : ICE ? smooth(ROAD + 1, ROAD + 12, pd) : TOU ? smooth(ROAD + 1.2, ROAD + 8, pd) : RIV ? smooth(ROAD + 1.0, ROAD + 7, pd) : smooth(ROAD + 1, ROAD + 10, pd));
+  const w = 1 - (SNOW ? smooth(ROAD + 1.5, ROAD + 22, pd) : CAN ? smooth(ROAD + 1, ROAD + 9, pd) : LAK ? smooth(ROAD + 1, ROAD + 14, pd) : ICE ? smooth(ROAD + 1, ROAD + 12, pd) : TOU ? smooth(ROAD + 1.2, ROAD + 8, pd) : VOL ? smooth(ROAD + 1.2, ROAD + 14, pd) : RIV ? smooth(ROAD + 1.0, ROAD + 7, pd) : smooth(ROAD + 1, ROAD + 10, pd));
   if (PRI) { const k = piG[id], p = PATH[k], t = TAN[k], lat = (x - p[0]) * -t[1] + (z - p[1]) * t[0], w2 = 1 - smooth(ROAD + 2.4, ROAD + 3.0, pd);
     hG[id] = (ROADH[k] - 0.12 + lat * BANK[k]) * w2 + VOID * (1 - w2); continue; }
   h = h + (ROADH[piG[id]] - 0.12 - h) * w;
@@ -403,13 +412,13 @@ const renderer = NGL ? { outputColorSpace: "", setPixelRatio() {}, setClearColor
   : new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: "high-performance" });
 if (NGL) { document.documentElement.style.background = "transparent"; document.body.style.background = "transparent"; canvas.style.background = "transparent"; }
 renderer.outputColorSpace = THREE.LinearSRGBColorSpace; renderer.setPixelRatio(1);
-const FOG = PRI ? new THREE.Color(0.06, 0.03, 0.13) : RIV ? new THREE.Color(0.84, 0.58, 0.52) : ICE ? new THREE.Color(0.53, 0.51, 0.65) : TOU ? new THREE.Color(0.36, 0.33, 0.5) : SNOW ? new THREE.Color(0.79, 0.84, 0.9) : CAN ? new THREE.Color(0.88, 0.66, 0.5) : LAK ? new THREE.Color(0.84, 0.74, 0.76) : new THREE.Color(0.60, 0.65, 0.64);
+const FOG = VOL ? new THREE.Color(0.34, 0.16, 0.12) : PRI ? new THREE.Color(0.06, 0.03, 0.13) : RIV ? new THREE.Color(0.84, 0.58, 0.52) : ICE ? new THREE.Color(0.53, 0.51, 0.65) : TOU ? new THREE.Color(0.36, 0.33, 0.5) : SNOW ? new THREE.Color(0.79, 0.84, 0.9) : CAN ? new THREE.Color(0.88, 0.66, 0.5) : LAK ? new THREE.Color(0.84, 0.74, 0.76) : new THREE.Color(0.60, 0.65, 0.64);
 renderer.setClearColor(FOG, 0);
-const scene = new THREE.Scene(); scene.fog = new THREE.FogExp2(FOG, PRI ? 0.0011 : RIV ? 0.0019 : ICE ? 0.00135 : TOU ? 0.0026 : SNOW ? 0.0034 : CAN ? 0.0024 : LAK ? 0.0029 : 0.0056);
+const scene = new THREE.Scene(); scene.fog = new THREE.FogExp2(FOG, VOL ? 0.0021 : PRI ? 0.0011 : RIV ? 0.0019 : ICE ? 0.00135 : TOU ? 0.0026 : SNOW ? 0.0034 : CAN ? 0.0024 : LAK ? 0.0029 : 0.0056);
 const camera = new THREE.PerspectiveCamera(58, 16 / 9, 0.12, ICE ? 2700 : 1900);   // iceland: the aurora hangs beyond the ranges
-const SUN = PRI ? new THREE.Vector3(0.55, 0.42, -0.72).normalize() : RIV ? new THREE.Vector3(-0.86, 0.075, -0.33).normalize() : ICE ? new THREE.Vector3(-0.72, 0.1, -0.69).normalize() : TOU ? new THREE.Vector3(0.74, 0.07, 0.66).normalize() : CAN ? new THREE.Vector3(-0.62, 0.2, -0.76).normalize() : LAK ? new THREE.Vector3(0.7, 0.13, -0.7).normalize() : SNOW ? new THREE.Vector3(-0.55, 0.24, -0.8).normalize() : new THREE.Vector3(0.6, 0.48, -0.62).normalize();
-scene.add(PRI ? new THREE.HemisphereLight(0xa8a0ff, 0x402060, 2.3) : RIV ? new THREE.HemisphereLight(0xb4b0dc, 0x80604a, 2.1) : ICE ? new THREE.HemisphereLight(0xb4bae8, 0x4c4856, 2.5) : TOU ? new THREE.HemisphereLight(0x8c92cc, 0x2a2232, 1.75) : CAN ? new THREE.HemisphereLight(0xf2c9a0, 0x6a3a26, 2.0) : LAK ? new THREE.HemisphereLight(0xd8c6d6, 0x34452f, 2.1) : SNOW ? new THREE.HemisphereLight(0xdbe6f5, 0x6f7f96, 2.0) : new THREE.HemisphereLight(0xc8d2cf, 0x2b3420, 2.3));
-const sunL = PRI ? new THREE.DirectionalLight(0xf0e8ff, 1.9) : RIV ? new THREE.DirectionalLight(0xffa868, 2.3) : ICE ? new THREE.DirectionalLight(0xffa46e, 2.5) : TOU ? new THREE.DirectionalLight(0xff8a58, 1.35) : CAN ? new THREE.DirectionalLight(0xffb26b, 2.6) : LAK ? new THREE.DirectionalLight(0xffc09a, 2.4) : SNOW ? new THREE.DirectionalLight(0xffd2a6, 2.2) : new THREE.DirectionalLight(0xffefc8, 1.9); sunL.position.copy(SUN); scene.add(sunL);
+const SUN = VOL ? new THREE.Vector3(0.52, 0.2, -0.83).normalize() : PRI ? new THREE.Vector3(0.55, 0.42, -0.72).normalize() : RIV ? new THREE.Vector3(-0.86, 0.075, -0.33).normalize() : ICE ? new THREE.Vector3(-0.72, 0.1, -0.69).normalize() : TOU ? new THREE.Vector3(0.74, 0.07, 0.66).normalize() : CAN ? new THREE.Vector3(-0.62, 0.2, -0.76).normalize() : LAK ? new THREE.Vector3(0.7, 0.13, -0.7).normalize() : SNOW ? new THREE.Vector3(-0.55, 0.24, -0.8).normalize() : new THREE.Vector3(0.6, 0.48, -0.62).normalize();
+scene.add(VOL ? new THREE.HemisphereLight(0xd09078, 0x3a1410, 2.15) : PRI ? new THREE.HemisphereLight(0xa8a0ff, 0x402060, 2.3) : RIV ? new THREE.HemisphereLight(0xb4b0dc, 0x80604a, 2.1) : ICE ? new THREE.HemisphereLight(0xb4bae8, 0x4c4856, 2.5) : TOU ? new THREE.HemisphereLight(0x8c92cc, 0x2a2232, 1.75) : CAN ? new THREE.HemisphereLight(0xf2c9a0, 0x6a3a26, 2.0) : LAK ? new THREE.HemisphereLight(0xd8c6d6, 0x34452f, 2.1) : SNOW ? new THREE.HemisphereLight(0xdbe6f5, 0x6f7f96, 2.0) : new THREE.HemisphereLight(0xc8d2cf, 0x2b3420, 2.3));
+const sunL = VOL ? new THREE.DirectionalLight(0xff8048, 1.7) : PRI ? new THREE.DirectionalLight(0xf0e8ff, 1.9) : RIV ? new THREE.DirectionalLight(0xffa868, 2.3) : ICE ? new THREE.DirectionalLight(0xffa46e, 2.5) : TOU ? new THREE.DirectionalLight(0xff8a58, 1.35) : CAN ? new THREE.DirectionalLight(0xffb26b, 2.6) : LAK ? new THREE.DirectionalLight(0xffc09a, 2.4) : SNOW ? new THREE.DirectionalLight(0xffd2a6, 2.2) : new THREE.DirectionalLight(0xffefc8, 1.9); sunL.position.copy(SUN); scene.add(sunL);
 
 let LW = 320, LH = 180, U = 1, rt, post, hudCanvas, hud, hudTex;
 // render heights; the sharpest (340) is the default and draws the HUD at 2x, so it is exactly as big as on the 170 preset
@@ -470,7 +479,7 @@ const gravelTex = PRI ? canvasTex(64, (g, S) => {
   for (const cx of [0.3, 0.7]) for (let y = 0; y < S; y++) { g.fillStyle = "rgba(28,28,32,0.22)"; g.fillRect(cx * S - 4, y, 8, 1); }
   g.fillStyle = "rgb(228,226,216)"; g.fillRect(3, 0, 2, S); g.fillRect(S - 5, 0, 2, S);
   for (let y = 0; y < S; y += 16) g.fillRect(S / 2 - 1, y, 2, 10);
-}, true) : ICE ? canvasTex(64, (g, S) => {   // dark volcanic gravel with grey-brown ruts
+}, true) : ICE || VOL ? canvasTex(64, (g, S) => {   // dark volcanic gravel with grey-brown ruts
   g.fillStyle = "rgb(92,86,82)"; g.fillRect(0, 0, S, S);
   for (let i = 0; i < 1000; i++) { g.fillStyle = rnd() < 0.55 ? `rgba(40,38,38,${rr(0.25, 0.55)})` : `rgba(150,140,128,${rr(0.2, 0.45)})`; g.fillRect(rr(0, S) | 0, rr(0, S) | 0, rnd() < 0.25 ? 2 : 1, 1); }
   for (const cx of [0.27, 0.73]) for (let y = 0; y < S; y++) { const w = 6 + (vnoise(y * 0.3, cx * 10) * 3 | 0); g.fillStyle = "rgba(52,48,46,0.5)"; g.fillRect(cx * S - w / 2 + (vnoise(y * 0.15, cx) * 3 | 0), y, w, 1); }
@@ -609,7 +618,7 @@ function mergeStatic() {
 
 /* ================= trees in a band along the stage ================= */
 const trees = [], obstacles = [], TH = new Map();
-for (let tries = 0; tries < (PRI ? 0 : 32000) && trees.length < 1900; tries++) {
+for (let tries = 0; tries < (PRI || VOL ? 0 : 32000) && trees.length < 1900; tries++) {
   const k = (rnd() * NP) | 0, p = PATH[k], tn = TAN[k], side = rnd() < 0.5 ? -1 : 1;
   const off = (ROAD + 2.3 + Math.pow(rnd(), SNOW ? 1.1 : 1.35) * (SNOW ? 36 : 46)) * side;
   const x = p[0] - tn[1] * off + rr(-1, 1), z = p[1] + tn[0] * off + rr(-1, 1);
@@ -632,7 +641,7 @@ const shadeAt = (x, z) => Math.min(1, bil(SH, x, z));
 /* baked sun shadows (long low-sun shadows, capped at a ~21 degree sun so sunsets keep their lit patches of the canopies and trunks, cast along the sun, dappled, tinted by the sky): a 1 m grid of
    how much of the sun each spot loses, applied to the ground, the road and the grass once every tree is known */
 const SS = new Float32Array(GNX * GNZ), sunShadowAt = (x, z) => Math.min(0.85, bil(SS, x, z));
-const SHADOW_TINT = RIV ? [0.52, 0.54, 0.72] : TOU ? [0.66, 0.66, 0.78] : SNOW ? [0.48, 0.56, 0.8] : CAN ? [0.42, 0.42, 0.58] : LAK ? [0.46, 0.5, 0.66] : [0.5, 0.55, 0.62];
+const SHADOW_TINT = VOL ? [0.62, 0.46, 0.44] : RIV ? [0.52, 0.54, 0.72] : TOU ? [0.66, 0.66, 0.78] : SNOW ? [0.48, 0.56, 0.8] : CAN ? [0.42, 0.42, 0.58] : LAK ? [0.46, 0.5, 0.66] : [0.5, 0.55, 0.62];
 const shadowMul = (occ, c) => 1 - occ * (1 - SHADOW_TINT[c]);
 const BAKED = { ground: [], road: null };
 function bakeSunShadows() {
@@ -676,6 +685,13 @@ function groundCol(x, z, h, slope, n, n2) {
     const rock = smooth(0.5, 0.95, slope + (n - 0.5) * 0.3); r += (0.92 + n * 0.08 - r) * rock; g += (0.82 + n * 0.07 - g) * rock; b += (0.64 + n * 0.05 - b) * rock;
     if (h < 1.5) { const k = smooth(1.5, -1.0, h); r += (0.24 - r) * k; g += (0.21 - g) * k; b += (0.2 - b) * k; }
     if (h < -2) { const k = smooth(-2, -10, h); r += (0.36 - r) * k; g += (0.62 - g) * k; b += (0.58 - b) * k; }
+    return [r, g, b];
+  }
+  if (VOL) {   // black basalt and grey ash, rusty scoria on the steep flanks, scorched near the top
+    let r = 0.12 + n * 0.05, g = 0.1 + n * 0.04, b = 0.1 + n * 0.04;
+    const ash = smooth(0.5, 0.64, n2) * (1 - smooth(0.5, 0.9, slope)) * 0.8; r += (0.36 - r) * ash; g += (0.34 - g) * ash; b += (0.33 - b) * ash;
+    const rust = smooth(0.45, 0.85, slope + (n - 0.5) * 0.4) * 0.8; r += (0.36 + n * 0.08 - r) * rust; g += (0.16 + n * 0.04 - g) * rust; b += (0.11 - b) * rust;
+    const top = smooth(170, 230, h); r += (0.22 - r) * top * 0.6; g += (0.12 - g) * top * 0.6; b += (0.1 - b) * top * 0.6;
     return [r, g, b];
   }
   if (TOU) {   // leaf litter, moss and red maple carpets under the trees, grey rock where the road was cut
@@ -732,7 +748,7 @@ function lampAt(x, z) { if (!LAN.length) return 0; let a = 0; const ci = Math.fl
     if (GC) {
       const slope = Math.hypot(height(x + 1, z) - height(x - 1, z), height(x, z + 1) - height(x, z - 1)) / 2, hh = height(x, z);
       const c = groundCol(x, z, hh, slope, n, n2);
-      const p = clamp((ROAD + 1.1 - pd) / 1.4, 0, 1) * (0.75 + n * 0.3), rc = CAN ? [0.8, 0.6, 0.42] : ICE ? [0.34, 0.31, 0.29] : TOU ? [0.2, 0.19, 0.2] : RIV ? [0.36, 0.34, 0.33] : [0.5, 0.43, 0.33];
+      const p = clamp((ROAD + 1.1 - pd) / 1.4, 0, 1) * (0.75 + n * 0.3), rc = VOL ? [0.16, 0.13, 0.13] : CAN ? [0.8, 0.6, 0.42] : ICE ? [0.34, 0.31, 0.29] : TOU ? [0.2, 0.19, 0.2] : RIV ? [0.36, 0.34, 0.33] : [0.5, 0.43, 0.33];
       for (let q = 0; q < 3; q++) c[q] += (rc[q] - c[q]) * p;
       if (RIV) { const k = pathIdx(x, z); if (inVillage(k) && pd < ROAD + 3.4) { const st = 0.72 + n * 0.08; c[0] = st; c[1] = st * 0.95; c[2] = st * 0.87; }
         const ts = tunShade(k, pd); if (ts) for (let q = 0; q < 3; q++) c[q] *= ts[q]; }
@@ -792,6 +808,7 @@ function relief(x, z) {
     return 2 + (fbm(x * 0.003 + 4, z * 0.003 - 6, 3) - 0.5) * 24 + tuya + Math.pow(ridged(x * 0.003 + 9, z * 0.003 - 3), 2.0) * 400 * smooth(480, 1000, r) + iceCliff(x * 0.5, z * 0.5) * 1.2; }
   if (RIV) { const r = Math.hypot(x, z) + 1, sec = smooth(0.25, 0.65, (x * 0.94 - z * 0.34) / r);
     return sec * smooth(900, 1400, r) * (30 + Math.pow(ridged(x * 0.0021 + 5, z * 0.0021 - 1), 1.5) * 420); }
+  if (VOL) return (fbm(x * 0.004 + 3, z * 0.004 - 7, 3) - 0.5) * 50 + ridged(x * 0.0025 + 1, z * 0.0025 + 4) * 160 * smooth(900, 1500, Math.hypot(x, z));
   if (TOU) return -135 + (fbm(x * 0.004, z * 0.004, 3) - 0.5) * 30 + ridged(x * 0.002 + 5, z * 0.002 - 1) * 520 * smooth(760, 1400, Math.hypot(x, z));
   if (CAN) {   // terraced mesas and buttes: every 13 m of rock a ledge, sheer between
     let h = smooth(0.54, 0.565, fbm(x * 0.0032 + 9, z * 0.0032 - 3, 3)) * (70 + fbm(x * 0.008, z * 0.008, 3) * 60) + smooth(0.86, 0.9, vnoise(x * 0.018 + 3, z * 0.018)) * 55;
@@ -885,8 +902,8 @@ if (LAK || ICE || RIV) {
 }
 const sky = new THREE.Mesh(new THREE.SphereGeometry(1600, 24, 12), new THREE.ShaderMaterial({
   side: THREE.BackSide, depthWrite: false, blending: THREE.NoBlending,
-  uniforms: { uSun: { value: SUN }, uFog: { value: FOG }, uTop: { value: PRI ? new THREE.Color(0.012, 0.004, 0.04) : RIV ? new THREE.Color(0.24, 0.26, 0.58) : ICE ? new THREE.Color(0.07, 0.11, 0.3) : TOU ? new THREE.Color(0.06, 0.07, 0.22) : CAN ? new THREE.Color(0.3, 0.45, 0.76) : LAK ? new THREE.Color(0.38, 0.45, 0.72) : SNOW ? new THREE.Color(0.36, 0.55, 0.84) : FOG.clone().add(new THREE.Color(0.12, 0.12, 0.1)) },
-    uGlow: { value: PRI ? new THREE.Color(0.55, 0.3, 0.85) : RIV ? new THREE.Color(0.5, 0.26, 0.09) : ICE ? new THREE.Color(1.0, 0.5, 0.3) : TOU ? new THREE.Color(0.95, 0.36, 0.2) : CAN ? new THREE.Color(0.75, 0.42, 0.16) : LAK ? new THREE.Color(0.7, 0.4, 0.3) : SNOW ? new THREE.Color(0.5, 0.32, 0.18) : new THREE.Color(0.32, 0.29, 0.2) }, uHalo: { value: SNOW ? 0.22 : CAN ? 0.35 : LAK ? 0.4 : ICE ? 0.55 : TOU ? 0.65 : RIV ? 0.3 : 0.0 } },
+  uniforms: { uSun: { value: SUN }, uFog: { value: FOG }, uTop: { value: VOL ? new THREE.Color(0.1, 0.04, 0.04) : PRI ? new THREE.Color(0.012, 0.004, 0.04) : RIV ? new THREE.Color(0.24, 0.26, 0.58) : ICE ? new THREE.Color(0.07, 0.11, 0.3) : TOU ? new THREE.Color(0.06, 0.07, 0.22) : CAN ? new THREE.Color(0.3, 0.45, 0.76) : LAK ? new THREE.Color(0.38, 0.45, 0.72) : SNOW ? new THREE.Color(0.36, 0.55, 0.84) : FOG.clone().add(new THREE.Color(0.12, 0.12, 0.1)) },
+    uGlow: { value: VOL ? new THREE.Color(1.0, 0.32, 0.08) : PRI ? new THREE.Color(0.55, 0.3, 0.85) : RIV ? new THREE.Color(0.5, 0.26, 0.09) : ICE ? new THREE.Color(1.0, 0.5, 0.3) : TOU ? new THREE.Color(0.95, 0.36, 0.2) : CAN ? new THREE.Color(0.75, 0.42, 0.16) : LAK ? new THREE.Color(0.7, 0.4, 0.3) : SNOW ? new THREE.Color(0.5, 0.32, 0.18) : new THREE.Color(0.32, 0.29, 0.2) }, uHalo: { value: VOL ? 0.6 : SNOW ? 0.22 : CAN ? 0.35 : LAK ? 0.4 : ICE ? 0.55 : TOU ? 0.65 : RIV ? 0.3 : 0.0 } },
   vertexShader: "varying vec3 vD; void main(){ vD = normalize(position); gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0); }",
   fragmentShader: "uniform vec3 uSun; uniform vec3 uFog; uniform vec3 uTop; uniform vec3 uGlow; uniform float uHalo; varying vec3 vD; void main(){ float s = max(dot(normalize(vD), uSun), 0.0); vec3 c = mix(uFog, uTop, smoothstep(0.0,0.6,vD.y)) + uGlow*pow(s,6.0) + uGlow*uHalo*pow(s,2.0)*(1.0-smoothstep(0.0,0.5,vD.y)); gl_FragColor = vec4(c,0.0); }"
 })); sky.renderOrder = -1; scene.add(sky); sky.material.userData.kind = "sky";
@@ -1036,7 +1053,7 @@ const card = new THREE.PlaneGeometry(1, 1);
   const TREE_R = MAPN === "forest" ? 760 : SNOW ? 1050 : CAN ? 900 : TOU ? 780 : 1100, CELL = 9, NEAR_BAND = SNOW ? 46 : 52;
   const hr = (i, j, s) => hash2(i * 7 + s, j * 13 - s * 3);
   let nFar = 0;
-  if (!PRI) for (let gj = Math.floor(-TREE_R / CELL); gj <= TREE_R / CELL; gj++) for (let gi = Math.floor(-TREE_R / CELL); gi <= TREE_R / CELL; gi++) {
+  if (!PRI && !VOL) for (let gj = Math.floor(-TREE_R / CELL); gj <= TREE_R / CELL; gj++) for (let gi = Math.floor(-TREE_R / CELL); gi <= TREE_R / CELL; gi++) {
     const x = (gi + hr(gi, gj, 1)) * CELL, z = (gj + hr(gi, gj, 2)) * CELL;
     if (x * x + z * z > TREE_R * TREE_R) continue;
     const cx = clamp(x, -EX, EX), cz = clamp(z, -EZ, EZ), dOut = Math.hypot(x - cx, z - cz), inGrid = dOut === 0;
@@ -1141,13 +1158,13 @@ if (ICE) {   // nootka lupine fields: purple and blue spikes in drifts along the
     col[i * 3] = g + (0.24 - g) * m; col[i * 3 + 1] = g + (0.36 - g) * m; col[i * 3 + 2] = g * 0.98 + (0.16 - g) * m; }
   geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
   const M = [], C = [];
-  for (let i = 0; i < (PRI ? 0 : CAN ? 640 : ICE ? 420 : 260); i++) { const k = (rnd() * NP) | 0, p = PATH[k], tn = TAN[k], off = rr(ROAD + 4, CAN ? 60 : 40) * (rnd() < 0.5 ? -1 : 1), x = p[0] - tn[1] * off, z = p[1] + tn[0] * off;
+  for (let i = 0; i < (PRI ? 0 : CAN ? 640 : ICE || VOL ? 520 : 260); i++) { const k = (rnd() * NP) | 0, p = PATH[k], tn = TAN[k], off = rr(ROAD + 4, CAN ? 60 : 40) * (rnd() < 0.5 ? -1 : 1), x = p[0] - tn[1] * off, z = p[1] + tn[0] * off;
     if (pathDist(x, z) < ROAD + 3.5 || (RIV && (tunAt(k) || inVillage(k) || height(x, z) < 1))) continue; const s = rnd() < 0.15 ? rr(2.5, 4) : rr(0.8, 2);
     if (Math.hypot(height(x + 2, z) - height(x - 2, z), height(x, z + 2) - height(x, z - 2)) > 2.4) continue;
     tmpO.position.set(x, height(x, z) - s * 0.15, z); tmpO.rotation.set(0, rnd() * 6, 0); tmpO.scale.set(s * rr(1, 1.5), s, s * rr(1, 1.4));
     pushT(M, C, tmpO, tmpC.setRGB(1, 1, 1)); obstacles.push({ x, z, r: s * 0.95 }); }
   instanced(geo, new THREE.MeshLambertMaterial({ vertexColors: true, map: groundTex }), M, C); }
-if (!CAN && !ICE && !RIV && !PRI) { const geo = new THREE.CylinderGeometry(1, 1, 1, 8, 1); geo.rotateZ(Math.PI / 2); const M = [], C = [];
+if (!CAN && !ICE && !RIV && !PRI && !VOL) { const geo = new THREE.CylinderGeometry(1, 1, 1, 8, 1); geo.rotateZ(Math.PI / 2); const M = [], C = [];
   for (let i = 0; i < 40; i++) { const k = (rnd() * NP) | 0, p = PATH[k], tn = TAN[k], off = rr(ROAD + 6, 35) * (rnd() < 0.5 ? -1 : 1), x = p[0] - tn[1] * off, z = p[1] + tn[0] * off;
     if (pathDist(x, z) < ROAD + 5) continue; const r = rr(0.3, 0.5), len = rr(4, 8), a = rnd() * 6;
     tmpO.position.set(x, height(x, z) + r * 0.6, z); tmpO.rotation.set(0, a, rr(-0.06, 0.06)); tmpO.scale.set(len, r, r); pushT(M, C, tmpO, tmpC.setRGB(0.8, 0.82, 0.7));
@@ -1232,6 +1249,55 @@ function prismFurniture() {
       const c = hue(rnd(), 0.9); Cc.push(new THREE.Color(c[0], c[1], c[2])); }
     instanced(geo, new THREE.MeshBasicMaterial({ color: 0xffffff }), M, Cc, FOGCUT, 400); }
 }
+/* ember peak hazards. Lava rivers run from the crater rim down the flanks and across the road; on each crossing one side of the road is
+   a crust of cooled rock you can drive over - half the road, on the inside of the bend where the racing line runs (the other side, and everything off the road, is lava: the app puts you back before it).
+   A lava lake glows in the crater, and the crater throws fireballs that land on the road: the app flies them (instanced cores, glows,
+   warning rings where they will land, and the blasts), all on one shared clock so every phone sees the same ones. */
+const VOLC = { rivers: [], ims: null };
+function volcanoHazards() {
+  const lavaTex = canvasTex(64, (g, S) => { g.fillStyle = "#ff5a12"; g.fillRect(0, 0, S, S);
+    for (let i = 0; i < 90; i++) { g.fillStyle = rnd() < 0.5 ? "#ffb22e" : "#ff7a1c"; g.fillRect(rr(0, S), rr(0, S), rr(2, 9), rr(1, 3)); }
+    for (let i = 0; i < 26; i++) { g.fillStyle = rnd() < 0.6 ? "#5a1408" : "#2a0a06"; const x = rr(0, S), y = rr(0, S), w = rr(3, 10), h = rr(2, 6); g.fillRect(x, y, w, h); g.fillStyle = "#ffe066"; g.fillRect(x - 1, y + h, w + 2, 1); }
+    for (let i = 0; i < 30; i++) { g.fillStyle = "#fff2a0"; g.fillRect(rr(0, S), rr(0, S), 1, 1); } }, true);
+  const lavaMat = new THREE.MeshBasicMaterial({ map: lavaTex, vertexColors: true, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+  for (let j = 0; j < 5; j++) {
+    const th0 = j * Math.PI * 2 / 5 + 0.45, pts = [], hw = [];
+    for (let r = 92; r <= 560; r += 1.5) { const th = th0 + 0.12 * Math.sin(r * 0.02 + j) + 0.05 * Math.sin(r * 0.07 + 2 * j); pts.push(r * Math.cos(th), r * Math.sin(th)); hw.push(4.6 + 1.4 * Math.sin(r * 0.03 + j)); }
+    // where it crosses the road
+    let kc = 0, best = 1e9; for (let q = 0; q < pts.length / 2; q++) { const d = pathDist(pts[q * 2], pts[q * 2 + 1]); if (d < best) { best = d; kc = pathIdx(pts[q * 2], pts[q * 2 + 1]); } }
+    let turn = 0; for (let d = -30; d <= 30; d++) { const k = (kc + d + NP) % NP, ta = TAN[(k + NP - 5) % NP], tb = TAN[(k + 5) % NP], t = TAN[k]; turn += (tb[0] - ta[0]) * -t[1] + (tb[1] - ta[1]) * t[0]; }
+    const sg = turn >= 0 ? 1 : -1;   // the crust is on the inside of the bend there, where the racing line runs
+    VOLC.rivers.push({ pts, hw, kc, sg });
+    const n = pts.length / 2, A = 6, P = [], UV = [], C = [], I = []; let v = 0;
+    for (let q = 0; q < n; q++) { const a = Math.max(0, q - 1), b = Math.min(n - 1, q + 1), dx = pts[b * 2] - pts[a * 2], dz = pts[b * 2 + 1] - pts[a * 2 + 1], l = Math.hypot(dx, dz) || 1, nx = -dz / l, nz = dx / l;
+      for (let c = 0; c <= A; c++) { const o = (c / A * 2 - 1) * hw[q], x = pts[q * 2] + nx * o, z = pts[q * 2 + 1] + nz * o;
+        const k = pathIdx(x, z), p = PATH[k], t = TAN[k], lat = (x - p[0]) * -t[1] + (z - p[1]) * t[0], onRoad = pathDist(x, z) < ROAD + 0.6;
+        const crust = onRoad && lat * sg >= 0; P.push(x, height(x, z) + (onRoad ? 0.07 : 0.18), z); UV.push(c / A * 1.6, v); v += 0; C.push(...(crust ? [0.16, 0.1, 0.08] : [1, 1, 1])); }
+      v = q * 1.5 / 10; for (let c = 0; c <= A; c++) UV[(q * (A + 1) + c) * 2 + 1] = v; }
+    for (let q = 0; q < n - 1; q++) for (let c = 0; c < A; c++) { const a = q * (A + 1) + c, b = a + A + 1; I.push(a, b, a + 1, a + 1, b, b + 1); }
+    const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute(P, 3)); g.setAttribute("uv", new THREE.Float32BufferAttribute(UV, 2)); g.setAttribute("color", new THREE.Float32BufferAttribute(C, 3)); g.setIndex(I);
+    const m = new THREE.Mesh(g, lavaMat); m.frustumCulled = false; m.userData.dyn = true; scene.add(m);
+    // a crust slab marker: two dark posts with orange caps either end of the safe side
+    for (const e of [-1, 1]) { const k = (kc + e * 9 + NP) % NP, p = PATH[k], t = TAN[k], x = p[0] - t[1] * (ROAD + 1.2) * sg, z = p[1] + t[0] * (ROAD + 1.2) * sg;
+      const post = new THREE.Mesh(new THREE.BoxGeometry(0.3, 1.3, 0.3), new THREE.MeshLambertMaterial({ color: 0x2a2220 })); post.position.set(x, height(x, z) + 0.65, z); scene.add(post);
+      const cap = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.26, 0.34), new THREE.MeshBasicMaterial({ color: 0xff8a20 })); cap.position.set(x, height(x, z) + 1.4, z); scene.add(cap); }
+  }
+  // the crater: a lava lake and a glow standing over it
+  { const y = height(0, 0) + 4, lake = new THREE.Mesh(new THREE.CircleGeometry(52, 40), new THREE.MeshBasicMaterial({ map: lavaTex, side: THREE.DoubleSide })); lake.rotation.x = -Math.PI / 2; lake.position.set(0, y, 0); scene.add(lake);
+    VOLC.crater = [0, y, 0];
+    const gm = new THREE.MeshBasicMaterial({ color: 0x5a1a06, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false }); gm.userData.blend = 2;
+    for (const [h, r, k] of [[18, 46, 1], [55, 34, 0.7], [100, 24, 0.45]]) { const m = gm.clone(); m.userData.blend = 2; m.color.multiplyScalar(k); const o = new THREE.Mesh(new THREE.IcosahedronGeometry(r, 2), m); o.position.set(0, y + h, 0); scene.add(o); } }
+  // fireballs: pools the app moves every frame
+  const mk = (geo, mat, n, cols) => { const im = new THREE.InstancedMesh(geo, mat, n); tmpO.position.set(0, -999, 0); tmpO.rotation.set(0, 0, 0); tmpO.scale.setScalar(0.001); tmpO.updateMatrix();
+    for (let i = 0; i < n; i++) { im.setMatrixAt(i, tmpO.matrix); if (cols) im.setColorAt(i, new THREE.Color(0, 0, 0)); } im.frustumCulled = false; im.userData.dyn = true; scene.add(im); return im; };
+  const add = (c) => { const m = new THREE.MeshBasicMaterial({ color: c, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }); m.userData.blend = 2; return m; };
+  const ringG = new THREE.RingGeometry(0.72, 1, 28); ringG.rotateX(-Math.PI / 2);
+  VOLC.ims = { core: mk(new THREE.IcosahedronGeometry(1, 1), new THREE.MeshBasicMaterial({ color: 0xffd060 }), 24, false),
+    halo: mk(new THREE.IcosahedronGeometry(1, 1), add(0xff5a14), 24, false),
+    ring: mk(ringG, add(0xffffff), 24, true),
+    boom: mk(new THREE.IcosahedronGeometry(1, 2), add(0xffffff), 16, true) };
+}
+if (VOL) volcanoHazards();
 /* ================= rally furniture: start gantry, chevrons, straw bales ================= */
 if (PRI) prismFurniture(); else {
   const postM = new THREE.MeshLambertMaterial({ color: 0x2a2a2a });
@@ -1241,7 +1307,7 @@ if (PRI) prismFurniture(); else {
   const bannerTex = textTex(128, 24, (g) => {
     g.fillStyle = "#e9e6dc"; g.fillRect(0, 0, 128, 24);
     for (let i = 0; i < 32; i++) for (let j = 0; j < 2; j++) { g.fillStyle = (i + j) % 2 ? "#151515" : "#e9e6dc"; g.fillRect(i * 4, j * 4, 4, 4); g.fillRect(i * 4, 16 + j * 4, 4, 4); }
-    text(g, "FOGWOOD", 6, 8, 1, "#c23a2c", null); text(g, "RALLY", 52, 8, 1, "#22324f", null); text(g, SNOW ? "SS2" : CAN ? "SS3" : LAK ? "SS4" : TOU ? "SS5" : RIV ? "SS6" : "SS1", 90, 8, 1, "#151515", null); });
+    text(g, "FOGWOOD", 6, 8, 1, "#c23a2c", null); text(g, "RALLY", 52, 8, 1, "#22324f", null); text(g, SNOW ? "SS2" : CAN ? "SS3" : LAK ? "SS4" : TOU ? "SS5" : RIV ? "SS6" : PRI ? "SS7" : VOL ? "SS8" : "SS1", 90, 8, 1, "#151515", null); });
   const ban = new THREE.Mesh(new THREE.PlaneGeometry((ROAD + 1.3) * 2, 1.1), new THREE.MeshLambertMaterial({ map: bannerTex, side: THREE.DoubleSide }));
   ban.rotation.y = yaw; ban.position.set(p0[0], h0 + 4.6, p0[1]); scene.add(ban);
   const line = new THREE.Mesh(new THREE.PlaneGeometry(ROAD * 2, 0.5), new THREE.MeshLambertMaterial({ color: 0xd9d4c4, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -4 }));
@@ -1324,7 +1390,7 @@ if (PRI) prismFurniture(); else {
 /* grass: one fixed field along the whole stage, in ~48 m chunks that the renderer culls; blades grow in smoothly between
    30 and 46 m from the camera (in the vertex shader) instead of a small patch that rebuilds and pops around the car */
 const GCELL = 1.1, GNEAR = 30, GFAR = 46;
-if (!SNOW && !PRI) {
+if (!SNOW && !PRI && !VOL) {
   const M = [], C = [], band = ROAD + 26;
   for (let cj = Math.floor(-GZH / GCELL); cj <= GZH / GCELL; cj++) for (let ci = Math.floor(-GXH / GCELL); ci <= GXH / GCELL; ci++) {
     const x0 = ci * GCELL, z0 = cj * GCELL, p0 = pathDist(x0, z0); if (p0 >= 19.9 && roadDist(x0, z0) > band) continue;
@@ -1711,13 +1777,13 @@ function setCarModel(k) { k = clamp(k | 0, 0, car.models.length - 1); car.model 
 
 /* ================= dust ================= */
 /* falling snow around the camera (snow map) */
-const SFN = SNOW ? 1100 : TOU ? 420 : 0, sfPos = new Float32Array(Math.max(1, SFN) * 3), sfSeed = new Float32Array(Math.max(1, SFN));
+const SFN = SNOW ? 1100 : TOU ? 420 : VOL ? 700 : 0, sfPos = new Float32Array(Math.max(1, SFN) * 3), sfSeed = new Float32Array(Math.max(1, SFN));
 for (let i = 0; i < SFN; i++) { sfPos[i * 3] = rr(-32, 32); sfPos[i * 3 + 1] = rr(-6, 20); sfPos[i * 3 + 2] = rr(-32, 32); sfSeed[i] = rnd(); }
 const sfGeo = new THREE.BufferGeometry(); sfGeo.setAttribute("position", new THREE.BufferAttribute(sfPos, 3));
-const snowfall = new THREE.Points(sfGeo, new THREE.PointsMaterial({ size: TOU ? 2 : 1.6, sizeAttenuation: false, color: TOU ? 0xd65a2a : 0xf4f8ff, transparent: true, opacity: 0.85, depthWrite: false }));
-snowfall.frustumCulled = false; snowfall.visible = SNOW || TOU; scene.add(snowfall); let sfInit = false;
+const snowfall = new THREE.Points(sfGeo, new THREE.PointsMaterial({ size: TOU || VOL ? 2 : 1.6, sizeAttenuation: false, color: VOL ? 0xff7a28 : TOU ? 0xd65a2a : 0xf4f8ff, transparent: true, opacity: 0.85, depthWrite: false }));
+snowfall.frustumCulled = false; snowfall.visible = SNOW || TOU || VOL; scene.add(snowfall); let sfInit = false;
 function updateSnowfall(dt) {
-  if (!SNOW && !TOU) return; const cx = camera.position.x, cy = camera.position.y, cz = camera.position.z, t = uTime.value, wx = TOU ? 0.4 + uWind.value * 1.2 : 1.2 + uWind.value * 2, fl = TOU ? 2.2 : 0.6, fall = TOU ? 0.55 : 1.1;
+  if (!SNOW && !TOU && !VOL) return; const cx = camera.position.x, cy = camera.position.y, cz = camera.position.z, t = uTime.value, wx = TOU ? 0.4 + uWind.value * 1.2 : 1.2 + uWind.value * 2, fl = TOU ? 2.2 : 0.6, fall = TOU ? 0.55 : 1.1;
   if (!sfInit) { for (let i = 0; i < SFN; i++) { sfPos[i * 3] += cx; sfPos[i * 3 + 1] += cy; sfPos[i * 3 + 2] += cz; } sfInit = true; }
   for (let i = 0; i < SFN; i++) { const k = i * 3, sd = sfSeed[i];
     sfPos[k] += (wx + Math.sin(t * 1.3 + sd * 20) * fl) * dt; sfPos[k + 1] -= (fall + sd * fall) * dt; sfPos[k + 2] += Math.cos(t * 1.1 + sd * 13) * 0.5 * dt;
@@ -2396,7 +2462,7 @@ addEventListener("keydown", e => { if (!alive) return;
   if (game.state === "title" && e.code === "KeyT") toggleMode();
   if (game.state === "drive" && RACE.on && RACE.phase === "done" && RACE.doneT > 1.2 && (e.code === "Enter" || e.code === "Space")) { toTitle(); return; }
   if (game.state === "title" && (e.code === "Enter" || e.code === "Space")) startGame();
-  if (game.state === "title" && /^Digit[1234567]$/.test(e.code)) { const want = ["forest", "snow", "canyon", "lakes", "touge", "riviera", "prism"][+e.code[5] - 1]; if (want !== MAPN) { setTimeout(() => switchMap(want), 0); return; } }
+  if (game.state === "title" && /^Digit[12345678]$/.test(e.code)) { const want = ["forest", "snow", "canyon", "lakes", "touge", "riviera", "prism", "ember"][+e.code[5] - 1]; if (want !== MAPN) { setTimeout(() => switchMap(want), 0); return; } }
   if (e.code === "KeyC") cycleCam(); if (e.code === "KeyR") resetCar(); if (e.code === "KeyM") toggleSound(); if (e.code === "Escape") toTitle();
 }, SIG);
 addEventListener("keyup", e => keys.delete(e.code), SIG);
@@ -2419,7 +2485,7 @@ canvas.addEventListener("pointerdown", e => {
   if (b) buzz("tap", TOPB.includes(b) || b.startsWith("map") ? 0.55 : 0.4); else if (game.state === "title") buzz("tap", 0.55);
   if (b === "snd") toggleSound(); else if (b === "vib") { vibOn = !vibOn; try { localStorage.setItem("fogwood-vib", vibOn ? "1" : "0"); } catch (_) {} if (vibOn) buzz("shift", 0.7); flashMsg(vibOn ? "HAPTICS ON" : "HAPTICS OFF", 1); } else if (b === "pix") { pixIdx = (pixIdx + 1) % PIX.length; try { localStorage.setItem("fogwood-pix", String(pixIdx)); } catch (_) {} resize(); flashMsg(["CHUNKY PIXELS", "MEDIUM PIXELS", "FINE PIXELS"][pixIdx], 1); }
   else if (b === "mode") toggleMode();
-  else if (b === "mapF" || b === "mapS" || b === "mapC" || b === "mapL" || b === "mapT" || b === "mapR" || b === "mapP") { const want = { mapF: "forest", mapS: "snow", mapC: "canyon", mapL: "lakes", mapT: "touge", mapR: "riviera", mapP: "prism" }[b]; if (want !== MAPN) setTimeout(() => switchMap(want), 0); }
+  else if (b === "mapF" || b === "mapS" || b === "mapC" || b === "mapL" || b === "mapT" || b === "mapR" || b === "mapP" || b === "mapE") { const want = { mapF: "forest", mapS: "snow", mapC: "canyon", mapL: "lakes", mapT: "touge", mapR: "riviera", mapP: "prism", mapE: "ember" }[b]; if (want !== MAPN) setTimeout(() => switchMap(want), 0); }
   else if (game.state === "title") startGame();
   else if (!b && RACE.on && RACE.phase === "done" && RACE.doneT > 1.2) toTitle();
   else if (b === "menu") toTitle(); else if (b === "cam") cycleCam(); else if (b === "rst") resetCar(); else if (b) touches.set(e.pointerId, b);
@@ -2467,9 +2533,10 @@ const rcState = (c) => c.isPlayer ? (SIMAI ? PSNAP.s : S) : c.s;
    braking and top speed (tuned per surface by driving the physics), keeping the hard caps for crests, fords and ramps */
 const RPROF = new Float32Array(NP), RTUNE = { kl: 1.15, kb: 1.1, mu: 1.08, grip: 1.5, yaw: 1.15, jc: 1.5 };
 function buildRProf() {
-  const mu = TUNE.muRoad, aL = 9.81 * mu * (SNOW ? 0.96 : PRI ? 1.12 : CAN || LAK || ICE ? 1.25 : MAPN === "forest" ? 1.3 : 1.38) * RTUNE.kl, aB = 9.81 * mu * 0.85 * RTUNE.kb;
+  const mu = TUNE.muRoad, aL = 9.81 * mu * (SNOW ? 0.96 : PRI ? 1.12 : VOL ? 1.12 : CAN || LAK || ICE ? 1.25 : MAPN === "forest" ? 1.3 : 1.38) * RTUNE.kl, aB = 9.81 * mu * 0.85 * RTUNE.kb;
   for (let i = 0; i < NP; i++) { const a = TAN[(i + NP - 6) % NP], b = TAN[(i + 6) % NP], d = Math.abs(Math.atan2(a[0] * b[1] - a[1] * b[0], a[0] * b[0] + a[1] * b[1])) / 12;
-    RPROF[i] = Math.min(56, Math.sqrt(aL / Math.max(d, 1e-4)), JCAP[i] * RTUNE.jc); }
+    RPROF[i] = Math.min(56, Math.sqrt(aL / Math.max(d, 1e-4)), JCAP[i] * RTUNE.jc);
+    if (VOL) RPROF[i] *= 1 - clamp((ROADH[i] - ROADH[(i + 6) % NP]) / 6 * 2.2, 0, 0.3); }   // ember peak: the long descents eat grip and brakes - ease off down them
   for (let pass = 0; pass < 3; pass++) for (let i = NP - 1; i >= 0; i--) RPROF[i] = Math.min(RPROF[i], Math.sqrt(RPROF[(i + 1) % NP] ** 2 + 2 * aB));
 }
 buildRProf();
@@ -2779,7 +2846,7 @@ function obstacleMat(x, z) { let best = 9, m = 0; const bi = Math.floor(x / OC),
   return m; }
 /* the stage's own sounds and preset, sent once per boot */
 function audioStage() {
-  SHARED.send(new Float32Array([5, SNOW ? 1 : CAN ? 2 : LAK ? 3 : ICE ? 4 : TOU ? 5 : RIV ? 6 : PRI ? 7 : 0]));
+  SHARED.send(new Float32Array([5, SNOW ? 1 : CAN ? 2 : LAK ? 3 : ICE ? 4 : TOU ? 5 : RIV ? 6 : PRI ? 7 : VOL ? 8 : 0]));
   const E = [];
   if (ICE) { for (const f of FALLS) E.push(1, f.bx, f.by + (f.h1 - f.h0) * 0.3, f.bz, 1);
     for (const k of FORDS) E.push(2, PATH[k][0], 0, PATH[k][1], 1.2);
@@ -2835,12 +2902,12 @@ function drawHUD(inp) {
     const sc = Math.max(2, Math.min(4 * U, Math.floor(LH / 42), Math.floor(LW / 46))), ty = Math.round(LH * 0.15);
     text(g, "FOGWOOD", (LW - textW("FOGWOOD", sc)) / 2, ty, sc, INK); text(g, "RALLY", (LW - textW("RALLY", sc)) / 2, ty + 9 * sc, sc, AMBER);
     if (!portrait) {
-      const sub = (ICE ? "SS5 SVARTFOSS - " + STAGE_KM + " KM BLACK GRAVEL" : PRI ? "SS7 PRISM SKYWAY - " + STAGE_KM + " KM LIGHT" : RIV ? "SS6 RIVIERA CORNICHE - " + STAGE_KM + " KM TARMAC" : TOU ? "SS5 MOMIJI TOUGE - " + STAGE_KM + " KM TARMAC" : CAN ? "SS3 CANYON ROUGE - " + STAGE_KM + " KM SAND" : LAK ? "SS4 LAKELAND - " + STAGE_KM + " KM GRAVEL" : SNOW ? "SS2 COL DE GIVRE - " + STAGE_KM + " KM SNOW" : "SS1 FOGWOOD - " + STAGE_KM + " KM GRAVEL") + (game.best != null ? " - BEST " + fmt(game.best) : ""); text(g, sub, (LW - textW(sub, U)) / 2, ty + 17 * sc, U, "rgba(233,236,226,0.8)");
+      const sub = (VOL ? "SS8 EMBER PEAK - " + STAGE_KM + " KM ASH" : ICE ? "SS5 SVARTFOSS - " + STAGE_KM + " KM BLACK GRAVEL" : PRI ? "SS7 PRISM SKYWAY - " + STAGE_KM + " KM LIGHT" : RIV ? "SS6 RIVIERA CORNICHE - " + STAGE_KM + " KM TARMAC" : TOU ? "SS5 MOMIJI TOUGE - " + STAGE_KM + " KM TARMAC" : CAN ? "SS3 CANYON ROUGE - " + STAGE_KM + " KM SAND" : LAK ? "SS4 LAKELAND - " + STAGE_KM + " KM GRAVEL" : SNOW ? "SS2 COL DE GIVRE - " + STAGE_KM + " KM SNOW" : "SS1 FOGWOOD - " + STAGE_KM + " KM GRAVEL") + (game.best != null ? " - BEST " + fmt(game.best) : ""); text(g, sub, (LW - textW(sub, U)) / 2, ty + 17 * sc, U, "rgba(233,236,226,0.8)");
       const tp = audioReady ? "TAP TO START" : "LOADING SOUND"; if ((performance.now() / 500 | 0) % 2 === 0 || !audioReady) text(g, tp, (LW - textW(tp, U)) / 2, ty + 17 * sc + 12 * U, U, INK);
       const hint = matchMedia("(pointer: coarse)").matches ? "LEFT THUMB STEERS - RIGHT THUMB ON THE PEDALS" : "ARROWS DRIVE - SPACE HANDBRAKE - C CAMERA - R RESET";
       text(g, hint, (LW - textW(hint, U)) / 2, ty + 17 * sc + 24 * U, U, "rgba(233,236,226,0.7)");
-      { const gp = 4 * U, mw = Math.min(56 * U, Math.floor((LW - 8 * U - 6 * gp) / 7)), mh = 13 * U, my = ty + 17 * sc + 35 * U, mx0 = Math.round(LW / 2 - mw * 3.5 - gp * 3);
-        for (const [k, label, on, n] of [["mapF", "1 FOREST", MAPN === "forest", 0], ["mapS", "2 SNOW", SNOW, 1], ["mapC", "3 CANYON", CAN, 2], ["mapL", "4 LAKES", LAK, 3], ["mapT", "5 TOUGE", TOU, 4], ["mapR", "6 RIVIERA", RIV, 5], ["mapP", "7 PRISM", PRI, 6]]) { const x = mx0 + n * (mw + gp);
+      { const gp = 4 * U, mw = Math.min(56 * U, Math.floor((LW - 8 * U - 7 * gp) / 8)), mh = 13 * U, my = ty + 17 * sc + 35 * U, mx0 = Math.round(LW / 2 - mw * 4 - gp * 3.5);
+        for (const [k, label, on, n] of [["mapF", "1 FOREST", MAPN === "forest", 0], ["mapS", "2 SNOW", SNOW, 1], ["mapC", "3 CANYON", CAN, 2], ["mapL", "4 LAKES", LAK, 3], ["mapT", "5 TOUGE", TOU, 4], ["mapR", "6 RIVIERA", RIV, 5], ["mapP", "7 PRISM", PRI, 6], ["mapE", "8 EMBER", VOL, 7]]) { const x = mx0 + n * (mw + gp);
           UI[k] = { x, y: my, w: mw, h: mh }; box(g, x, my, mw, mh, on ? "rgba(243,207,98,0.3)" : PANEL, on ? AMBER : EDGE);
           text(g, label, x + (mw - textW(label, U)) / 2, my + 3 * U, U, on ? AMBER : INK); }
         const ml = raceMode ? "MODE: RACE - 5 RIVALS - " + RACE.laps + " LAPS" : "MODE: TIME TRIAL", mw2 = textW(ml, U) + 12 * U, mx2 = Math.round((LW - mw2) / 2), my2 = my + mh + 4 * U;
@@ -3099,7 +3166,7 @@ function rtPacket() {
   const ol = [], pl = []; car.root.traverse(o => ol.push(o)); RG.puppet.traverse(o => pl.push(o)); const orig = new Map(); pl.forEach((o, i) => orig.set(o, ol[i]));
   const rg = { parts: RG.parts.map(p => ({ obj: ids(p.im)[0], src: (p.wsrc || [p.src]).map(m => local(orig.get(m))), model: p.model, tint: p.tint ? 1 : 0 })), shadow: ids(RG.sh)[0] };
   const flagsOf = (o) => o ? 1 : 0;
-  const pk = { v: 1, map: MAPN, mapId: SNOW ? 1 : CAN ? 2 : LAK ? 3 : ICE ? 4 : TOU ? 5 : RIV ? 6 : PRI ? 7 : 0, NP, GXH, GZH,
+  const pk = { v: 1, map: MAPN, mapId: SNOW ? 1 : CAN ? 2 : LAK ? 3 : ICE ? 4 : TOU ? 5 : RIV ? 6 : PRI ? 7 : VOL ? 8 : 0, NP, GXH, GZH,
     sun: SUN.toArray(), fogD: scene.fog.density, far: camera.far, near: camera.near,
     path: PATH.flat(), tan: TAN.flat(), roadh: Array.from(ROADH), vprof: Array.from(VPROF), vcurve: Array.from(VCURVE), jcap: Array.from(JCAP), drop: Array.from(DROP),
     rline: Array.from(RLINE), rprof: Array.from(RPROF),
@@ -3112,10 +3179,11 @@ function rtPacket() {
       return { paint, alt: (B.userData.liveries || []).map(m => ids(m)[0]) }; }), shadow: ids(car.shadow)[0], models: car.models.map(B => { const l = []; B.traverse(o => l.push(...ids(o))); return l; }) }, glit: GLIT.map(m => ids(m)[0]),
     cull: CULL.map(c => [ids(c.o), c.c.x, c.c.y, c.c.z, c.r, c.d]),
     boats: BOATS.ims ? { list: BOATS.list, hull: ids(BOATS.ims.hull)[0], sail: ids(BOATS.ims.sail)[0], cab: ids(BOATS.ims.cab)[0], wake: ids(BOATS.ims.wake)[0] } : null,
-    snow: (SNOW || TOU) ? { obj: ids(snowfall)[0], n: SFN, pos: Array.from(sfPos), seed: Array.from(sfSeed) } : null,
+    snow: (SNOW || TOU || VOL) ? { obj: ids(snowfall)[0], n: SFN, pos: Array.from(sfPos), seed: Array.from(sfSeed) } : null,
     dust: { obj: ids(dust)[0], n: DN },
     shade: Array.from({ length: NP * 13 }, (_, q) => { const i = (q / 13) | 0, l = q % 13 - 6, p = PATH[i], tn = TAN[i]; return Math.round(sunShadowAt(p[0] - tn[1] * l, p[1] + tn[0] * l) * 99); }),
     shadeTint: SHADOW_TINT,
+    volc: VOL ? { core: ids(VOLC.ims.core)[0], halo: ids(VOLC.ims.halo)[0], ring: ids(VOLC.ims.ring)[0], boom: ids(VOLC.ims.boom)[0], crater: VOLC.crater, rivers: VOLC.rivers } : null,
     wave: PRI ? { objs: scene.children.filter(o => o.userData.wave).flatMap(o => ids(o)), secs: WAVES } : null,
     tiles: scene.children.filter(o => o.userData.grid).map(o => [ids(o)[0], ...o.userData.grid, ...o.geometry.boundingSphere.center.toArray()]),   // stage ground grids: the app draws far ones coarser
     saves: {} };
@@ -3277,6 +3345,6 @@ return () => {
 };
 }
 window.__rtBoot = (name) => switchMap(name);   // the Rust engine asks for the next stage
-CURRENT = boot({ "#snow": "snow", "#canyon": "canyon", "#lakes": "lakes", "#touge": "touge", "#riviera": "riviera", "#prism": "prism" }[location.hash] || "forest");
+CURRENT = boot({ "#snow": "snow", "#canyon": "canyon", "#lakes": "lakes", "#touge": "touge", "#riviera": "riviera", "#prism": "prism", "#ember": "ember" }[location.hash] || "forest");
 </script>
 </body></html>

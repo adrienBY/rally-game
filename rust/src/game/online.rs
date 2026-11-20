@@ -9,11 +9,11 @@ use crate::world::World;
 #[derive(Clone, PartialEq, Debug, Default)]
 pub enum OnlineUi { #[default] Closed, Menu, Join(String), Lobby, Stages, Rooms }
 
-pub const KEYS: [&str; 36] = ["on_bots", "on_rooms", "on_r0", "on_r1", "on_r2", "on_r3", "on_r4", "on_r5", "on_host", "on_join", "on_back", "on_start", "on_leave", "on_stage", "k0", "k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "k9", "kdel", "kok", "on_laps", "online",
-    "on_name", "on_st0", "on_st1", "on_st2", "on_st3", "on_st4", "on_st5", "on_st6"];
-const MAPS: [(&str, &str); 7] = [("forest", "FOGWOOD"), ("snow", "COL DE GIVRE"), ("canyon", "CANYON ROUGE"), ("lakes", "LAKELAND"), ("touge", "MOMIJI TOUGE"), ("riviera", "RIVIERA CORNICHE"), ("prism", "PRISM SKYWAY")];
+pub const KEYS: [&str; 37] = ["on_bots", "on_rooms", "on_r0", "on_r1", "on_r2", "on_r3", "on_r4", "on_r5", "on_host", "on_join", "on_back", "on_start", "on_leave", "on_stage", "k0", "k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "k9", "kdel", "kok", "on_laps", "online",
+    "on_name", "on_st0", "on_st1", "on_st2", "on_st3", "on_st4", "on_st5", "on_st6", "on_st7"];
+const MAPS: [(&str, &str); 8] = [("forest", "FOGWOOD"), ("snow", "COL DE GIVRE"), ("canyon", "CANYON ROUGE"), ("lakes", "LAKELAND"), ("touge", "MOMIJI TOUGE"), ("riviera", "RIVIERA CORNICHE"), ("prism", "PRISM SKYWAY"), ("ember", "EMBER PEAK")];
 /// the stage list: tile key, short name, surface
-const TILES: [(&str, &str, &str); 7] = [("on_st0", "FOREST", "GRAVEL"), ("on_st1", "SNOW", "SNOW"), ("on_st2", "CANYON", "SAND"), ("on_st3", "LAKES", "GRAVEL"), ("on_st4", "TOUGE", "TARMAC"), ("on_st5", "RIVIERA", "TARMAC"), ("on_st6", "PRISM", "LIGHT")];
+const TILES: [(&str, &str, &str); 8] = [("on_st0", "FOREST", "GRAVEL"), ("on_st1", "SNOW", "SNOW"), ("on_st2", "CANYON", "SAND"), ("on_st3", "LAKES", "GRAVEL"), ("on_st4", "TOUGE", "TARMAC"), ("on_st5", "RIVIERA", "TARMAC"), ("on_st6", "PRISM", "LIGHT"), ("on_st7", "EMBER", "ASH")];
 fn short_name(m: &str) -> &'static str { MAPS.iter().position(|x| x.0 == m).map(|k| TILES[k].1).unwrap_or("STAGE") }
 fn stage_name(m: &str) -> &'static str { MAPS.iter().find(|x| x.0 == m).map(|x| x.1).unwrap_or("STAGE") }
 

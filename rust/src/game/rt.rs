@@ -7,6 +7,10 @@ pub struct Node { pub parent: i32, pub pre: M, pub p: [f64; 3], pub r: [f64; 3],
 pub struct Boat { pub x: f64, pub z: f64, pub h: f64, pub v: f64, pub sail: bool, pub ph: f64, pub sc: f64 }
 pub struct Cull { pub ids: Vec<usize>, pub c: [f64; 3], pub r: f64, pub d: f64 }
 /// one instanced piece of the rivals' cars: which body it belongs to (None: the wheels, shared) and whether it takes the team colour
+/// Ember Peak: a lava river (centreline, half-width at each point), where it crosses the road and which side of the road is the crust
+pub struct River { pub pts: Vec<(f64, f64)>, pub hw: Vec<f64>, pub kc: usize, pub sg: f64, pub bb: [f64; 4] }
+/// Ember Peak: the fireball pools (core, glow, warning ring, blast), the crater they come from, the lava rivers
+pub struct Volc { pub ims: [usize; 4], pub crater: [f64; 3], pub rivers: Vec<River> }
 pub struct RgPart { pub obj: usize, pub src: Vec<(usize, M)>, pub model: Option<usize>, pub tint: bool }
 
 pub struct Rt {
@@ -33,6 +37,7 @@ pub struct Rt {
     pub shade: Vec<u8>, pub shade_tint: [f64; 3],
     /// prism: the deck objects that heave, and the wave sections [from, to, amplitude, wavelength, period]
     pub wave_objs: Vec<usize>, pub wave_secs: Vec<[f64; 5]>,
+    pub volc: Option<Volc>,
 }
 
 fn f(v: &Value) -> f64 { v.as_f64().unwrap_or(0.0) }
@@ -81,6 +86,12 @@ pub fn parse(pkt: &[u8]) -> Result<Rt, String> {
         boats, boat_ims, snow, dust,
         shade: arr(&j["shade"]).iter().map(|&v| v as u8).collect(), shade_tint: { let t = arr(&j["shadeTint"]); if t.len() == 3 { [t[0], t[1], t[2]] } else { [1.0; 3] } },
         tiles: j["tiles"].as_array().cloned().unwrap_or_default().iter().map(|t| { let a = arr(t); (a[0] as usize, a[1] as usize, a[2] as usize, [a[3], a[4], a[5]]) }).collect(),
+        volc: { let v = &j["volc"]; match (id(&v["core"]), id(&v["halo"]), id(&v["ring"]), id(&v["boom"])) { (Some(a), Some(b), Some(c), Some(d)) => {
+            let cr = arr(&v["crater"]); let rivers = v["rivers"].as_array().cloned().unwrap_or_default().iter().map(|q| { let p = arr(&q["pts"]); let hw = arr(&q["hw"]);
+                let pts: Vec<(f64, f64)> = p.chunks(2).map(|c| (c[0], c[1])).collect(); let m = hw.iter().cloned().fold(0.0, f64::max) + 1.0;
+                let bb = [pts.iter().map(|p| p.0).fold(f64::MAX, f64::min) - m, pts.iter().map(|p| p.0).fold(f64::MIN, f64::max) + m, pts.iter().map(|p| p.1).fold(f64::MAX, f64::min) - m, pts.iter().map(|p| p.1).fold(f64::MIN, f64::max) + m];
+                River { pts, hw, kc: q["kc"].as_u64().unwrap_or(0) as usize, sg: f(&q["sg"]), bb } }).collect();
+            Some(Volc { ims: [a, b, c, d], crater: [cr.first().copied().unwrap_or(0.0), cr.get(1).copied().unwrap_or(150.0), cr.get(2).copied().unwrap_or(0.0)], rivers }) } _ => None } },
         wave_objs: j["wave"]["objs"].as_array().map(|a| a.iter().filter_map(id).collect()).unwrap_or_default(),
         wave_secs: j["wave"]["secs"].as_array().cloned().unwrap_or_default().iter().map(|q| { let a = arr(q); [a.first().copied().unwrap_or(0.0), a.get(1).copied().unwrap_or(0.0), a.get(2).copied().unwrap_or(0.0), a.get(3).copied().unwrap_or(0.0), a.get(4).copied().unwrap_or(0.0)] }).collect(),
         saves: j["saves"].as_object().map(|o| o.iter().map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string())).collect()).unwrap_or_default(),
