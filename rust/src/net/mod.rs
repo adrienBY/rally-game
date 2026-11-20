@@ -315,12 +315,16 @@ impl Session {
     }
 
     /// Host: everyone in the room races on `map`, lights out `delay` seconds from now, with `bots` AI cars (rivals, fastest
-    /// first). Like a solo race the players start mid-grid: the quicker half of the AI cars ahead of them, the rest behind.
+    /// first). Like a solo race the players start mid-grid: the quicker half of the AI cars ahead of them, the rest behind; the players'
+    /// own order is shuffled each race.
     /// Returns the start for the host itself.
     pub fn start_race(&mut self, map: &str, laps: u8, delay: f64, bots: &[u8]) -> Option<Start> {
         if !self.is_host { return None; }
         let mut ids: Vec<(f64, u32)> = self.peers.values().map(|p| (p.first_seen, p.id)).collect(); ids.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let mut players = vec![self.me]; players.extend(ids.iter().take(11).map(|x| x.1));
+        // the players' order on the grid is drawn fresh each race (the host sends it, so every phone agrees) - whoever made the room
+        // no longer always starts in front
+        for i in (1..players.len()).rev() { let j = rand_u32() as usize % (i + 1); players.swap(i, j); }
         let nb = bots.len().min(12 - players.len()); let ahead = (nb + 1) / 2;
         let bot_slots: Vec<(u8, u8)> = bots.iter().take(nb).enumerate().map(|(k, r)| (*r, if k < ahead { k } else { k + players.len() } as u8)).collect();
         let slots = players.iter().enumerate().map(|(k, id)| (*id, (ahead + k) as u8)).collect();
