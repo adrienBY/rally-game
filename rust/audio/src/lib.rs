@@ -2,7 +2,7 @@
 //!
 //! One `Engine` renders interleaved stereo. The game talks to it with small binary messages (little-endian f32s):
 //!   [1, params...]            per-frame car/listener state (see `Params`)
-//!   [2, kind, a, b]           events: 1 impact(strength, material) 2 landing(v) 3 gear shift 4 splash(v)
+//!   [2, kind, a, b]           events: 1 impact(strength, material) 2 landing(v) 3 gear shift 4 splash(v) 5 fireball boom(distance m)
 //!   [3, n, (kind x y z gain)*n]  positional emitters of the stage
 //!   [4, id, ch, rate, looped, frames, pcm(i16 packed two per float slot)...]  a recording
 //!   [5, map]                  stage preset (0 forest, 1 snow, 2 canyon, 3 lakes, 4 iceland, 5 touge)
@@ -65,7 +65,7 @@ impl Engine {
                 self.p = Params { car: c, lx: f(11), ly: f(12), lz: f(13), lyaw: f(14), cx: f(15), cy: f(16), cz: f(17), wind: f(18), master: f(20) };
                 if !self.have_params { self.have_params = true; self.retarget(); self.car_d = self.car_dt; }
             }
-            2 => match f(1) as i32 { 1 => self.car.impact(f(2), f(3) as u32), 2 => self.car.land(f(2)), 3 => self.car.shift(), 4 => self.car.splash(f(2)), _ => {} },
+            2 => match f(1) as i32 { 1 => self.car.impact(f(2), f(3) as u32), 2 => self.car.land(f(2)), 3 => self.car.shift(), 4 => self.car.splash(f(2)), 5 => self.car.boom(f(2)), _ => {} },
             3 => { let cnt = (f(1) as usize).min((n - 2) / 5); self.ems.clear();
                 for k in 0..cnt { let b = 2 + k * 5; self.ems.push(Emitter { kind: f(b) as u32, x: f(b + 1), y: f(b + 2), z: f(b + 3), gain: f(b + 4) }); }
                 for v in self.ev.iter_mut() { v.em = -1; } }

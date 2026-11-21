@@ -140,6 +140,8 @@ pub struct Game {
     pub vol: bool, volc_tp: f64,
     /// the rivals' tint colours as last uploaded (they only change when the field changes), and the crash damage's half-rate clock
     pub rg_cols: Vec<Vec<f32>>, crash_flip: bool, crash_dt: f64,
+    /// tools only: a camera placed from outside (eye, target, fov) and a fixed pixel height
+    pub cam_ovr: Option<([f64; 3], [f64; 3], f64)>, pub pix_h: Option<f64>, pub inp_ovr: Option<Input>,
     /// prism waves: run on the game clock instead of the wall clock (headless runs faster than real time); the heaving deck meshes
     pub wave_sim: bool, pub wave_t0: f64, wave_mesh: Vec<WaveMesh>, wave_tab: Vec<f32>,
     pub tune: Tune, pub cam_follow: f64, pub car: Car, pub rpm_shown: f64, pub shake: f64, pub car_hit: f64, pub prev_throttle: f64,
@@ -203,7 +205,7 @@ impl Game {
         let race = Race::new(&rt, &ps);
         let ncull = rt.cull.len(); let nglit = rt.glit.len();
         let mut g = Game {
-            np, snow: mid == 1, can: mid == 2, lak: mid == 3, tou: mid == 5, riv: mid == 6, pri: mid == 7, pri_last: None, vol: mid == 8, volc_tp: -1.0, rg_cols: Vec::new(), crash_flip: false, crash_dt: 0.0, wave_sim: false, wave_t0: 0.0, wave_mesh: Vec::new(), wave_tab: Vec::new(),
+            np, snow: mid == 1, can: mid == 2, lak: mid == 3, tou: mid == 5, riv: mid == 6, pri: mid == 7, pri_last: None, vol: mid == 8, volc_tp: -1.0, rg_cols: Vec::new(), cam_ovr: None, pix_h: None, inp_ovr: None, crash_flip: false, crash_dt: 0.0, wave_sim: false, wave_t0: 0.0, wave_mesh: Vec::new(), wave_tab: Vec::new(),
             tune: cars::tune_for(&Tune::from_slice(&tv), ps.car), base_tune: Tune::from_slice(&tv), gar: Default::default(), car_vis: None, paint_vis: None, menu: menu::fresh(), crash: crash::Crash::new(), cam_follow, car: Car::new(), rpm_shown: 900.0, shake: 0.0, car_hit: 0.0, prev_throttle: 0.0,
             state: State::Title, g_t: 0.0, lap: 1, lap_start: 0.0, best, flags: [false; 3], last_idx: 0, msg: String::new(), msg_t: 0.0, wrong_t: 0.0, started: false, go: 0.0,
             cam: CamState { y: 0.0, h: 0.0, init: false, mode: ps.cam_mode as i32, fov: 56.0, lag: 0.0, cp: None, cr: None, shot: -1, cut_t: 0.0, passed: 0.0, anchor: [0.0; 3], target: 0, side: 1.0 },
@@ -257,7 +259,7 @@ impl Game {
     // ---------------- screen ----------------
     pub fn resize(&mut self, w: f64, h: f64, inset_px: [f64; 4]) {
         self.w = w.max(1.0); self.h = h.max(1.0); self.inset_px = inset_px;
-        let s = self.w.min(self.h) / PIX[self.ps.pix_idx];
+        let s = self.w.min(self.h) / self.pix_h.unwrap_or(PIX[self.ps.pix_idx]);
         self.lw = ((self.w / s + 0.5).floor() as i32).max(120); self.lh = ((self.h / s + 0.5).floor() as i32).max(90);
         self.u = ((self.lh as f64).min(self.lw as f64 * 0.56) / 150.0).floor().max(1.0);
         let k = self.lw as f64 / self.w; for i in 0..4 { self.inset[i] = inset_px[i] * k; }
@@ -359,12 +361,14 @@ impl Game {
         let Some(ims) = self.rt.volc.as_ref().map(|v| v.ims) else { return };
         let t = if self.wave_sim { (self.wave_t0 + self.time).rem_euclid(volc::PERIOD) } else { web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| (d.as_millis() % (volc::PERIOD as u128 * 1000)) as f64 / 1000.0).unwrap_or(self.time % volc::PERIOD) };
         let tp = if self.volc_tp < 0.0 || self.volc_tp > t || t - self.volc_tp > 1.0 { t - dt.max(0.0) } else { self.volc_tp }; self.volc_tp = t;
-        let f = volc::frame(&self.rt, w, t, tp);
-        r.set_instances(ims[0], (f.core.len() / 16) as i32, &f.core); r.set_instances(ims[1], (f.halo.len() / 16) as i32, &f.halo);
-        r.set_instances(ims[2], (f.ring.len() / 16) as i32, &f.ring); if !f.ring_c.is_empty() { r.set_instance_colors(ims[2], &f.ring_c); }
-        r.set_instances(ims[3], (f.boom.len() / 16) as i32, &f.boom); if !f.boom_c.is_empty() { r.set_instance_colors(ims[3], &f.boom_c); }
+        let f = volc::frame(&self.rt, w, t, tp, self.cam_pos);
+        for (k, p) in [&f.fire, &f.solid, &f.glow, &f.ring, &f.disc].into_iter().enumerate() { r.set_instances(ims[k], p.n(), &p.m); if !p.c.is_empty() { r.set_instance_colors(ims[k], &p.c); } }
         let live = (self.state == State::Drive || self.race.demo) && !(self.race.on && self.race.phase == race::Phase::Grid);   // not while the grid waits for the lights
         for b in &f.landed {
+            // every blast is heard (fading out by 240 m) and one close by shakes the camera
+            let d = (self.car.x - b.to[0]).hypot(self.car.z - b.to[2]).hypot(self.car.y - b.to[1]);
+            if d < 240.0 { self.audio_msg(&[2.0, 5.0, d as f32, 0.0]); }
+            if d < 45.0 && self.state == State::Drive { self.shake = self.shake.max(0.8 * (1.0 - d / 45.0).powf(1.5)); }
             if live { let k = volc::kick(&mut self.car, b); if k > 0.0 && self.state == State::Drive { self.flash_msg("BOOM!", 0.8); self.buzz("land", 0.5 + 0.5 * k); }
                 else if self.state == State::Drive && (self.car.x - b.to[0]).hypot(self.car.z - b.to[2]) < 22.0 { self.buzz("shift", 0.35); } }
             for c in self.race.cars.iter_mut() { if c.is_ai() { volc::kick(&mut c.car, b); } }
@@ -443,7 +447,7 @@ impl Game {
         self.fps_acc += dt; self.fps_n += 1;
         if self.fps_n == 90 { if !self.ps.downgraded && self.fps_acc / 90.0 > 1.0 / 36.0 && self.ps.pix_idx > 0 { self.ps.pix_idx -= 1; let (a, b, c) = (self.w, self.h, self.inset_px); self.resize(a, b, c); self.ps.downgraded = true; } self.fps_acc = 0.0; self.fps_n = 0; }
         let gust = clamp(0.5 + (fbm(self.time * 0.06, 3.3, 3) - 0.5) * 1.8, 0.0, 1.0); self.wind = gust;
-        let inp = if self.state == State::Drive {
+        let inp = if let Some(i) = self.inp_ovr { i } else if self.state == State::Drive {
             if self.go > 0.9 { Input { steer: 0.0, throttle: 0.0, brake: 0.0, hb: true } } else if self.auto || (self.race.on && self.race.phase == race::Phase::Done) { self.ai_input(w) } else { self.read_input() }
         } else if self.gar.open || (self.race.demo && self.go > 0.9) { Input { steer: 0.0, throttle: 0.0, brake: 0.0, hb: true } } else { self.ai_input(w) };
         let mut tp = web_time::Instant::now(); let mut prof = [0f32; 8];
@@ -578,6 +582,7 @@ impl Game {
         if self.state == State::Title && self.cam.shot >= 0 && self.cam.cut_t < 0.05 { self.cam.fov = fov_t; }
         self.cam.fov += (fov_t - self.cam.fov) * (dt * 3.0).min(1.0);
         self.fov_now = if self.w > self.h { self.cam.fov } else { self.cam.fov + 20.0 };
+        if let Some((p, t, f)) = self.cam_ovr { self.cam_pos = p; self.cam_rot = look_rot(p, t); self.fov_now = f; }
         let cw = compose(self.cam_pos, &self.cam_rot, [1.0; 3]); self.view = invert(&cw);
         self.proj = perspective(self.fov_now, self.w / self.h, self.rt.near, self.rt.far);
     }

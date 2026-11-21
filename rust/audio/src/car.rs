@@ -30,7 +30,7 @@ pub struct Car {
     // tyres and air
     crunch: Biquad, crunch_lo: Biquad, hiss: Svf, rumble: Biquad, squeal_ph: f32, squeal_f: f32, skid: Player, skid_lp: Biquad, rush: Svf, water: Player, spray: Biquad,
     // one-shots
-    shots: [(usize, Player, f32, f32, bool); 8], thump: f32, thump_ph: f32, clunk: f32, upd: u32, kf: f32, ks: f32, kup: f32, kdn: f32,
+    shots: [(usize, Player, f32, f32, bool); 8], thump: f32, thump_ph: f32, clunk: f32, boom: f32, boom_ph: f32, boom_t: f32, boom_lp: Biquad, boom_cr: f32, upd: u32, kf: f32, ks: f32, kup: f32, kdn: f32,
 }
 
 impl Car {
@@ -43,7 +43,7 @@ impl Car {
             eng_lp: Biquad::lp(sr, 2600.0, 0.7), sub_lp: Biquad::lp(sr, 230.0, 0.8), dc: OnePole::new(sr, 18.0),
             crunch: Biquad::bp(sr, 2300.0, 0.9), crunch_lo: Biquad::bp(sr, 650.0, 1.0), hiss: Svf::default(), rumble: Biquad::lp(sr, 110.0, 0.8),
             squeal_ph: 0.0, squeal_f: 1100.0, skid: Player::default(), skid_lp: Biquad::lp(sr, 2400.0, 0.7), rush: Svf::default(), water: Player::default(),
-            spray: Biquad::hp(sr, 1800.0, 0.7), shots: [(0, Player { pos: 0.0, done: true }, 0.0, 1.0, false); 8], thump: 0.0, thump_ph: 0.0, clunk: 0.0, upd: 0,
+            spray: Biquad::hp(sr, 1800.0, 0.7), shots: [(0, Player { pos: 0.0, done: true }, 0.0, 1.0, false); 8], thump: 0.0, thump_ph: 0.0, clunk: 0.0, boom: 0.0, boom_ph: 0.0, boom_t: 1.0, boom_lp: Biquad::lp(sr, 240.0, 0.8), boom_cr: 0.0, upd: 0,
             kf: 1.0 - expf(-1.0 / (0.025 * sr)), ks: 1.0 - expf(-1.0 / (0.12 * sr)), kup: 1.0 - expf(-1.0 / (0.7 * sr)), kdn: 1.0 - expf(-1.0 / (0.25 * sr)) }
     }
 
@@ -62,6 +62,21 @@ impl Car {
         self.thump = self.thump.max(g * 0.6); self.thump_ph = 0.0;
     }
     pub fn shift(&mut self) { self.clunk = 1.0; }
+    /// a fireball landing `d` m away: a falling sub thump, a roar of low noise and crackle, plus the impact recording slowed right down
+    pub fn boom(&mut self, d: f32) {
+        let g = clampf(1.0 - d / 240.0, 0.0, 1.0); let g = g * g; if g < 0.01 { return; }
+        if g > self.boom * 0.6 { self.boom = g; self.boom_ph = 0.0; self.boom_t = 0.0; self.boom_cr = g * clampf(1.0 - d / 90.0, 0.0, 1.0); }
+        if d < 120.0 { self.shot(S_IMPACT, 0.36, 0.46, 0.25 + 0.75 * g, true); }
+    }
+    #[inline] fn boom_tick(&mut self, w: f32, sr: f32) -> f32 {
+        if self.boom < 0.001 { return 0.0; }
+        self.boom_t += 1.0 / sr; let t = self.boom_t; self.boom_ph += (34.0 + 40.0 * expf(-t * 7.0)) / sr;
+        let sub = fsin(self.boom_ph) * expf(-t * 3.0) * 0.9;
+        let roar = self.boom_lp.run(w) * 2.6 * expf(-t * 2.2) * (1.0 - expf(-t * 60.0));
+        let cr = if self.boom_cr > 0.001 && fabsf(w) > 0.985 { w * self.boom_cr * expf(-t * 2.5) * 0.9 } else { 0.0 };
+        if t > 2.5 { self.boom = 0.0; }
+        (sub + roar + cr) * self.boom
+    }
     pub fn splash(&mut self, v: f32) { self.shot(S_SPLASH, 0.8, 1.1, clampf(v / 18.0, 0.2, 0.7), false); }
 
     /// water churn in a ford plus impacts, landings and splashes
@@ -74,6 +89,7 @@ impl Car {
         }
         for s in self.shots.iter_mut() { if s.1.done { continue; } if let Some(sm) = &smp[s.0] { let (a, _) = s.1.tick(sm, s.3, false); out += a * s.2 * if s.4 { 0.8 } else { 1.0 }; } else { s.1.done = true; } }
         if self.thump > 0.001 { self.thump_ph += 52.0 / sr; out += fsin(self.thump_ph) * self.thump * 0.5; self.thump *= 1.0 - 9.0 / sr; }
+        out += self.boom_tick(w, sr);
         out
     }
 
@@ -164,6 +180,7 @@ impl Car {
         let mut fx = 0.0;
         for s in self.shots.iter_mut() { if s.1.done { continue; } if let Some(sm) = &smp[s.0] { let (a, _) = s.1.tick(sm, s.3, false); fx += a * s.2 * if s.4 { 0.8 } else { 1.0 }; } else { s.1.done = true; } }
         if self.thump > 0.001 { self.thump_ph += 52.0 / sr; fx += fsin(self.thump_ph) * self.thump * 0.5; self.thump *= 1.0 - 9.0 / sr; }
+        fx += self.boom_tick(w, sr);
         if self.clunk > 0.001 { fx += (w * 0.3 + fsin(self.whine_ph * 5.9) * 0.4) * self.clunk * 0.12; self.clunk *= 1.0 - 60.0 / sr; }
         let _ = i.drive;
         (e * 0.55, tyres + rush + fx)

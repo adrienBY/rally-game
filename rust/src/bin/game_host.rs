@@ -60,11 +60,24 @@ fn main() {
         gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(tex), 0);
         let mut steps: Vec<(f64, String)> = a[4].split(',').filter_map(|s| { let (t, act) = s.split_once(':')?; Some((t.parse().ok()?, act.to_string())) }).collect();
         steps.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap());
-        let end = steps.last().map(|s| s.0).unwrap_or(1.0) + 0.05; let dt = 1.0 / 60.0; let mut t = 0.0; let wall0 = std::time::Instant::now(); let mut k = 0; let mut log = false; let mut next_log = 0.0; let mut burst: i32 = 0;
+        let end = steps.last().map(|s| s.0).unwrap_or(1.0) + 0.05; let dt = 1.0 / 60.0; let mut t = 0.0; let wall0 = std::time::Instant::now(); let mut k = 0; let mut log = false; let mut next_log = 0.0; let mut burst: i32 = 0; let mut bfol: Option<(i64, f64, f64, f64)> = None;
         let mut fuzz: Option<u64> = std::env::var("FUZZ").ok().and_then(|v| v.parse().ok()).map(|v: u64| v | 1);
         let mut tick_ms = 0.0f64; let mut ticks = 0; let mut profs: Vec<[f32; 8]> = Vec::new();
         let mut audio = vec![0f32; 800 * 2]; let (mut arms, mut apk, mut anb, mut aclip) = (0f64, 0f32, 0f64, 0f64);
+        // replay: a car pose per 60 Hz frame (x y z h vx vy vz) and a camera per frame (eye xyz, target xyz, fov), from FW_REPLAY_T0 on
+        let rd = |v: &str| -> Vec<Vec<f64>> { std::env::var(v).ok().map(|f| std::fs::read_to_string(f).unwrap().lines().map(|l| l.split_whitespace().filter_map(|x| x.parse().ok()).collect()).collect()).unwrap_or_default() };
+        let (rep, cams) = (rd("FW_REPLAY"), rd("FW_CAMS")); let camin: f64 = std::env::var("FW_CAMMIN").ok().and_then(|v| v.parse().ok()).unwrap_or(0.7);
+        let mut adump: Option<std::fs::File> = std::env::var("FW_AUDIO").ok().map(|f| std::fs::File::create(f).unwrap()); let rep_t0: f64 = std::env::var("FW_REPLAY_T0").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+        if !rep.is_empty() { g.ps.race_mode = false; }
+        if let Some(ph) = std::env::var("FW_PIXH").ok().and_then(|v| v.parse::<f64>().ok()) { g.pix_h = Some(ph); g.resize(w as f64, h as f64, [0.0; 4]); }
+        if let Ok(f) = std::env::var("FW_PROBE") { let txt = std::fs::read_to_string(&f).unwrap(); let gd = fogwood_core::bridge::lock(); let e = gd.as_ref().unwrap();
+            let out: Vec<String> = txt.lines().map(|l| { let v: Vec<f64> = l.split_whitespace().filter_map(|x| x.parse().ok()).collect(); format!("{:.2}", e.world.height(v[0], v[1])) }).collect(); std::fs::write(format!("{}.out", f), out.join("\n")).unwrap(); println!("probed {}", out.len()); }
         while t < end {
+            if t >= rep_t0 - 1e-9 { let f = ((t - rep_t0) * 60.0).round() as usize;
+                if let Some(p) = rep.get(f.min(rep.len().saturating_sub(1))) { let c = &mut g.car; c.x = p[0]; c.y = p[1]; c.z = p[2]; c.h = p[3]; c.vx = p[4]; c.vy = p[5]; c.vz = p[6]; g.go = 0.0;
+                    if p.len() >= 11 { g.inp_ovr = Some(fogwood_core::physics::Input { throttle: p[7], brake: p[8], hb: p[9] > 0.5, steer: p[10] }); } }
+                if let Some(q) = cams.get(f.min(cams.len().saturating_sub(1))) { let gy = fogwood_core::bridge::lock().as_ref().map(|e| e.world.height(q[0], q[2])).unwrap_or(-1e9);
+                    g.cam_ovr = Some(([q[0], q[1].max(gy + camin), q[2]], [q[3], q[4], q[5]], q[6])); } }
             while k < steps.len() && steps[k].0 <= t {
                 let act = steps[k].1.clone(); k += 1;
                 let parts: Vec<&str> = act.split(':').collect();
@@ -75,6 +88,20 @@ fn main() {
                     "online" => { let k = parts[1]; let key: &'static str = fogwood_core::game::online::KEYS.iter().find(|x| **x == k).copied().unwrap_or("online"); g.online_tap(key);
                         if key == "on_host" { if let Some(c) = fogwood_core::net::with(|s| s.code) { std::fs::write("/tmp/fw_code", c.to_string()).unwrap(); println!("hosting {}", c); } } }
                     "joincode" => { let c = std::fs::read_to_string("/tmp/fw_code").unwrap(); g.online_tap("online"); g.online_tap("on_join"); for ch in c.trim().chars() { let k: &'static str = ["k0","k1","k2","k3","k4","k5","k6","k7","k8","k9"][ch.to_digit(10).unwrap() as usize]; g.online_tap(k); } g.online_tap("kok"); println!("joined {}", c.trim()); }
+                    "bcam" => {   // bcam:n:back:up:side - follow fireball n through the air
+                        let f = |i: usize, d: f64| parts.get(i).and_then(|v| v.parse::<f64>().ok()).unwrap_or(d); bfol = Some((f(1, 0.0) as i64, f(2, 14.0), f(3, 3.0), f(4, 5.0))); }
+                    "vbench" => { let gd = fogwood_core::bridge::lock(); let e = gd.as_ref().unwrap(); let t0 = std::time::Instant::now(); let mut n = 0usize; let mut cnt = [0i32; 5];
+                        for k in 0..2000 { let tv = 50.0 + k as f64 * 0.0167; let f = fogwood_core::game::volc::frame(&g.rt, &e.world, tv, tv - 0.0167, g.cam_pos); n += f.fire.m.len(); cnt = [cnt[0].max(f.fire.n()), cnt[1].max(f.solid.n()), cnt[2].max(f.glow.n()), cnt[3].max(f.ring.n()), cnt[4].max(f.disc.n())]; }
+                        println!("vbench {:.3} ms/frame, max instances fire/solid/glow/ring/disc {:?} ({})", t0.elapsed().as_secs_f64() * 1000.0 / 2000.0, cnt, n); }
+                    "vcam" => { bfol = None;   // vcam:lead:dist:up:yaw - a still camera on the fireball that lands about `lead` s from now
+                        let f = |i: usize, d: f64| parts.get(i).and_then(|v| v.parse::<f64>().ok()).unwrap_or(d); let (lead, dist, up, yaw, look) = (f(1, 1.0), f(2, 22.0), f(3, 5.0), f(4, 0.0), f(5, 3.0));
+                        let tv = (g.wave_t0 + g.time).rem_euclid(fogwood_core::game::volc::PERIOD); let n = ((tv + lead - fogwood_core::game::volc::FLIGHT) / fogwood_core::game::volc::SLOT).round() as i64;
+                        let gd = fogwood_core::bridge::lock(); let e = gd.as_ref().unwrap();
+                        if let Some(b) = fogwood_core::game::volc::ball(&g.rt, &e.world, n) { let p = b.to;
+                            // yaw > 6: down the road from the landing, `dist` back along it (and yaw - 7 m to the side)
+                            let (ex, ez) = if yaw > 6.0 { let k = (0..g.rt.path.len()).min_by(|&i, &j| { let (a, c) = (g.rt.path[i], g.rt.path[j]); ((a[0] - p[0]).hypot(a[1] - p[2])).partial_cmp(&(c[0] - p[0]).hypot(c[1] - p[2])).unwrap() }).unwrap();
+                                let kb = (k + g.rt.path.len() - dist as usize) % g.rt.path.len(); let (q, tn) = (g.rt.path[kb], g.rt.tan[kb]); (q[0] - tn[1] * (yaw - 7.0), q[1] + tn[0] * (yaw - 7.0)) } else { (p[0] + dist * yaw.cos(), p[2] + dist * yaw.sin()) };
+                            g.cam_ovr = Some(([ex, e.world.height(ex, ez) + up, ez], [p[0], p[1] + look, p[2]], 50.0)); println!("vcam ball {} lands at t+{:.2} at {:.1},{:.1},{:.1}", n, b.t0 + fogwood_core::game::volc::FLIGHT - tv, p[0], p[1], p[2]); } }
                     "settings" => g.open_settings(),
                     "garage" => g.open_garage(), "gnext" => g.garage_go(1), "gprev" => g.garage_go(-1), "gclose" => g.close_garage(),
                     "dust" => { let d = &g.dust; let mut v: Vec<(f32, f32, f32)> = (0..d.n).filter(|&i| d.a[i] > 0.0).map(|i| (d.a[i], d.s[i], d.col[i * 3])).collect(); v.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
@@ -116,10 +143,14 @@ fn main() {
                     _ => println!("unknown {}", act),
                 }
             }
+            if let Some((n, back, up, side)) = bfol { let gd = fogwood_core::bridge::lock(); let e = gd.as_ref().unwrap(); use fogwood_core::game::volc as vc;
+                if let Some(b) = vc::ball(&g.rt, &e.world, n) { let tv = (g.wave_t0 + g.time).rem_euclid(vc::PERIOD); let u = ((tv - b.t0) / vc::FLIGHT).clamp(0.0, 1.0); let p = b.pos(u); let q = b.pos((u - 0.02).max(0.0));
+                    let (dx, dy, dz) = (p[0] - q[0], p[1] - q[1], p[2] - q[2]); let l = (dx * dx + dy * dy + dz * dz).sqrt().max(1e-6); let (dx, dy, dz) = (dx / l, dy / l, dz / l); let (sx, sz) = (-dz, dx);
+                    g.cam_ovr = Some(([p[0] - dx * back + sx * side, p[1] - dy * back + up, p[2] - dz * back + sz * side], [p[0] + dx * 4.0, p[1] + dy * 4.0, p[2] + dz * 4.0], 55.0)); } }
             if burst > 0 { burst -= 1; r.draw(Some(fb), w, h).expect("draw"); let gl = r.gl(); gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fb));
                 let mut px = vec![0u8; (w * h * 4) as usize]; gl.read_pixels(0, 0, w, h, glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelPackData::Slice(&mut px));
                 let mut out = Vec::with_capacity((w * h * 3) as usize); for y in (0..h).rev() { for x in 0..w { let i = ((y * w + x) * 4) as usize; out.extend_from_slice(&px[i..i + 3]); } }
-                std::fs::write(format!("{}/b{:05.2}.rgb", a[3], t), out).unwrap(); }
+                std::fs::write(format!("{}/b{:06}.rgb", a[3], (t * 60.0).round() as i64), out).unwrap(); }
             if let Some(st) = fuzz.as_mut() {   // FUZZ=seed: random touches, back presses and menu keys every few frames (panic hunting)
                 let mut rnd = || { *st ^= *st << 13; *st ^= *st >> 7; *st ^= *st << 17; (*st >> 11) as f64 / (1u64 << 53) as f64 };
                 let p = rnd();
@@ -130,7 +161,7 @@ fn main() {
                 else if p < 0.108 { g.to_title(); } else if p < 0.109 { g.start_game(); g.auto = true; }
             }
             let t0 = std::time::Instant::now(); let m0 = g.msg.clone(); g.tick(&mut r, dt); if g.msg != m0 && !g.msg.is_empty() { println!("t={:.2} msg {}", t, g.msg); } if std::env::var("HUDCHECK").is_ok() && !g.hud.verify() { println!("HUD MISMATCH at t={:.2}", t); } tick_ms += t0.elapsed().as_secs_f64() * 1000.0; ticks += 1; if g.state == fogwood_core::game::State::Drive { profs.push(g.prof); }
-            fogwood_audio::native::render(&mut audio); { let (mut s2, mut pk) = (0f64, 0f32); for v in &audio { s2 += (*v as f64) * (*v as f64); pk = pk.max(v.abs()); if !v.is_finite() { println!("audio NaN"); break; } } arms += s2 / audio.len() as f64; apk = apk.max(pk); anb += 1.0; if pk >= 0.999 { aclip += 1.0; } }
+            fogwood_audio::native::render(&mut audio); if let Some(fh) = adump.as_mut() { use std::io::Write; let b: Vec<u8> = audio.iter().flat_map(|v| v.to_le_bytes()).collect(); fh.write_all(&b).unwrap(); } { let (mut s2, mut pk) = (0f64, 0f32); for v in &audio { s2 += (*v as f64) * (*v as f64); pk = pk.max(v.abs()); if !v.is_finite() { println!("audio NaN"); break; } } arms += s2 / audio.len() as f64; apk = apk.max(pk); anb += 1.0; if pk >= 0.999 { aclip += 1.0; } }
             if log && t >= next_log { next_log = t + 1.0; r.draw(Some(fb), w, h).expect("draw"); let c = &g.car; println!("log calls={} tris={} t={:.1} x={:.2} z={:.2} kmh={:.0} gear={} sunvis={:.2} race_t={:.1} pos={} cars={:?}", r.stats.0, r.stats.1, t, c.x, c.z, c.u * 3.6, c.gear, g.sun_vis, g.race.t, g.race.pos,
                 g.race.cars.iter().map(|q| (q.r.map(|i| fogwood_core::game::race::RIVALS[i].tag).unwrap_or("YOU"), (q.prog as i64), q.resets)).collect::<Vec<_>>()); }
             for e in g.events.drain(..) { if !e.starts_with("h ") { println!("event {}", e); } }

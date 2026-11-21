@@ -1287,15 +1287,22 @@ function volcanoHazards() {
     VOLC.crater = [0, y, 0];
     const gm = new THREE.MeshBasicMaterial({ color: 0x5a1a06, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false }); gm.userData.blend = 2;
     for (const [h, r, k] of [[18, 46, 1], [55, 34, 0.7], [100, 24, 0.45]]) { const m = gm.clone(); m.userData.blend = 2; m.color.multiplyScalar(k); const o = new THREE.Mesh(new THREE.IcosahedronGeometry(r, 2), m); o.position.set(0, y + h, 0); scene.add(o); } }
-  // fireballs: pools the app moves every frame
-  const mk = (geo, mat, n, cols) => { const im = new THREE.InstancedMesh(geo, mat, n); tmpO.position.set(0, -999, 0); tmpO.rotation.set(0, 0, 0); tmpO.scale.setScalar(0.001); tmpO.updateMatrix();
-    for (let i = 0; i < n; i++) { im.setMatrixAt(i, tmpO.matrix); if (cols) im.setColorAt(i, new THREE.Color(0, 0, 0)); } im.frustumCulled = false; im.userData.dyn = true; scene.add(im); return im; };
-  const add = (c) => { const m = new THREE.MeshBasicMaterial({ color: c, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }); m.userData.blend = 2; return m; };
-  const ringG = new THREE.RingGeometry(0.72, 1, 28); ringG.rotateX(-Math.PI / 2);
-  VOLC.ims = { core: mk(new THREE.IcosahedronGeometry(1, 1), new THREE.MeshBasicMaterial({ color: 0xffd060 }), 24, false),
-    halo: mk(new THREE.IcosahedronGeometry(1, 1), add(0xff5a14), 24, false),
-    ring: mk(ringG, add(0xffffff), 24, true),
-    boom: mk(new THREE.IcosahedronGeometry(1, 2), add(0xffffff), 16, true) };
+  // fireballs: pools the app fills every frame (volc.rs, frame) - unlit faceted fire, lit rock and smoke, additive glows, rings and ground discs
+  const mk = (geo, mat, n) => { const im = new THREE.InstancedMesh(geo, mat, n); tmpO.position.set(0, -999, 0); tmpO.rotation.set(0, 0, 0); tmpO.scale.setScalar(0.001); tmpO.updateMatrix();
+    for (let i = 0; i < n; i++) { im.setMatrixAt(i, tmpO.matrix); im.setColorAt(i, new THREE.Color(0, 0, 0)); } im.frustumCulled = false; im.userData.dyn = true; scene.add(im); return im; };
+  const add = (vc) => { const m = new THREE.MeshBasicMaterial({ color: 0xffffff, vertexColors: !!vc, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3 }); m.userData.blend = 2; return m; };
+  // a low-poly puff whose faces are shaded by hand (lighter on top, a little random), so unlit fire still has volume
+  const facet = (lo, hi) => { const g = new THREE.IcosahedronGeometry(1, 0).toNonIndexed(); g.computeVertexNormals(); const n = g.attributes.normal, c = [];
+    for (let f = 0; f < n.count; f += 3) { const ny = (n.getY(f) + n.getY(f + 1) + n.getY(f + 2)) / 3, k = (lo + (hi - lo) * (0.5 + 0.5 * ny)) * (0.92 + 0.08 * rnd()); c.push(k, k, k, k, k, k, k, k, k); }
+    g.setAttribute("color", new THREE.Float32BufferAttribute(c, 3)); return g; };
+  const solidG = new THREE.IcosahedronGeometry(1, 0).toNonIndexed(); solidG.computeVertexNormals();
+  const ringG = new THREE.RingGeometry(0.86, 1, 40); ringG.rotateX(-Math.PI / 2);
+  const discG = new THREE.CircleGeometry(1, 28); discG.rotateX(-Math.PI / 2); { const p = discG.attributes.position, c = []; for (let i = 0; i < p.count; i++) { const r = Math.hypot(p.getX(i), p.getZ(i)), k = 1 - 0.78 * r; c.push(k, k, k); } discG.setAttribute("color", new THREE.Float32BufferAttribute(c, 3)); }
+  VOLC.ims = { fire: mk(facet(0.6, 1.0), new THREE.MeshBasicMaterial({ color: 0xffffff, vertexColors: true }), 1200),
+    solid: mk(solidG, new THREE.MeshLambertMaterial({ color: 0xffffff }), 400),
+    glow: mk(new THREE.IcosahedronGeometry(1, 1), add(false), 128),
+    ring: mk(ringG, add(false), 64),
+    disc: mk(discG, add(true), 200) };
 }
 if (VOL) volcanoHazards();
 /* ================= rally furniture: start gantry, chevrons, straw bales ================= */
@@ -3183,7 +3190,7 @@ function rtPacket() {
     dust: { obj: ids(dust)[0], n: DN },
     shade: Array.from({ length: NP * 13 }, (_, q) => { const i = (q / 13) | 0, l = q % 13 - 6, p = PATH[i], tn = TAN[i]; return Math.round(sunShadowAt(p[0] - tn[1] * l, p[1] + tn[0] * l) * 99); }),
     shadeTint: SHADOW_TINT,
-    volc: VOL ? { core: ids(VOLC.ims.core)[0], halo: ids(VOLC.ims.halo)[0], ring: ids(VOLC.ims.ring)[0], boom: ids(VOLC.ims.boom)[0], crater: VOLC.crater, rivers: VOLC.rivers } : null,
+    volc: VOL ? { fire: ids(VOLC.ims.fire)[0], solid: ids(VOLC.ims.solid)[0], glow: ids(VOLC.ims.glow)[0], ring: ids(VOLC.ims.ring)[0], disc: ids(VOLC.ims.disc)[0], crater: VOLC.crater, rivers: VOLC.rivers } : null,
     wave: PRI ? { objs: scene.children.filter(o => o.userData.wave).flatMap(o => ids(o)), secs: WAVES } : null,
     tiles: scene.children.filter(o => o.userData.grid).map(o => [ids(o)[0], ...o.userData.grid, ...o.geometry.boundingSphere.center.toArray()]),   // stage ground grids: the app draws far ones coarser
     saves: {} };
