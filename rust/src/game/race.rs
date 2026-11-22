@@ -159,7 +159,7 @@ fn rival_input(g: &mut Game, w: &World, k: usize) -> Input {
     if phase == Phase::Grid || race_t < c.react { return Input { steer: 0.0, throttle: 0.0, brake: 0.0, hb: true }; }
     let i = path_idx(w, s.x, s.z); let u = s.u.max(0.0); let ld = 7.0 + u * 0.42; let kk = (i + (ld + 0.5).floor() as usize) % np;
     let wk = w.road() / ROAD; let lat = clamp(c.lane + rt.rline[kk] * (1.0 - (c.lane.abs() / 2.2).min(1.0)), -1.9 * wk, 1.9 * wk);
-    let lat = if rt.volc.is_some() { super::volc::dodge(rt, i).unwrap_or(lat) } else { lat };   // Ember Peak: across the lava on the crust side
+    let lat = if rt.volc.is_some() { super::volc::dodge(rt, i).unwrap_or(lat) } else { lat };   // Ember Peak: down the middle of the bridges
     let p = rt.path[kk]; let tn = rt.tan[kk];
     { let p0 = rt.path[i]; let t0 = rt.tan[i]; let now = (s.x - p0[0]) * -t0[1] + (s.z - p0[1]) * t0[0]; c.err = (now - lat).abs(); }
     let (dx, dz) = (p[0] - tn[1] * lat - s.x, p[1] + tn[0] * lat - s.z); let sp = s.vx.hypot(s.vz); let vh = if sp > 2.0 { s.vx.atan2(s.vz) } else { s.h };
@@ -168,7 +168,7 @@ fn rival_input(g: &mut Game, w: &World, k: usize) -> Input {
     let q = (i + 4) % np; let mut vt = rt.rprof[q] * g.race.rlearn[q / 10] * c.pv * (1.0 + c.boost * 0.5); if c.mist > 0.0 { vt *= 1.1; }
     c.trust = clamp(c.trust + ((if c.err > 1.3 || s.vl.abs() > 2.6 { 0.82 } else { 1.0 }) - c.trust) * 0.05, 0.8, 1.0);
     vt = (vt * c.trust * clamp(1.12 - c.err * 0.09, 0.72, 1.0)).min(c.cap);
-    if rt.volc.is_some() && super::volc::dodge(rt, i).is_some() { vt = vt.min(17.0); }   // Ember Peak: steady over the crust
+    if let Some(c) = super::volc::bridge_cap(rt, i) { vt = vt.min(c); }   // Ember Peak: steady over the bridges
     let slide_cut = clamp(1.0 - (s.vl.abs() - 1.5) / 3.0, 0.15, 1.0);
     let lock = g.tune.lock / (1.0 + u / g.tune.lock_fall);
     Input { steer: clamp(delta / lock, -1.0, 1.0), throttle: clamp((vt - u) * 0.5, 0.0, 1.0) * slide_cut, brake: clamp((u - vt - 0.8) * 0.45, 0.0, 1.0), hb: false }
@@ -186,7 +186,7 @@ fn recover(g: &mut Game, w: &World, k: usize, dt: f64) {
     let np = g.np; let s = g.race.cars[k].car; let i = path_idx(w, s.x, s.z); let pd = w.path_dist(s.x, s.z); let sp = s.vx.hypot(s.vz); let tn = g.rt.tan[i];
     let fwd = s.h.sin() * tn[0] + s.h.cos() * tn[1];
     let fell = g.pri && s.y < g.rt.roadh[i] - 6.0;   // prism: dropped off the skyway
-    let lava_kc = if g.vol { super::volc::in_lava(&g.rt, w, s.x, s.z).map(|rv| super::volc::back_from(&g.rt, rv, i)) } else { None };   // Ember Peak: in the lava
+    let lava_kc = if g.vol { super::volc::in_canyon(&g.rt, w, s.x, s.y, s.z).map(|rv| super::volc::back_from(&g.rt, rv, i)) } else { None };   // Ember Peak: into a lava canyon
     let c = &mut g.race.cars[k];
     if pd < w.road() + 1.0 { c.off_at = Some(i); }
     let off = pd > w.road() + 5.0; let bad = off || (sp < 1.5 && g.race.t > c.react + 2.0) || s.roll.abs() > 0.9 || s.pitch.abs() > 0.9 || (fwd < -0.2 && sp < 8.0);

@@ -1,8 +1,7 @@
-//! Ember Peak's hazards. Lava rivers run down the volcano and across the road: one side of each crossing is a crust of cooled rock you
-//! can drive over, the rest (and the river off the road) puts you back on the road before it. The crater throws fireballs that land on
+//! Ember Peak's hazards. Lava rivers run down the volcano in canyons; the road crosses each on a narrow bridge with no rails, and a car
+//! that drops into a canyon is put back on the road before the bridge. The crater throws fireballs that land on
 //! the road and throw cars about. Fireballs run on a shared clock (the wall clock, like the prism waves), so every phone in a race sees
 //! the same ones; each phone kicks the cars it drives.
-use super::path_idx;
 use super::rt::{River, Rt};
 use crate::physics::Car;
 use crate::world::{World, ROAD};
@@ -34,41 +33,33 @@ impl Ball {
 pub fn ball(rt: &Rt, w: &World, n: i64) -> Option<Ball> {
     let v = rt.volc.as_ref()?; let np = rt.path.len(); if np == 0 { return None; }
     let h = mix(n.rem_euclid(NSLOT) as u64 ^ 0xE3BE_7A11);
-    let k = ((unit(h, 0) * np as f64) as usize).min(np - 1); let lat = (unit(h, 1) * 2.0 - 1.0) * (ROAD - 0.5);
+    let mut k = ((unit(h, 0) * np as f64) as usize).min(np - 1); let lat = (unit(h, 1) * 2.0 - 1.0) * (ROAD - 0.5);
+    // never on a bridge (or just before or after one): the deck is narrow enough already - moved on past it
+    for &(a, b) in &v.bridges { let l = (b + np - a) % np; let d = (k + np - a) % np; if d <= l + 12 || np - d <= 12 { k = (b + 13 + (d % 7)) % np; } }
     let (p, t) = (rt.path[k], rt.tan[k]); let x = p[0] - t[1] * lat; let z = p[1] + t[0] * lat;
     let a = unit(h, 2) * std::f64::consts::TAU; let r = 10.0 + unit(h, 3) * 25.0;
     Some(Ball { t0: n as f64 * SLOT, from: [v.crater[0] + a.cos() * r, v.crater[1] + 2.0, v.crater[2] + a.sin() * r], to: [x, w.height(x, z), z], spin: if h & 1 == 0 { 1.0 } else { -1.0 } })
 }
 
-/// the lava river a point is in, if it is in one (the crust side of a road crossing is safe)
-pub fn in_lava<'a>(rt: &'a Rt, w: &World, x: f64, z: f64) -> Option<&'a River> {
-    let v = rt.volc.as_ref()?;
-    for rv in &v.rivers {
-        if x < rv.bb[0] || x > rv.bb[1] || z < rv.bb[2] || z > rv.bb[3] { continue; }
-        let mut inside = false;
-        for i in 0..rv.pts.len().saturating_sub(1) {
-            let (a, b) = (rv.pts[i], rv.pts[i + 1]); let (dx, dz) = (b.0 - a.0, b.1 - a.1); let l2 = dx * dx + dz * dz; if l2 <= 0.0 { continue; }
-            let u = (((x - a.0) * dx + (z - a.1) * dz) / l2).clamp(0.0, 1.0); let (qx, qz) = (a.0 + dx * u - x, a.1 + dz * u - z);
-            let hw = rv.hw[i] + (rv.hw[(i + 1).min(rv.hw.len() - 1)] - rv.hw[i]) * u; if qx * qx + qz * qz < hw * hw { inside = true; break; }
-        }
-        if !inside { continue; }
-        let k = path_idx(w, x, z); let (p, t) = (rt.path[k], rt.tan[k]); let lat = (x - p[0]) * -t[1] + (z - p[1]) * t[0];
-        if w.path_dist(x, z) < ROAD + 0.6 && lat * rv.sg >= 0.0 { return None; }   // on the crust (half the road)
-        return Some(rv);
-    }
-    None
+/// fallen into a lava canyon: well below the rim (off a bridge or over the edge) - the river whose bridge to go back before
+pub fn in_canyon<'a>(rt: &'a Rt, w: &World, x: f64, y: f64, z: f64) -> Option<&'a River> {
+    let v = rt.volc.as_ref()?; let (dc, j) = crate::world::ember_canyon(x, z);
+    if dc < 4.0 || y > w.base_height(x, z) + dc - 4.0 { return None; }
+    v.rivers.get(j).or(v.rivers.first())
 }
 
-/// where to steer to get past the next lava crossing (the middle of the crust side), from 55 m before it until just after it
+/// where to steer over the next bridge (its middle), from 80 m before its span until just after it
 pub fn dodge(rt: &Rt, i: usize) -> Option<f64> {
     let v = rt.volc.as_ref()?; let np = rt.path.len();
-    v.rivers.iter().find(|rv| { let d = (rv.kc + np - i) % np; d < 60 || d + 12 > np }).map(|rv| rv.sg * 2.0)
+    v.bridges.iter().find(|&&(a, b)| { let l = (b + np - a) % np; let d = (i + np - a) % np; d <= l + 6 || np - d <= 80 }).map(|_| 0.0)
 }
-/// the road index to put a car back at after lava: before the crossing it was at, or a little back along the road elsewhere
-pub fn back_from(rt: &Rt, rv: &River, i: usize) -> usize {
-    let np = rt.path.len(); let d = (i + np - rv.kc) % np;
-    if d < 40 || d + 40 > np { (rv.kc + np - 25) % np } else { (i + np - 10) % np }
+/// how fast to take the bridge ahead (m/s): steady from 45 m before it until across
+pub fn bridge_cap(rt: &Rt, i: usize) -> Option<f64> {
+    let v = rt.volc.as_ref()?; let np = rt.path.len();
+    v.bridges.iter().find(|&&(a, b)| { let l = (b + np - a) % np; let d = (i + np - a) % np; d <= l + 3 || np - d <= 45 }).map(|_| 16.0)
 }
+/// the road index to put a car back at after falling in: before the bridge it was nearest
+pub fn back_from(rt: &Rt, rv: &River, _i: usize) -> usize { let np = rt.path.len(); (rv.kc + np - 28) % np }
 
 /// a fireball landing at `b` throws the car out from the blast and up; returns how hard (0: out of reach)
 pub fn kick(c: &mut Car, b: &Ball) -> f64 {

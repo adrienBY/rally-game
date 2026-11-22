@@ -24,6 +24,8 @@ pub struct World {
     pub map: Map,
     /// prism: the deck's live waves (set once the game has the stage) and the clock they run on
     pub wave: std::sync::OnceLock<Wave>, pub wave_t: std::sync::atomic::AtomicU64,
+    /// ember peak: the bridges over the lava canyons (set once the game has the stage)
+    pub bridge: std::sync::OnceLock<Bridges>,
     pub gxh: i32, pub gzh: i32, pub gnx: usize, pub gnz: usize,
     pub pd: Vec<f32>, pub pi: Vec<i16>, pub h: Vec<f32>,
 }
@@ -77,6 +79,33 @@ fn vol_mount(x: f64, z: f64) -> f64 {
     250.0 / (1.0 + k) - 95.0 * (1.0 - smooth(35.0, 100.0, r)) + 12.0 * smooth(60.0, 95.0, r) * (1.0 - smooth(95.0, 140.0, r))
         + ridged(x * 0.009 + 2.0, z * 0.009 - 5.0) * 16.0 * smooth(90.0, 220.0, r) + (fbm(x * 0.03 + 7.0, z * 0.03, 3) - 0.5) * 6.0 + (fbm(x * 0.11, z * 0.11, 2) - 0.5) * 0.8
 }
+/// Ember Peak: the five lava rivers run down the flanks from the crater at the bottom of canyons; the road crosses each on a narrow
+/// bridge (half-width BRIDGE_HW) at the canyon's rim. Same river lines as the page's volcanoHazards.
+pub const BRIDGE_HW: f64 = 2.3;
+/// a wheel is carried out to the kerb stones' outer edge
+pub const BRIDGE_EDGE: f64 = BRIDGE_HW + 0.3;
+pub const EMBER_RIVERS: usize = 5;
+/// the river's centre angle and half-width at radius `r`, and how fast the angle turns with r
+#[inline] pub fn ember_river(j: usize, r: f64) -> (f64, f64, f64) {
+    let jf = j as f64; let th0 = jf * std::f64::consts::PI * 2.0 / 5.0 + 0.45;
+    (th0 + 0.12 * (r * 0.02 + jf).sin() + 0.05 * (r * 0.07 + 2.0 * jf).sin(), 4.6 + 1.4 * (r * 0.03 + jf).sin(), 0.0024 * (r * 0.02 + jf).cos() + 0.0035 * (r * 0.07 + 2.0 * jf).cos())
+}
+/// how far below the rim the canyon is cut at (x, z): (depth, river) - full depth over the lava, two stepped walls up to the rim
+pub fn ember_canyon(x: f64, z: f64) -> (f64, usize) {
+    let r = (x * x + z * z).sqrt(); if !(80.0..600.0).contains(&r) { return (0.0, 0); }
+    let th = z.atan2(x); let mut best = (0.0, 0);
+    for j in 0..EMBER_RIVERS {
+        let (tc, hw, dt) = ember_river(j, r); let mut d = th - tc; d -= (d / std::f64::consts::TAU).round() * std::f64::consts::TAU;
+        let lat = (r * d).abs() / (1.0 + (r * dt) * (r * dt)).sqrt(); if lat > hw + 8.0 { continue; }
+        let lat = lat + (fbm(x * 0.13 + 3.0 * j as f64, z * 0.13, 2) - 0.5) * 1.6;
+        let cut = 1.0 - 0.55 * smooth(hw + 0.6, hw + 2.3, lat) - 0.45 * smooth(hw + 3.7, hw + 5.8, lat);
+        let depth = 13.0 * smooth(92.0, 140.0, r) * (1.0 - smooth(535.0, 580.0, r)) * cut; if depth > best.0 { best = (depth, j); }
+    }
+    best
+}
+/// the bridges, once the game has the stage: road line and height, which road points are on a bridge
+pub struct Bridges { pub path: Vec<(f64, f64)>, pub tan: Vec<(f64, f64)>, pub roadh: Vec<f64>, pub on: Vec<bool> }
+
 /// Touge: the wooded mountain the pass is cut into
 fn tou_hill(x: f64, z: f64) -> f64 { ridged(x * 0.006 + 4.0, z * 0.006 - 9.0) * 16.0 + (fbm(x * 0.02, z * 0.02, 4) - 0.5) * 8.0 + (fbm(x * 0.08, z * 0.08, 4) - 0.5) * 0.8 }
 
@@ -145,11 +174,14 @@ pub fn build(map: Map, path: &[(f64, f64)], roadh: &[f64], gxh: i32, gzh: i32) -
                 Map::Lakes => smooth(ROAD + 1.0, ROAD + 14.0, pdv), Map::Iceland => smooth(ROAD + 1.0, ROAD + 12.0, pdv),
                 Map::Touge => smooth(ROAD + 1.2, ROAD + 8.0, pdv), Map::Riviera => smooth(ROAD + 1.0, ROAD + 7.0, pdv), Map::Prism => 1.0, Map::Ember => smooth(ROAD + 1.2, ROAD + 14.0, pdv), Map::Forest => smooth(ROAD + 1.0, ROAD + 10.0, pdv) };
             hv = hv + (roadh[pi_r[id] as usize] - 0.12 - hv) * w;
+            // ember peak: the lava canyons, cut below the raw slope (the road's bridges cross them at the rim), at least 10 m under the road
+            if map == Map::Ember { let (dc, _) = ember_canyon(x, z); if dc > 0.0 { let floor = (terrain(map, x, z) - 13.0).min(roadh[pi_r[id] as usize] - 10.5); let k = dc / 13.0;
+                hv = hv.min(hv + (floor - hv) * k.min(1.0)); } }
             if map == Map::Lakes && hv < WL { hv = WL - (1.6f64).min((WL - hv) * 0.2); }
             row[i] = hv as f32;
         } });
     }
-    World { map, wave: Default::default(), wave_t: Default::default(), gxh, gzh, gnx, gnz, pd, pi, h }
+    World { map, wave: Default::default(), wave_t: Default::default(), bridge: Default::default(), gxh, gzh, gnx, gnz, pd, pi, h }
 }
 
 /// Unit tangent of the centreline at `i` (from the points 2 m either side), as the page computes TAN.
@@ -206,7 +238,25 @@ impl World {
         (g[k] as f64 * (1.0 - u) + g[k + 1] as f64 * u) * (1.0 - v) + (g[k + self.gnx] as f64 * (1.0 - u) + g[k + self.gnx + 1] as f64 * u) * v
     }
     /// ground height. Prism: the deck itself, exact to its drawn edge, and nothing beyond it (no grid slope to trip a wheel at the edge)
-    #[inline] pub fn height(&self, x: f64, z: f64) -> f64 { if self.map == Map::Prism { if let Some(h) = self.prism_height(x, z) { return h; } } self.bil(&self.h, x, z) }
+    #[inline] pub fn height(&self, x: f64, z: f64) -> f64 {
+        if self.map == Map::Prism { if let Some(h) = self.prism_height(x, z) { return h; } }
+        if self.map == Map::Ember { if let Some((h, _)) = self.bridge_deck(x, z) { return h; } }
+        self.bil(&self.h, x, z)
+    }
+    /// ember peak: on a bridge's road span? Then the deck height there (exact to its edge) and how far off the centre line
+    pub fn bridge_deck(&self, x: f64, z: f64) -> Option<(f64, f64)> {
+        let b = self.bridge.get()?; let k = self.bridge_k(b, x, z)?; let np = b.path.len(); let (px, pz) = b.path[k]; let (tx, tz) = b.tan[k];
+        let lat = (x - px) * -tz + (z - pz) * tx; if lat.abs() > BRIDGE_EDGE { return None; }
+        let s = (x - px) * tx + (z - pz) * tz; let k2 = if s >= 0.0 { (k + 1) % np } else { (k + np - 1) % np };
+        Some((b.roadh[k] + (b.roadh[k2] - b.roadh[k]) * s.abs() - 0.12, lat))
+    }
+    /// ember peak: the road point a bridge's span covers here, if any
+    fn bridge_k(&self, b: &Bridges, x: f64, z: f64) -> Option<usize> {
+        let i = clamp((x + self.gxh as f64).round(), 0.0, self.gnx as f64 - 1.0) as usize; let j = clamp((z + self.gzh as f64).round(), 0.0, self.gnz as f64 - 1.0) as usize;
+        let k = (self.pi[j * self.gnx + i].max(0) as usize).min(b.path.len().saturating_sub(1)); if b.on.get(k).copied().unwrap_or(false) && self.bil(&self.pd, x, z) < ROAD + 3.0 { Some(k) } else { None }
+    }
+    /// ember peak: over a bridge's span (on the deck or beside it)
+    pub fn in_bridge_span(&self, x: f64, z: f64) -> bool { self.bridge.get().map_or(false, |b| self.bridge_k(b, x, z).is_some()) }
     /// the static ground only (no prism waves)
     #[inline] pub fn base_height(&self, x: f64, z: f64) -> f64 { self.bil(&self.h, x, z) }
     pub fn set_wave_time(&self, t: f64) { self.wave_t.store(t.to_bits(), std::sync::atomic::Ordering::Relaxed); }

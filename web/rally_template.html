@@ -320,6 +320,25 @@ if (ICE) {   // where the road meets a river it drops into a gravel ford, 30 cm 
   for (let i = 0; i < NP; i++) if (f[i] > 0.5 && !(f[(i + NP - 1) % NP] > 0.5)) FORDS.push(i);
   for (const c of FORDS) for (let d = -40; d <= 25; d++) { const k = (c + d + NP) % NP; VPROF[k] = Math.min(VPROF[k], 22); JCAP[k] = Math.min(JCAP[k], 24); }
 }
+// ember peak: the lava rivers run in canyons (as world.rs ember_canyon); the road crosses each on a narrow bridge at the rim
+const BRIDGE_HW = 2.3;
+function emberRiver(j, r) { const th0 = j * Math.PI * 2 / 5 + 0.45;
+  return [th0 + 0.12 * Math.sin(r * 0.02 + j) + 0.05 * Math.sin(r * 0.07 + 2 * j), 4.6 + 1.4 * Math.sin(r * 0.03 + j), 0.0024 * Math.cos(r * 0.02 + j) + 0.0035 * Math.cos(r * 0.07 + 2 * j)]; }
+function emberCanyon(x, z) {   // [metres cut below the rim, river]
+  const r = Math.sqrt(x * x + z * z); if (!(r >= 80 && r < 600)) return [0, 0];
+  const th = Math.atan2(z, x); let best = 0, bj = 0;
+  for (let j = 0; j < 5; j++) { const [tc, hw, dt] = emberRiver(j, r); let d = th - tc; d -= Math.round(d / (Math.PI * 2)) * Math.PI * 2;
+    let lat = Math.abs(r * d) / Math.sqrt(1 + (r * dt) * (r * dt)); if (lat > hw + 8) continue;
+    lat += (fbm(x * 0.13 + 3 * j, z * 0.13, 2) - 0.5) * 1.6;
+    const cut = 1 - 0.55 * smooth(hw + 0.6, hw + 2.3, lat) - 0.45 * smooth(hw + 3.7, hw + 5.8, lat);
+    const depth = 13 * smooth(92, 140, r) * (1 - smooth(535, 580, r)) * cut; if (depth > best) { best = depth; bj = j; } }
+  return [best, bj];
+}
+const BRIDGE_ON = new Uint8Array(NP), BRIDGES = [];
+if (VOL) { const raw = new Uint8Array(NP); for (let k = 0; k < NP; k++) raw[k] = emberCanyon(PATH[k][0], PATH[k][1])[0] > 0.3 ? 1 : 0;
+  for (let k = 0; k < NP; k++) if (raw[k]) for (let d = -3; d <= 3; d++) BRIDGE_ON[(k + d + NP) % NP] = 1;
+  for (let k = 0; k < NP; k++) if (BRIDGE_ON[k] && !BRIDGE_ON[(k + NP - 1) % NP]) { let e = k; while (BRIDGE_ON[(e + 1) % NP] && e - k < NP) e++; BRIDGES.push([k, e % NP]); } }
+const bridgeNear = (i, m) => BRIDGES.some(([a, b]) => { const L = (b - a + NP) % NP, d = (i - a + NP) % NP; return d <= L + m || NP - d <= m; });
 if (SNOW || TOU || RIV || PRI || VOL) {   // mountain pass: cap the gradient so the road climbs and descends like a real col (prism: a roller coaster)
   const gmax = TOU ? 0.09 : RIV ? 0.085 : PRI ? 0.15 : VOL ? 0.13 : 0.11;
   for (let pass = 0; pass < 8; pass++) {
@@ -390,6 +409,7 @@ for (let j = 0; j < GNZ; j++) for (let i = 0; i < GNX; i++) {
   if (PRI) { const k = piG[id], p = PATH[k], t = TAN[k], lat = (x - p[0]) * -t[1] + (z - p[1]) * t[0], w2 = 1 - smooth(ROAD + 2.4, ROAD + 3.0, pd);
     hG[id] = (ROADH[k] - 0.12 + lat * BANK[k]) * w2 + VOID * (1 - w2); continue; }
   h = h + (ROADH[piG[id]] - 0.12 - h) * w;
+  if (VOL) { const dc = emberCanyon(x, z)[0]; if (dc > 0) { const floor = Math.min(terrain(x, z) - 13, ROADH[piG[id]] - 10.5); h = Math.min(h, h + (floor - h) * Math.min(1, dc / 13)); } }
   if (LAK && h < WL) h = WL - Math.min(1.6, (WL - h) * 0.2);
   hG[id] = h;
 }
@@ -748,8 +768,9 @@ function lampAt(x, z) { if (!LAN.length) return 0; let a = 0; const ci = Math.fl
     if (GC) {
       const slope = Math.hypot(height(x + 1, z) - height(x - 1, z), height(x, z + 1) - height(x, z - 1)) / 2, hh = height(x, z);
       const c = groundCol(x, z, hh, slope, n, n2);
-      const p = clamp((ROAD + 1.1 - pd) / 1.4, 0, 1) * (0.75 + n * 0.3), rc = VOL ? [0.16, 0.13, 0.13] : CAN ? [0.8, 0.6, 0.42] : ICE ? [0.34, 0.31, 0.29] : TOU ? [0.2, 0.19, 0.2] : RIV ? [0.36, 0.34, 0.33] : [0.5, 0.43, 0.33];
+      const cdv = VOL ? emberCanyon(x, z)[0] : 0, p = clamp((ROAD + 1.1 - pd) / 1.4, 0, 1) * (0.75 + n * 0.3) * (1 - smooth(0.4, 2, cdv)), rc = VOL ? [0.16, 0.13, 0.13] : CAN ? [0.8, 0.6, 0.42] : ICE ? [0.34, 0.31, 0.29] : TOU ? [0.2, 0.19, 0.2] : RIV ? [0.36, 0.34, 0.33] : [0.5, 0.43, 0.33];
       for (let q = 0; q < 3; q++) c[q] += (rc[q] - c[q]) * p;
+      if (cdv > 0.5) { const gl = Math.pow(cdv / 13, 2.2), dk = smooth(0.5, 4, cdv) * 0.5; for (let q = 0; q < 3; q++) c[q] *= 1 - dk; c[0] += (0.95 - c[0]) * gl * 0.8; c[1] += (0.3 - c[1]) * gl * 0.8; c[2] += (0.08 - c[2]) * gl * 0.8; }
       if (RIV) { const k = pathIdx(x, z); if (inVillage(k) && pd < ROAD + 3.4) { const st = 0.72 + n * 0.08; c[0] = st; c[1] = st * 0.95; c[2] = st * 0.87; }
         const ts = tunShade(k, pd); if (ts) for (let q = 0; q < 3; q++) c[q] *= ts[q]; }
       const sh = 1 - shadeAt(x, z) * 0.45, lk = TOU ? lampAt(x, z) * 1.5 : 0; col[i * 3] = c[0] * sh + LAMP[0] * lk; col[i * 3 + 1] = c[1] * sh + LAMP[1] * lk; col[i * 3 + 2] = c[2] * sh + LAMP[2] * lk;
@@ -791,7 +812,7 @@ function lampAt(x, z) { if (!LAN.length) return 0; let a = 0; const ci = Math.fl
       const lk = TOU ? lampAt(x, z) * 3.0 : 0; CO[q * 3] = sh + LAMP[0] * lk; CO[q * 3 + 1] = sh * (Math.abs(AC[a]) > 1 ? 1.06 : 1) + LAMP[1] * lk; CO[q * 3 + 2] = sh + LAMP[2] * lk;
       const ts = RIV ? tunShade(i, 0) : null; if (ts) for (let c3 = 0; c3 < 3; c3++) CO[q * 3 + c3] *= ts[c3];
       if (PRI) { CO[q * 3] = CO[q * 3 + 1] = CO[q * 3 + 2] = 1; } } }
-  for (let i = 0; i < NP; i++) { const n = (i + 1) % NP; for (let a = 0; a < NA - 1; a++) { const A0 = i * NA + a, B0 = n * NA + a; IDX.push(A0, B0, A0 + 1, A0 + 1, B0, B0 + 1); } }
+  for (let i = 0; i < NP; i++) { const n = (i + 1) % NP; if (BRIDGE_ON[i] || BRIDGE_ON[n]) continue; for (let a = 0; a < NA - 1; a++) { const A0 = i * NA + a, B0 = n * NA + a; IDX.push(A0, B0, A0 + 1, A0 + 1, B0, B0 + 1); } }
   const rg = new THREE.BufferGeometry(); rg.setAttribute("position", new THREE.BufferAttribute(P, 3)); rg.setAttribute("uv", new THREE.BufferAttribute(UVA, 2));
   rg.setAttribute("color", new THREE.BufferAttribute(CO, 3)); rg.setIndex(IDX); rg.computeVertexNormals(); BAKED.road = rg;
   const road = new THREE.Mesh(rg, new (PRI ? THREE.MeshBasicMaterial : THREE.MeshLambertMaterial)({ map: gravelTex, vertexColors: true, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 }));
@@ -1159,7 +1180,7 @@ if (ICE) {   // nootka lupine fields: purple and blue spikes in drifts along the
   geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
   const M = [], C = [];
   for (let i = 0; i < (PRI ? 0 : CAN ? 640 : ICE || VOL ? 520 : 260); i++) { const k = (rnd() * NP) | 0, p = PATH[k], tn = TAN[k], off = rr(ROAD + 4, CAN ? 60 : 40) * (rnd() < 0.5 ? -1 : 1), x = p[0] - tn[1] * off, z = p[1] + tn[0] * off;
-    if (pathDist(x, z) < ROAD + 3.5 || (RIV && (tunAt(k) || inVillage(k) || height(x, z) < 1))) continue; const s = rnd() < 0.15 ? rr(2.5, 4) : rr(0.8, 2);
+    if (pathDist(x, z) < ROAD + 3.5 || (RIV && (tunAt(k) || inVillage(k) || height(x, z) < 1)) || (VOL && emberCanyon(x, z)[0] > 0)) continue; const s = rnd() < 0.15 ? rr(2.5, 4) : rr(0.8, 2);
     if (Math.hypot(height(x + 2, z) - height(x - 2, z), height(x, z + 2) - height(x, z - 2)) > 2.4) continue;
     tmpO.position.set(x, height(x, z) - s * 0.15, z); tmpO.rotation.set(0, rnd() * 6, 0); tmpO.scale.set(s * rr(1, 1.5), s, s * rr(1, 1.4));
     pushT(M, C, tmpO, tmpC.setRGB(1, 1, 1)); obstacles.push({ x, z, r: s * 0.95 }); }
@@ -1272,16 +1293,45 @@ function volcanoHazards() {
     for (let q = 0; q < n; q++) { const a = Math.max(0, q - 1), b = Math.min(n - 1, q + 1), dx = pts[b * 2] - pts[a * 2], dz = pts[b * 2 + 1] - pts[a * 2 + 1], l = Math.hypot(dx, dz) || 1, nx = -dz / l, nz = dx / l;
       for (let c = 0; c <= A; c++) { const o = (c / A * 2 - 1) * hw[q], x = pts[q * 2] + nx * o, z = pts[q * 2 + 1] + nz * o;
         const k = pathIdx(x, z), p = PATH[k], t = TAN[k], lat = (x - p[0]) * -t[1] + (z - p[1]) * t[0], onRoad = pathDist(x, z) < ROAD + 0.6;
-        const crust = onRoad && lat * sg >= 0; P.push(x, height(x, z) + (onRoad ? 0.07 : 0.18), z); UV.push(c / A * 1.6, v); v += 0; C.push(...(crust ? [0.16, 0.1, 0.08] : [1, 1, 1])); }
+        P.push(x, height(x, z) + 0.22, z); UV.push(c / A * 1.6, v); C.push(1, 1, 1); }
       v = q * 1.5 / 10; for (let c = 0; c <= A; c++) UV[(q * (A + 1) + c) * 2 + 1] = v; }
     for (let q = 0; q < n - 1; q++) for (let c = 0; c < A; c++) { const a = q * (A + 1) + c, b = a + A + 1; I.push(a, b, a + 1, a + 1, b, b + 1); }
     const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute(P, 3)); g.setAttribute("uv", new THREE.Float32BufferAttribute(UV, 2)); g.setAttribute("color", new THREE.Float32BufferAttribute(C, 3)); g.setIndex(I);
     const m = new THREE.Mesh(g, lavaMat); m.frustumCulled = false; m.userData.dyn = true; scene.add(m);
-    // a crust slab marker: two dark posts with orange caps either end of the safe side
-    for (const e of [-1, 1]) { const k = (kc + e * 9 + NP) % NP, p = PATH[k], t = TAN[k], x = p[0] - t[1] * (ROAD + 1.2) * sg, z = p[1] + t[0] * (ROAD + 1.2) * sg;
-      const post = new THREE.Mesh(new THREE.BoxGeometry(0.3, 1.3, 0.3), new THREE.MeshLambertMaterial({ color: 0x2a2220 })); post.position.set(x, height(x, z) + 0.65, z); scene.add(post);
-      const cap = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.26, 0.34), new THREE.MeshBasicMaterial({ color: 0xff8a20 })); cap.position.set(x, height(x, z) + 1.4, z); scene.add(cap); }
   }
+  // the bridges: a narrow deck at the canyon rim (the road surface, then a basalt slab under it), kerb stones along its edges, piers
+  // down into the lava glowing where they stand in it, and posts with lamps at both ends
+  { const deckH = (k) => ROADH[k] - 0.12;
+    const TP = [], TU = [], TC = [], TI = []; let tv = 0;
+    for (const [k0, k1] of BRIDGES) { const L = (k1 - k0 + NP) % NP;
+      for (let q = 0; q <= L + 1; q++) { const k = (k0 + q) % NP, p = PATH[k], t = TAN[k];
+        for (const sd of [-1, 1]) { const s2 = sd * BRIDGE_HW; TP.push(p[0] - t[1] * s2, deckH(k) + 0.035, p[1] + t[0] * s2); TU.push((sd + 1) / 2 * 0.6 + 0.2, k / 7); const sh = 0.95 + 0.05 * sd; TC.push(sh, sh, sh); }
+        if (q > 0) { const a = tv + (q - 1) * 2; TI.push(a, a + 2, a + 1, a + 1, a + 2, a + 3); } }
+      tv += (L + 2) * 2; }
+    if (TP.length) { const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute(TP, 3)); g.setAttribute("uv", new THREE.Float32BufferAttribute(TU, 2)); g.setAttribute("color", new THREE.Float32BufferAttribute(TC, 3)); g.setIndex(TI); g.computeVertexNormals();
+      const m = new THREE.Mesh(g, new THREE.MeshLambertMaterial({ map: gravelTex, vertexColors: true, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 })); m.frustumCulled = false; scene.add(m); }
+    // stone: one box shape for slab, kerbs, piers and posts; its faces darken downwards and glow at the very bottom (lava light)
+    const box = new THREE.BoxGeometry(1, 1, 1).toNonIndexed(); { const p = box.attributes.position, c = []; for (let i = 0; i < p.count; i++) { const y = p.getY(i) + 0.5; const k = 0.55 + 0.45 * y; c.push(k, k, k); } box.setAttribute("color", new THREE.Float32BufferAttribute(c, 3)); }
+    const SM = [], SC = [], GM = [], GCc = [], LM = [], LC = [];
+    const stone = (x, y, z, rot, sx, sy, sz, col) => { tmpO.position.set(x, y, z); tmpO.rotation.set(0, rot, 0); tmpO.scale.set(sx, sy, sz); pushT(SM, SC, tmpO, tmpC.setRGB(...col)); };
+    const BAS = [0.2, 0.15, 0.14], KERB = [0.34, 0.27, 0.24];
+    for (const [k0, k1] of BRIDGES) { const L = (k1 - k0 + NP) % NP;
+      for (let q = 0; q <= L; q++) { const k = (k0 + q) % NP, n = (k + 1) % NP, p = PATH[k], pn = PATH[n], cx = (p[0] + pn[0]) / 2, cz = (p[1] + pn[1]) / 2, t = TAN[k], rot = Math.atan2(t[0], t[1]), y = (deckH(k) + deckH(n)) / 2;
+        stone(cx, y - 0.4, cz, rot, BRIDGE_HW * 2 + 0.2, 0.8, 1.06, BAS);   // slab
+        if (q % 3 !== 2) for (const sd of [-1, 1]) { const o = sd * (BRIDGE_HW + 0.16); stone(cx - t[1] * o, y + 0.06, cz + t[0] * o, rot, 0.3, 0.32, 1.02, KERB); } }
+      // piers: every 8 m where the canyon is deep, from the lava to the slab
+      for (let q = 4; q <= L - 4; q += 8) { const k = (k0 + q) % NP, p = PATH[k], f = height(p[0], p[1]), top = deckH(k) - 0.8; if (top - f < 4) continue;
+        const rot = Math.atan2(TAN[k][0], TAN[k][1]); stone(p[0], (top + f) / 2 - 0.5, p[1], rot, 1.5, top - f + 1, 1.5, [0.26, 0.17, 0.14]);
+        tmpO.position.set(p[0], f + 0.6, p[1]); tmpO.rotation.set(0, rot, 0); tmpO.scale.set(1.75, 1.2, 1.75); pushT(GM, GCc, tmpO, tmpC.setRGB(1.0, 0.42, 0.12)); }
+      // abutments under the deck ends, and a post with a lamp at each corner
+      for (const [k, dir] of [[k0, -1], [k1, 1]]) { const p = PATH[k], t = TAN[k], rot = Math.atan2(t[0], t[1]);
+        stone(p[0] + t[0] * dir * 0.5, deckH(k) - 2.2, p[1] + t[1] * dir * 0.5, rot, BRIDGE_HW * 2 + 1.6, 3.6, 3.0, BAS);
+        for (const sd of [-1, 1]) { const o = sd * (BRIDGE_HW + 0.5), x = p[0] - t[1] * o, z = p[1] + t[0] * o; stone(x, deckH(k) + 0.65, z, rot, 0.34, 1.5, 0.34, [0.18, 0.15, 0.14]);
+          tmpO.position.set(x, deckH(k) + 1.5, z); tmpO.rotation.set(0, rot, 0); tmpO.scale.set(0.3, 0.3, 0.3); pushT(LM, LC, tmpO, tmpC.setRGB(1.0, 0.62, 0.22)); } } }
+    if (SM.length) instanced(box, new THREE.MeshLambertMaterial({ vertexColors: true }), SM, SC);
+    if (GM.length) { const gm = new THREE.MeshBasicMaterial({ color: 0xffffff, vertexColors: true }); instanced(box, gm, GM, GCc); }   // the pier feet, red-hot
+    if (LM.length) instanced(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial({ color: 0xffffff }), LM, LC);   // lamps
+    VOLC.bridges = BRIDGES.map(([a, b]) => [a, b]); }
   // the crater: a lava lake and a glow standing over it
   { const y = height(0, 0) + 4, lake = new THREE.Mesh(new THREE.CircleGeometry(52, 40), new THREE.MeshBasicMaterial({ map: lavaTex, side: THREE.DoubleSide })); lake.rotation.x = -Math.PI / 2; lake.position.set(0, y, 0); scene.add(lake);
     VOLC.crater = [0, y, 0];
@@ -1331,7 +1381,7 @@ if (PRI) prismFurniture(); else {
   const baleMat = new THREE.MeshLambertMaterial({ map: strawTex });
   const chevI = [], postI = [], baleI = [];
   for (let i = 0; i < NP; i += 7) {
-    if (VCURVE[i] > 17 || tunAt(i) || inVillage(i)) continue;
+    if (VCURVE[i] > 17 || tunAt(i) || inVillage(i) || (VOL && bridgeNear(i, 12))) continue;
     const a = TAN[(i + NP - 10) % NP], b = TAN[(i + 10) % NP], turn = a[0] * b[1] - a[1] * b[0], side = turn > 0 ? -1 : 1;
     const p = PATH[i], tn = TAN[i], x = p[0] - tn[1] * (ROAD + 1.7) * side, z = p[1] + tn[0] * (ROAD + 1.7) * side;
     tmpO.position.set(x, height(x, z) + 1.1, z); tmpO.rotation.set(0, Math.atan2(-tn[0], -tn[1]), 0); tmpO.scale.set(side < 0 ? -1 : 1, 1, 1); tmpO.updateMatrix(); chevI.push(tmpO.matrix.clone());
@@ -1378,7 +1428,7 @@ if (PRI) prismFurniture(); else {
     const PM = [], PC = [], CM = [], RM = [];
     for (let i = 0; i < NP; i += 20) for (const s of [-1, 1]) {
       const p = PATH[i], tn = TAN[i], x = p[0] - tn[1] * (ROAD + 0.9) * s, z = p[1] + tn[0] * (ROAD + 0.9) * s;
-      if (pathDist(x, z) < ROAD + 0.6 || tunAt(i) || inVillage(i)) continue;
+      if (pathDist(x, z) < ROAD + 0.6 || tunAt(i) || inVillage(i) || (VOL && bridgeNear(i, 6))) continue;
       tmpO.position.set(x, height(x, z) - 0.05, z); tmpO.rotation.set(0, Math.atan2(tn[0], tn[1]), 0); tmpO.scale.set(1, 1, 1); tmpO.updateMatrix();
       PM.push(tmpO.matrix.clone()); PC.push(new THREE.Color(0.92, 0.9, 0.84)); CM.push(tmpO.matrix.clone()); RM.push(tmpO.matrix.clone());
     }
@@ -3190,7 +3240,7 @@ function rtPacket() {
     dust: { obj: ids(dust)[0], n: DN },
     shade: Array.from({ length: NP * 13 }, (_, q) => { const i = (q / 13) | 0, l = q % 13 - 6, p = PATH[i], tn = TAN[i]; return Math.round(sunShadowAt(p[0] - tn[1] * l, p[1] + tn[0] * l) * 99); }),
     shadeTint: SHADOW_TINT,
-    volc: VOL ? { fire: ids(VOLC.ims.fire)[0], solid: ids(VOLC.ims.solid)[0], glow: ids(VOLC.ims.glow)[0], ring: ids(VOLC.ims.ring)[0], disc: ids(VOLC.ims.disc)[0], crater: VOLC.crater, rivers: VOLC.rivers } : null,
+    volc: VOL ? { fire: ids(VOLC.ims.fire)[0], solid: ids(VOLC.ims.solid)[0], glow: ids(VOLC.ims.glow)[0], ring: ids(VOLC.ims.ring)[0], disc: ids(VOLC.ims.disc)[0], crater: VOLC.crater, rivers: VOLC.rivers, bridges: VOLC.bridges || [] } : null,
     wave: PRI ? { objs: scene.children.filter(o => o.userData.wave).flatMap(o => ids(o)), secs: WAVES } : null,
     tiles: scene.children.filter(o => o.userData.grid).map(o => [ids(o)[0], ...o.userData.grid, ...o.geometry.boundingSphere.center.toArray()]),   // stage ground grids: the app draws far ones coarser
     saves: {} };

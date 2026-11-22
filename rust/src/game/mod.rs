@@ -276,12 +276,12 @@ impl Game {
         use libm::{atan, atan2, sin}; use crate::physics::js_hypot;
         let s = &self.car; let np = self.np; let i = path_idx(w, s.x, s.z); let u = s.u.max(0.0); let ld = 7.0 + u * 0.42;
         let kk = (i + (ld + 0.5).floor() as usize) % np; let tgt = self.rt.path[kk];
-        let lat = if self.vol { volc::dodge(&self.rt, i).unwrap_or(0.0) } else { 0.0 };   // Ember Peak: across the lava on the crust side
+        let lat = if self.vol { volc::dodge(&self.rt, i).unwrap_or(0.0) } else { 0.0 };   // Ember Peak: down the middle of the bridges
         let (dx, dz) = (tgt[0] - self.rt.tan[kk][1] * lat - s.x, tgt[1] + self.rt.tan[kk][0] * lat - s.z);
         let sp = js_hypot(s.vx, s.vz); let vh = if sp > 2.0 { atan2(s.vx, s.vz) } else { s.h };
         let al = wrap_a(atan2(dx, dz) - vh); let r_want = 2.0 * sp.max(1.0) * sin(al) / ld;
         let delta = wrap_a(vh - s.h) + atan(2.0 * VEH_L * sin(al) / ld) - (s.r - r_want) * 0.12; let lock = self.steer_lock(u);
-        let vt = self.rt.vprof[(i + 4) % np] * 0.9; let vt = if self.vol && volc::dodge(&self.rt, i).is_some() { vt.min(17.0) } else { vt }; let slide_cut = clamp(1.0 - (s.vl.abs() - 1.5) / 3.0, 0.15, 1.0);
+        let vt = self.rt.vprof[(i + 4) % np] * 0.9; let vt = if self.vol { volc::bridge_cap(&self.rt, i).map_or(vt, |c| vt.min(c)) } else { vt }; let slide_cut = clamp(1.0 - (s.vl.abs() - 1.5) / 3.0, 0.15, 1.0);
         Input { steer: clamp(delta / lock, -1.0, 1.0), throttle: clamp((vt - u) * 0.5, 0.0, 1.0) * slide_cut, brake: clamp((u - vt - 1.5) * 0.3, 0.0, 1.0), hb: false }
     }
     pub fn steer_lock(&self, u: f64) -> f64 { self.tune.lock / (1.0 + u.max(0.0) / self.tune.lock_fall) }
@@ -359,6 +359,9 @@ impl Game {
     /// the road before the crossing
     fn volc_step(&mut self, r: &mut Renderer, w: &World, dt: f64) {
         let Some(ims) = self.rt.volc.as_ref().map(|v| v.ims) else { return };
+        w.bridge.get_or_init(|| { let np = self.rt.path.len(); let mut on = vec![false; np];
+            if let Some(v) = self.rt.volc.as_ref() { for &(a, b) in &v.bridges { let mut k = a; for _ in 0..np { on[k % np] = true; if k % np == b % np { break; } k += 1; } } }
+            crate::world::Bridges { path: self.rt.path.iter().map(|p| (p[0], p[1])).collect(), tan: self.rt.tan.iter().map(|t| (t[0], t[1])).collect(), roadh: self.rt.roadh.clone(), on } });
         let t = if self.wave_sim { (self.wave_t0 + self.time).rem_euclid(volc::PERIOD) } else { web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| (d.as_millis() % (volc::PERIOD as u128 * 1000)) as f64 / 1000.0).unwrap_or(self.time % volc::PERIOD) };
         let tp = if self.volc_tp < 0.0 || self.volc_tp > t || t - self.volc_tp > 1.0 { t - dt.max(0.0) } else { self.volc_tp }; self.volc_tp = t;
         let f = volc::frame(&self.rt, w, t, tp, self.cam_pos);
@@ -369,11 +372,11 @@ impl Game {
             let d = (self.car.x - b.to[0]).hypot(self.car.z - b.to[2]).hypot(self.car.y - b.to[1]);
             if d < 240.0 { self.audio_msg(&[2.0, 5.0, d as f32, 0.0]); }
             if d < 45.0 && self.state == State::Drive { self.shake = self.shake.max(0.8 * (1.0 - d / 45.0).powf(1.5)); }
-            if live { let k = volc::kick(&mut self.car, b); if k > 0.0 && self.state == State::Drive { self.flash_msg("BOOM!", 0.8); self.buzz("land", 0.5 + 0.5 * k); }
+            if live { let k = volc::kick(&mut self.car, b); if k > 0.0 && self.state == State::Drive { self.buzz("land", 0.5 + 0.5 * k); }
                 else if self.state == State::Drive && (self.car.x - b.to[0]).hypot(self.car.z - b.to[2]) < 22.0 { self.buzz("shift", 0.35); } }
             for c in self.race.cars.iter_mut() { if c.is_ai() { volc::kick(&mut c.car, b); } }
         }
-        if live { if let Some(rv) = volc::in_lava(&self.rt, w, self.car.x, self.car.z) {
+        if live { if let Some(rv) = volc::in_canyon(&self.rt, w, self.car.x, self.car.y, self.car.z) {
             let back = volc::back_from(&self.rt, rv, path_idx(w, self.car.x, self.car.z)); self.place_at(w, back);
             if self.state == State::Drive { self.flash_msg("LAVA!", 1.2); self.buzz("land", 0.9); }
         } }

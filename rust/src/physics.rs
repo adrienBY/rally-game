@@ -163,7 +163,7 @@ impl Car {
         let gx = (world.height(self.x + 0.6, self.z) - world.height(self.x - 0.6, self.z)) / 1.2;
         let gz = (world.height(self.x, self.z + 0.6) - world.height(self.x, self.z - 0.6)) / 1.2;
         // prism: the deck edge is a 400 m cliff - its 'slope' must not fling a car sideways as a wheel drops over it
-        let (gx, gz) = if world.map == Map::Prism { (clamp(gx, -0.5, 0.5), clamp(gz, -0.5, 0.5)) } else { (gx, gz) };
+        let (gx, gz) = if world.map == Map::Prism || (world.map == Map::Ember && world.in_bridge_span(self.x, self.z)) { (clamp(gx, -0.5, 0.5), clamp(gz, -0.5, 0.5)) } else { (gx, gz) };   // (ember: the drop beside a bridge too)
         let ctl = Ctl { throttle: thr, brake: brk, hb: input.hb, steer: input.steer };
         let n = clamp(js_round(dt * 360.0), 1.0, 24.0) as usize;
         let sdt = dt / n as f64;
@@ -174,7 +174,7 @@ impl Car {
     }
 
     fn step(&mut self, world: &World, t: &Tune, dt: f64, ctl: &Ctl, gx: f64, gz: f64) {
-        let snow = world.map == Map::Snow; let can = world.map == Map::Canyon; let lak = world.map == Map::Lakes; let ice = world.map == Map::Iceland; let tou = world.map == Map::Touge; let riv = world.map == Map::Riviera; let prism = world.map == Map::Prism;
+        let snow = world.map == Map::Snow; let can = world.map == Map::Canyon; let lak = world.map == Map::Lakes; let ice = world.map == Map::Iceland; let tou = world.map == Map::Touge; let riv = world.map == Map::Riviera; let prism = world.map == Map::Prism; let ember = world.map == Map::Ember;
         // prism: whether the car has the deck under it is decided by its middle alone. While the centre is over the drawn road (up to just
         // past the kerb) every wheel has the deck - the deck carries on under a wheel hanging past the kerb - so half a car over the edge
         // still drives and can be steered back, with no tipping or hanging. Once the centre is past (below deck level) it falls cleanly:
@@ -203,9 +203,12 @@ impl Car {
             // back on). A wheel that was on the deck always keeps it, even if the deck rose a little past it (a spawn, a wave).
             let wy = self.y + w.lz * sp + w.lx * sr;
             let hg = if gone || (prism && w.hg < -300.0 && wy < hg - 0.7) { crate::world::PRISM_VOID } else { hg };
+            // ember: likewise a wheel coming back up from beside a bridge (the ground under it jumped up by metres) only finds the deck
+            // if the tyre is near its top; under it, it is still over the canyon
+            let jump = ember && hg - w.hg > 1.2; let hg = if jump && wy < hg - 0.7 { w.hg } else { hg };
             let d = wy - hg; let comp = REST - d;
             // prism: the ground under a wheel can appear or vanish at the edge - damp from where the tyre is now, not from the void
-            let rate = (comp - if prism { if w.hg < -300.0 { comp } else { w.comp.max(comp.min(0.0) - 0.05) } } else { w.comp }) / dt;   // (a wheel just back from the void: no damper kick)
+            let rate = (comp - if prism { if w.hg < -300.0 { comp } else { w.comp.max(comp.min(0.0) - 0.05) } } else if jump { comp } else { w.comp }) / dt;   // (a wheel just back from the void: no damper kick)
             w.comp = comp; w.d = d; w.hg = hg;
             let mut f = 0.0;
             if comp > 0.0 { f = t.k * comp + t.c * rate; if comp > STOP { f += t.k * 10.0 * (comp - STOP) + t.c * 2.0 * rate.max(0.0); } }
