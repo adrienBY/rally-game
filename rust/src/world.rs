@@ -103,6 +103,13 @@ pub fn ember_canyon(x: f64, z: f64) -> (f64, usize) {
     }
     best
 }
+/// how far (x, z) is from open lava: the crater lake or a river's edge
+pub fn ember_lava_dist(x: f64, z: f64) -> f64 {
+    let r = (x * x + z * z).sqrt(); let th = z.atan2(x); let mut best = (r - 85.0).max(0.0);
+    if (92.0..575.0).contains(&r) { for j in 0..EMBER_RIVERS { let (tc, hw, dt) = ember_river(j, r); let mut d = th - tc; d -= (d / std::f64::consts::TAU).round() * std::f64::consts::TAU;
+        let lat = (r * d).abs() / (1.0 + (r * dt) * (r * dt)).sqrt(); best = best.min((lat - hw).max(0.0)); } }
+    best
+}
 /// the bridges, once the game has the stage: road line and height, which road points are on a bridge
 pub struct Bridges { pub path: Vec<(f64, f64)>, pub tan: Vec<(f64, f64)>, pub roadh: Vec<f64>, pub on: Vec<bool> }
 

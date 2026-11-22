@@ -28,7 +28,8 @@ body {
 
 <script>
 window.__AUDIO = { wind: "__WIND__", birds: "__BIRDS__", engine: "__ENGINE__", skid: "__SKID__", impact: "__IMPACT__", water_a: "__WATER_A__", water_b: "__WATER_B__",
-  traffic: "__TRAFFIC__", splash: "__SPLASH__", metal: "__METAL__", plank: "__PLANK__", soft: "__SOFT__", wind2: "__WIND2__" };
+  traffic: "__TRAFFIC__", splash: "__SPLASH__", metal: "__METAL__", plank: "__PLANK__", soft: "__SOFT__", wind2: "__WIND2__",
+  boom: "__BOOM__", explo: "__EXPLO__", lava: "__LAVA__", erupt: "__ERUPT__" };
 window.__AUDIOWASM = "__AUDIOWASM__";
 </script>
 <script type="module">
@@ -42,7 +43,7 @@ THREE.ColorManagement.enabled = false;
 /* app runtime mode (?rt=1 inside the Android app): this page only builds each stage and hands it to the Rust engine, which then runs
    the whole game (loop, camera, rivals, HUD, sound) natively; the page sleeps until the next stage is wanted */
 const RT_MODE = typeof location !== "undefined" && /[?&]rt=1/.test(location.search) && !!(window.FogwoodGL && window.FogwoodNative);
-const SND_IDS = RT_MODE ? { wind: [0, 1], birds: [1, 1], engine: [2, 1], skid: [3, 1], impact: [4, 0], water_a: [5, 1], water_b: [6, 1], traffic: [7, 1], splash: [8, 0], metal: [9, 0], plank: [10, 0], soft: [11, 0], wind2: [12, 1] } : { wind: [0, 1], birds: [1, 1], impact: [4, 0], water_a: [5, 1], water_b: [6, 1], traffic: [7, 1], splash: [8, 0], metal: [9, 0], plank: [10, 0], soft: [11, 0], wind2: [12, 1] };
+const SND_IDS = RT_MODE ? { wind: [0, 1], birds: [1, 1], engine: [2, 1], skid: [3, 1], impact: [4, 0], water_a: [5, 1], water_b: [6, 1], traffic: [7, 1], splash: [8, 0], metal: [9, 0], plank: [10, 0], soft: [11, 0], wind2: [12, 1], boom: [13, 0], explo: [14, 0], lava: [15, 1], erupt: [16, 1] } : { wind: [0, 1], birds: [1, 1], impact: [4, 0], water_a: [5, 1], water_b: [6, 1], traffic: [7, 1], splash: [8, 0], metal: [9, 0], plank: [10, 0], soft: [11, 0], wind2: [12, 1], boom: [13, 0], explo: [14, 0], lava: [15, 1], erupt: [16, 1] };
 const SHARED = { ac: null, node: null, native: (window.FogwoodAudio && typeof window.FogwoodAudio.postMessage === "function") ? window.FogwoodAudio : null,
   msgs: [], ready: false, started: false, queue: [] };
 window.__SHARED = SHARED;   // the browser build of the native game streams its sound through this
@@ -432,13 +433,13 @@ const renderer = NGL ? { outputColorSpace: "", setPixelRatio() {}, setClearColor
   : new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: "high-performance" });
 if (NGL) { document.documentElement.style.background = "transparent"; document.body.style.background = "transparent"; canvas.style.background = "transparent"; }
 renderer.outputColorSpace = THREE.LinearSRGBColorSpace; renderer.setPixelRatio(1);
-const FOG = VOL ? new THREE.Color(0.34, 0.16, 0.12) : PRI ? new THREE.Color(0.06, 0.03, 0.13) : RIV ? new THREE.Color(0.84, 0.58, 0.52) : ICE ? new THREE.Color(0.53, 0.51, 0.65) : TOU ? new THREE.Color(0.36, 0.33, 0.5) : SNOW ? new THREE.Color(0.79, 0.84, 0.9) : CAN ? new THREE.Color(0.88, 0.66, 0.5) : LAK ? new THREE.Color(0.84, 0.74, 0.76) : new THREE.Color(0.60, 0.65, 0.64);
+const FOG = VOL ? new THREE.Color(0.17, 0.065, 0.045) : PRI ? new THREE.Color(0.06, 0.03, 0.13) : RIV ? new THREE.Color(0.84, 0.58, 0.52) : ICE ? new THREE.Color(0.53, 0.51, 0.65) : TOU ? new THREE.Color(0.36, 0.33, 0.5) : SNOW ? new THREE.Color(0.79, 0.84, 0.9) : CAN ? new THREE.Color(0.88, 0.66, 0.5) : LAK ? new THREE.Color(0.84, 0.74, 0.76) : new THREE.Color(0.60, 0.65, 0.64);
 renderer.setClearColor(FOG, 0);
-const scene = new THREE.Scene(); scene.fog = new THREE.FogExp2(FOG, VOL ? 0.0021 : PRI ? 0.0011 : RIV ? 0.0019 : ICE ? 0.00135 : TOU ? 0.0026 : SNOW ? 0.0034 : CAN ? 0.0024 : LAK ? 0.0029 : 0.0056);
+const scene = new THREE.Scene(); scene.fog = new THREE.FogExp2(FOG, VOL ? 0.0046 : PRI ? 0.0011 : RIV ? 0.0019 : ICE ? 0.00135 : TOU ? 0.0026 : SNOW ? 0.0034 : CAN ? 0.0024 : LAK ? 0.0029 : 0.0056);
 const camera = new THREE.PerspectiveCamera(58, 16 / 9, 0.12, ICE ? 2700 : 1900);   // iceland: the aurora hangs beyond the ranges
 const SUN = VOL ? new THREE.Vector3(0.52, 0.2, -0.83).normalize() : PRI ? new THREE.Vector3(0.55, 0.42, -0.72).normalize() : RIV ? new THREE.Vector3(-0.86, 0.075, -0.33).normalize() : ICE ? new THREE.Vector3(-0.72, 0.1, -0.69).normalize() : TOU ? new THREE.Vector3(0.74, 0.07, 0.66).normalize() : CAN ? new THREE.Vector3(-0.62, 0.2, -0.76).normalize() : LAK ? new THREE.Vector3(0.7, 0.13, -0.7).normalize() : SNOW ? new THREE.Vector3(-0.55, 0.24, -0.8).normalize() : new THREE.Vector3(0.6, 0.48, -0.62).normalize();
-scene.add(VOL ? new THREE.HemisphereLight(0xd09078, 0x3a1410, 2.15) : PRI ? new THREE.HemisphereLight(0xa8a0ff, 0x402060, 2.3) : RIV ? new THREE.HemisphereLight(0xb4b0dc, 0x80604a, 2.1) : ICE ? new THREE.HemisphereLight(0xb4bae8, 0x4c4856, 2.5) : TOU ? new THREE.HemisphereLight(0x8c92cc, 0x2a2232, 1.75) : CAN ? new THREE.HemisphereLight(0xf2c9a0, 0x6a3a26, 2.0) : LAK ? new THREE.HemisphereLight(0xd8c6d6, 0x34452f, 2.1) : SNOW ? new THREE.HemisphereLight(0xdbe6f5, 0x6f7f96, 2.0) : new THREE.HemisphereLight(0xc8d2cf, 0x2b3420, 2.3));
-const sunL = VOL ? new THREE.DirectionalLight(0xff8048, 1.7) : PRI ? new THREE.DirectionalLight(0xf0e8ff, 1.9) : RIV ? new THREE.DirectionalLight(0xffa868, 2.3) : ICE ? new THREE.DirectionalLight(0xffa46e, 2.5) : TOU ? new THREE.DirectionalLight(0xff8a58, 1.35) : CAN ? new THREE.DirectionalLight(0xffb26b, 2.6) : LAK ? new THREE.DirectionalLight(0xffc09a, 2.4) : SNOW ? new THREE.DirectionalLight(0xffd2a6, 2.2) : new THREE.DirectionalLight(0xffefc8, 1.9); sunL.position.copy(SUN); scene.add(sunL);
+scene.add(VOL ? new THREE.HemisphereLight(0xa86450, 0x240a07, 1.55) : PRI ? new THREE.HemisphereLight(0xa8a0ff, 0x402060, 2.3) : RIV ? new THREE.HemisphereLight(0xb4b0dc, 0x80604a, 2.1) : ICE ? new THREE.HemisphereLight(0xb4bae8, 0x4c4856, 2.5) : TOU ? new THREE.HemisphereLight(0x8c92cc, 0x2a2232, 1.75) : CAN ? new THREE.HemisphereLight(0xf2c9a0, 0x6a3a26, 2.0) : LAK ? new THREE.HemisphereLight(0xd8c6d6, 0x34452f, 2.1) : SNOW ? new THREE.HemisphereLight(0xdbe6f5, 0x6f7f96, 2.0) : new THREE.HemisphereLight(0xc8d2cf, 0x2b3420, 2.3));
+const sunL = VOL ? new THREE.DirectionalLight(0xff6a38, 1.15) : PRI ? new THREE.DirectionalLight(0xf0e8ff, 1.9) : RIV ? new THREE.DirectionalLight(0xffa868, 2.3) : ICE ? new THREE.DirectionalLight(0xffa46e, 2.5) : TOU ? new THREE.DirectionalLight(0xff8a58, 1.35) : CAN ? new THREE.DirectionalLight(0xffb26b, 2.6) : LAK ? new THREE.DirectionalLight(0xffc09a, 2.4) : SNOW ? new THREE.DirectionalLight(0xffd2a6, 2.2) : new THREE.DirectionalLight(0xffefc8, 1.9); sunL.position.copy(SUN); scene.add(sunL);
 
 let LW = 320, LH = 180, U = 1, rt, post, hudCanvas, hud, hudTex;
 // render heights; the sharpest (340) is the default and draws the HUD at 2x, so it is exactly as big as on the 170 preset
@@ -923,7 +924,7 @@ if (LAK || ICE || RIV) {
 }
 const sky = new THREE.Mesh(new THREE.SphereGeometry(1600, 24, 12), new THREE.ShaderMaterial({
   side: THREE.BackSide, depthWrite: false, blending: THREE.NoBlending,
-  uniforms: { uSun: { value: SUN }, uFog: { value: FOG }, uTop: { value: VOL ? new THREE.Color(0.1, 0.04, 0.04) : PRI ? new THREE.Color(0.012, 0.004, 0.04) : RIV ? new THREE.Color(0.24, 0.26, 0.58) : ICE ? new THREE.Color(0.07, 0.11, 0.3) : TOU ? new THREE.Color(0.06, 0.07, 0.22) : CAN ? new THREE.Color(0.3, 0.45, 0.76) : LAK ? new THREE.Color(0.38, 0.45, 0.72) : SNOW ? new THREE.Color(0.36, 0.55, 0.84) : FOG.clone().add(new THREE.Color(0.12, 0.12, 0.1)) },
+  uniforms: { uSun: { value: SUN }, uFog: { value: FOG }, uTop: { value: VOL ? new THREE.Color(0.035, 0.012, 0.012) : PRI ? new THREE.Color(0.012, 0.004, 0.04) : RIV ? new THREE.Color(0.24, 0.26, 0.58) : ICE ? new THREE.Color(0.07, 0.11, 0.3) : TOU ? new THREE.Color(0.06, 0.07, 0.22) : CAN ? new THREE.Color(0.3, 0.45, 0.76) : LAK ? new THREE.Color(0.38, 0.45, 0.72) : SNOW ? new THREE.Color(0.36, 0.55, 0.84) : FOG.clone().add(new THREE.Color(0.12, 0.12, 0.1)) },
     uGlow: { value: VOL ? new THREE.Color(1.0, 0.32, 0.08) : PRI ? new THREE.Color(0.55, 0.3, 0.85) : RIV ? new THREE.Color(0.5, 0.26, 0.09) : ICE ? new THREE.Color(1.0, 0.5, 0.3) : TOU ? new THREE.Color(0.95, 0.36, 0.2) : CAN ? new THREE.Color(0.75, 0.42, 0.16) : LAK ? new THREE.Color(0.7, 0.4, 0.3) : SNOW ? new THREE.Color(0.5, 0.32, 0.18) : new THREE.Color(0.32, 0.29, 0.2) }, uHalo: { value: VOL ? 0.6 : SNOW ? 0.22 : CAN ? 0.35 : LAK ? 0.4 : ICE ? 0.55 : TOU ? 0.65 : RIV ? 0.3 : 0.0 } },
   vertexShader: "varying vec3 vD; void main(){ vD = normalize(position); gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0); }",
   fragmentShader: "uniform vec3 uSun; uniform vec3 uFog; uniform vec3 uTop; uniform vec3 uGlow; uniform float uHalo; varying vec3 vD; void main(){ float s = max(dot(normalize(vD), uSun), 0.0); vec3 c = mix(uFog, uTop, smoothstep(0.0,0.6,vD.y)) + uGlow*pow(s,6.0) + uGlow*uHalo*pow(s,2.0)*(1.0-smoothstep(0.0,0.5,vD.y)); gl_FragColor = vec4(c,0.0); }"

@@ -372,7 +372,7 @@ impl Game {
             let d = (self.car.x - b.to[0]).hypot(self.car.z - b.to[2]).hypot(self.car.y - b.to[1]);
             if d < 240.0 { self.audio_msg(&[2.0, 5.0, d as f32, 0.0]); }
             if d < 45.0 && self.state == State::Drive { self.shake = self.shake.max(0.8 * (1.0 - d / 45.0).powf(1.5)); }
-            if live { let k = volc::kick(&mut self.car, b); if k > 0.0 && self.state == State::Drive { self.buzz("land", 0.5 + 0.5 * k); }
+            if live { let k = volc::kick(&mut self.car, b); if k > 0.0 && self.state == State::Drive { self.buzz("land", 0.5 + 0.5 * k); self.audio_msg(&[2.0, 6.0, k as f32, 0.0]); }
                 else if self.state == State::Drive && (self.car.x - b.to[0]).hypot(self.car.z - b.to[2]) < 22.0 { self.buzz("shift", 0.35); } }
             for c in self.race.cars.iter_mut() { if c.is_ai() { volc::kick(&mut c.car, b); } }
         }
@@ -814,10 +814,13 @@ impl Game {
         let fwd = [-self.cam_rot[8], -self.cam_rot[10]]; let on_road: f64 = s.wh.iter().map(|w| if w.road { 0.25 } else { 0.0 }).sum();
         let master = if self.ps.sound_on { 0.9 * vol } else { 0.0 };
         let cp = self.cam_pos; let _ = w;
+        // ember peak: the lava bubbling as you near it, the volcano rumbling all over (more toward the crater)
+        let (lava, volc) = if self.vol { let d = crate::world::ember_lava_dist(cp[0], cp[2]); let r = cp[0].hypot(cp[2]);
+            (1.0 - crate::noise::smooth(4.0, 70.0, d), 0.35 + 0.65 * (1.0 - crate::noise::smooth(120.0, 650.0, r))) } else { (0.0, 0.0) };
         self.audio_msg(&[1.0, self.rpm_shown as f32, thr as f32, sp as f32, s.slide as f32, on_road as f32, if self.snow { 1.0 } else if self.can { 2.0 } else if self.tou || self.riv || self.pri { 3.0 } else { 0.0 }, wet as f32,
             if s.contacts == 0.0 { 1.0 } else { 0.0 }, s.gear as f32, if self.state == State::Title { 3.0 } else { self.cam.mode as f32 }, cp[0] as f32, cp[1] as f32, cp[2] as f32, fwd[0].atan2(fwd[1]) as f32,
             s.x as f32, s.y as f32, s.z as f32, gust as f32, if self.state == State::Drive { 1.0 } else { 0.0 }, master as f32, if s.shift_t > 0.0 { 1.0 } else { 0.0 }, inp.brake as f32,
-            if s.on_road { 0.0 } else { clamp(sp / 20.0, 0.0, 1.0) as f32 }]);
+            if s.on_road { 0.0 } else { clamp(sp / 20.0, 0.0, 1.0) as f32 }, lava as f32, volc as f32]);
         self.prev_throttle = inp.throttle;
     }
 

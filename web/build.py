@@ -12,7 +12,8 @@ W = D + 'fogwood_audio.wasm'
 s = s.replace('__AUDIOWASM__', base64.b64encode(open(W, 'rb').read()).decode() if os.path.exists(W) else '')
 for k, f in [('__WIND__', 'wind.mp3'), ('__BIRDS__', 'birds.mp3'), ('__ENGINE__', 'engine.wav'), ('__SKID__', 'skid.wav'), ('__IMPACT__', 'impact.wav'),
              ('__WATER_A__', 'snd/water_a.mp3'), ('__WATER_B__', 'snd/water_b.mp3'), ('__TRAFFIC__', 'snd/traffic.mp3'), ('__SPLASH__', 'snd/splash.mp3'),
-             ('__METAL__', 'snd/metal.mp3'), ('__PLANK__', 'snd/plank.mp3'), ('__SOFT__', 'snd/soft.mp3'), ('__WIND2__', 'snd/wind2.mp3')]:
+             ('__METAL__', 'snd/metal.mp3'), ('__PLANK__', 'snd/plank.mp3'), ('__SOFT__', 'snd/soft.mp3'), ('__WIND2__', 'snd/wind2.mp3'),
+             ('__BOOM__', 'snd/boom.mp3'), ('__EXPLO__', 'snd/explo.mp3'), ('__LAVA__', 'snd/lava.mp3'), ('__ERUPT__', 'snd/erupt.mp3')]:
     s = s.replace(k, base64.b64encode(open(D + f, 'rb').read()).decode())
 HEAD = '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">'
 # home-screen web app (iPhone: Safari > Share > Add to Home Screen opens it full screen, with the icon)

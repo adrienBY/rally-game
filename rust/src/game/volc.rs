@@ -10,7 +10,7 @@ use crate::world::{World, ROAD};
 pub const SLOT: f64 = 0.2;
 pub const FLIGHT: f64 = 3.2;
 pub const BOOM: f64 = 0.6;
-pub const REACH: f64 = 6.5;
+pub const REACH: f64 = 10.0;
 const APEX: f64 = 140.0;
 /// the schedule repeats every PERIOD seconds (a whole number of slots), so the shared clock can wrap
 pub const PERIOD: f64 = 600.0;
@@ -66,8 +66,8 @@ pub fn kick(c: &mut Car, b: &Ball) -> f64 {
     let (dx, dz) = (c.x - b.to[0], c.z - b.to[2]); let d = dx.hypot(dz);
     if d > REACH || (c.y - b.to[1]).abs() > 4.0 { return 0.0; }
     let k = 1.0 - d / REACH; let (ux, uz) = if d > 0.2 { (dx / d, dz / d) } else { (c.h.sin(), c.h.cos()) };
-    let push = 2.0 + 4.5 * k; c.vx += ux * push; c.vz += uz * push; c.vy += 2.0 + 3.0 * k; c.r += b.spin * 1.3 * k;
-    c.impact = c.impact.max(5.0 + 7.0 * k); k
+    let push = 4.0 + 9.0 * k; c.vx += ux * push; c.vz += uz * push; c.vy += 3.0 + 5.0 * k; c.r += b.spin * 2.0 * k;
+    c.impact = c.impact.max(6.0 + 9.0 * k); k
 }
 
 // ---- the look ------------------------------------------------------------------------------------------------------------------------

@@ -41,7 +41,8 @@ fn main() {
         println!("obstacles {}", fogwood_core::bridge::set_obstacles(&obs.join(",")));
         fogwood_audio::native::init(48000.0);
         // the recordings the page would send (16-bit PCM wavs): engine 2, skid 3, impact 4
-        for (id, f, looped) in [(2.0f32, "/home/claude/forest/engine.wav", 1.0f32), (3.0, "/home/claude/forest/skid.wav", 1.0), (4.0, "/home/claude/forest/impact.wav", 0.0)] {
+        for (id, f, looped) in [(2.0f32, "/home/claude/forest/engine.wav", 1.0f32), (3.0, "/home/claude/forest/skid.wav", 1.0), (4.0, "/home/claude/forest/impact.wav", 0.0),
+            (13.0, "/home/claude/forest/boom.wav", 0.0), (14.0, "/home/claude/forest/explo.wav", 0.0), (15.0, "/home/claude/forest/lava.wav", 1.0), (16.0, "/home/claude/forest/erupt.wav", 1.0)] {
             let Ok(b) = std::fs::read(f) else { continue }; let mut p = 12; let (mut ch, mut rate, mut data) = (1u16, 44100u32, &b[0..0]);
             while p + 8 <= b.len() { let id4 = &b[p..p + 4]; let n = u32::from_le_bytes([b[p + 4], b[p + 5], b[p + 6], b[p + 7]]) as usize;
                 if id4 == b"fmt " { ch = u16::from_le_bytes([b[p + 10], b[p + 11]]); rate = u32::from_le_bytes([b[p + 12], b[p + 13], b[p + 14], b[p + 15]]); }

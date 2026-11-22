@@ -2,7 +2,7 @@
 //!
 //! One `Engine` renders interleaved stereo. The game talks to it with small binary messages (little-endian f32s):
 //!   [1, params...]            per-frame car/listener state (see `Params`)
-//!   [2, kind, a, b]           events: 1 impact(strength, material) 2 landing(v) 3 gear shift 4 splash(v) 5 fireball boom(distance m)
+//!   [2, kind, a, b]           events: 1 impact(strength, material) 2 landing(v) 3 gear shift 4 splash(v) 5 fireball boom(distance m) 6 fireball hit the car(strength)
 //!   [3, n, (kind x y z gain)*n]  positional emitters of the stage
 //!   [4, id, ch, rate, looped, frames, pcm(i16 packed two per float slot)...]  a recording
 //!   [5, map]                  stage preset (0 forest, 1 snow, 2 canyon, 3 lakes, 4 iceland, 5 touge)
@@ -17,11 +17,11 @@ use amb::{Amb, EmVoice, Emitter};
 use car::{Car, CarIn};
 use dsp::*;
 
-pub const NSAMPLES: usize = 16;
+pub const NSAMPLES: usize = 20;
 
 #[derive(Clone, Copy, Default)]
 pub struct Params {
-    pub car: CarIn, pub lx: f32, pub ly: f32, pub lz: f32, pub lyaw: f32, pub cx: f32, pub cy: f32, pub cz: f32, pub wind: f32, pub master: f32,
+    pub car: CarIn, pub lx: f32, pub ly: f32, pub lz: f32, pub lyaw: f32, pub cx: f32, pub cy: f32, pub cz: f32, pub wind: f32, pub master: f32, pub lava: f32, pub volc: f32,
 }
 
 pub struct Engine {
@@ -62,10 +62,10 @@ impl Engine {
             1 => {
                 let c = CarIn { rpm: f(1), thr: f(2), speed: f(3), slide: f(4), on_road: f(5), surface: f(6) as u32, wet: f(7), air: f(8), gear: f(9), cam: f(10) as u32,
                     shifting: f(21), brake: f(22), rough: f(23), drive: f(19) > 0.5 };
-                self.p = Params { car: c, lx: f(11), ly: f(12), lz: f(13), lyaw: f(14), cx: f(15), cy: f(16), cz: f(17), wind: f(18), master: f(20) };
+                self.p = Params { car: c, lx: f(11), ly: f(12), lz: f(13), lyaw: f(14), cx: f(15), cy: f(16), cz: f(17), wind: f(18), master: f(20), lava: f(24), volc: f(25) };
                 if !self.have_params { self.have_params = true; self.retarget(); self.car_d = self.car_dt; }
             }
-            2 => match f(1) as i32 { 1 => self.car.impact(f(2), f(3) as u32), 2 => self.car.land(f(2)), 3 => self.car.shift(), 4 => self.car.splash(f(2)), 5 => self.car.boom(f(2)), _ => {} },
+            2 => match f(1) as i32 { 1 => self.car.impact(f(2), f(3) as u32), 2 => self.car.land(f(2)), 3 => self.car.shift(), 4 => self.car.splash(f(2)), 5 => { let have = self.samples[crate::car::S_EXPLO].is_some(); self.car.boom(f(2), have) } 6 => self.car.hit(f(2)), _ => {} },
             3 => { let cnt = (f(1) as usize).min((n - 2) / 5); self.ems.clear();
                 for k in 0..cnt { let b = 2 + k * 5; self.ems.push(Emitter { kind: f(b) as u32, x: f(b + 1), y: f(b + 2), z: f(b + 3), gain: f(b + 4) }); }
                 for v in self.ev.iter_mut() { v.em = -1; } }
@@ -129,7 +129,7 @@ impl Engine {
             let (mut l, mut r) = self.car_spat.run(cs, sr, k);
             let mut send = cs * self.car_spat.send;
             // beds
-            let (bl, br) = self.amb.beds(&self.samples, self.p.wind, wl, wr); l += bl; r += br; send += (bl + br) * 0.15;
+            let (bl, br) = self.amb.beds(&self.samples, self.p.wind, wl, wr, self.p.lava, self.p.volc); l += bl; r += br; send += (bl + br) * 0.15;
             // wildlife
             for v in self.amb.voices.iter_mut() { if v.kind == amb::Kind::Off { continue; } let s = v.tick(sr, w); if !v.audible(s) { continue; } let (a, b) = v.spat.run(s, sr, k); l += a; r += b; send += s * v.spat.send; }
             // the stage's own sounds

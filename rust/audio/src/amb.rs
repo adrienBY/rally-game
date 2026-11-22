@@ -8,6 +8,9 @@ pub const S_WATER_A: usize = 5;
 pub const S_WATER_B: usize = 6;
 pub const S_TRAFFIC: usize = 7;
 pub const S_WIND2: usize = 12;
+/// ember peak: lava bubbling (louder near it) and the volcano's rumble (everywhere on the stage, more near the crater)
+pub const S_LAVA: usize = 15;
+pub const S_ERUPT: usize = 16;
 
 #[derive(Clone, Copy, Default, PartialEq)]
 pub enum Kind { #[default] Off, Bird, Plover, Hawk, Loon, Owl, Cricket, Bell, Higurashi, Woodpecker }
@@ -148,10 +151,12 @@ pub struct Amb {
     sr: f32, rng: Rng, pub map: u32, pub p: Preset,
     wind_a: Player, wind_b: Player, wl: Svf, wr: Svf, howl: Svf, howl_f: f32, leaves_l: Biquad, leaves_r: Biquad, gust: f32, birds: Player,
     cic: Biquad, cic_ph: f32, pub voices: Vec<Voice>, spawn_t: f32,
+    lava_p: Player, erupt_p: Player, lava_g: f32, volc_g: f32, rumble_lp: Biquad,
 }
 impl Amb {
     pub fn new(sr: f32) -> Self {
         Amb { sr, rng: Rng(0x2545_f491), map: 0, p: Preset { wind: 0.4, wind_lp: 3000.0, howl: 0.0, leaves: 0.4, birds: 0.5, cicada: 0.0 },
+            lava_p: Player::default(), erupt_p: Player::default(), lava_g: 0.0, volc_g: 0.0, rumble_lp: Biquad::lp(sr, 900.0, 0.7),
             wind_a: Player::default(), wind_b: Player { pos: 400_000.0, done: false }, wl: Svf::default(), wr: Svf::default(), howl: Svf::default(), howl_f: 400.0,
             leaves_l: Biquad::bp(sr, 4200.0, 0.8), leaves_r: Biquad::bp(sr, 3700.0, 0.8), gust: 0.5, birds: Player::default(),
             cic: Biquad::bp(sr, 6200.0, 3.0), cic_ph: 0.0, voices: (0..14).map(|i| Voice::new(sr, 0x1234 + i * 977)).collect(), spawn_t: 0.0 }
@@ -204,7 +209,7 @@ impl Amb {
         for v in self.voices[idx..].iter_mut() { v.kind = Kind::Off; }
     }
     /// stereo beds (wind, leaves, distant birds recording, cicadas); gust 0..1
-    #[inline] pub fn beds(&mut self, smp: &[Option<Sample>], wind: f32, wl_: f32, wr_: f32) -> (f32, f32) {
+    #[inline] pub fn beds(&mut self, smp: &[Option<Sample>], wind: f32, wl_: f32, wr_: f32, lava: f32, volc: f32) -> (f32, f32) {
         let sr = self.sr; let p = self.p;
         self.gust += (wind - self.gust) * (1.0 / (0.8 * sr));
         let g = self.gust;
@@ -220,6 +225,9 @@ impl Amb {
         if p.birds > 0.0 { let (bl, br) = if let Some(s) = &smp[crate::amb::S_BIRDS] { self.birds.tick(s, 1.0, true) } else { (0.0, 0.0) }; ol += bl * p.birds; or += br * p.birds; }
         if p.cicada > 0.0 { self.cic_ph += 1.0 / sr; let am = 0.5 + 0.5 * fsin(self.cic_ph * 52.0); let swell = 0.6 + 0.4 * fsin(self.cic_ph * 0.07);
             let c = self.cic.run(wl_) * am * swell * p.cicada; ol += c; or += c * 0.8; }
+        self.lava_g += (lava - self.lava_g) * (1.0 / (0.6 * sr)); self.volc_g += (volc - self.volc_g) * (1.0 / (2.0 * sr));
+        if self.lava_g > 0.002 { if let Some(s) = &smp[S_LAVA] { let (a, b) = self.lava_p.tick(s, 1.0, true); ol += a * self.lava_g * 0.75; or += b * self.lava_g * 0.75; } }
+        if self.volc_g > 0.002 { if let Some(s) = &smp[S_ERUPT] { let (a, _) = self.erupt_p.tick(s, 1.0, true); let m = self.rumble_lp.run(a) * self.volc_g * 0.7; ol += m; or += m; } }
         (ol, or)
     }
 }

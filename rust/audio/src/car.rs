@@ -11,6 +11,9 @@ pub const S_METAL: usize = 9;
 pub const S_PLANK: usize = 10;
 pub const S_SOFT: usize = 11;
 pub const S_WATER_A: usize = 5;
+/// ember peak recordings: a cinematic boom (hits and near blasts), an explosion (every blast you can hear)
+pub const S_BOOM: usize = 13;
+pub const S_EXPLO: usize = 14;
 /// The page plays the engine and tyres itself (the build 16 recordings); this engine then only adds water and one-shots.
 pub const PAGE_CAR: bool = true;
 
@@ -30,7 +33,7 @@ pub struct Car {
     // tyres and air
     crunch: Biquad, crunch_lo: Biquad, hiss: Svf, rumble: Biquad, squeal_ph: f32, squeal_f: f32, skid: Player, skid_lp: Biquad, rush: Svf, water: Player, spray: Biquad,
     // one-shots
-    shots: [(usize, Player, f32, f32, bool); 8], thump: f32, thump_ph: f32, clunk: f32, boom: f32, boom_ph: f32, boom_t: f32, boom_lp: Biquad, boom_cr: f32, upd: u32, kf: f32, ks: f32, kup: f32, kdn: f32,
+    shots: [(usize, Player, f32, f32, bool); 8], thump: f32, thump_ph: f32, clunk: f32, boom: f32, boom_ph: f32, boom_t: f32, boom_lp: Biquad, boom_cr: f32, shot_lp: [(f32, f32); 8], pend: [(f32, usize, f32, f32, f32); 8], upd: u32, kf: f32, ks: f32, kup: f32, kdn: f32,
 }
 
 impl Car {
@@ -43,14 +46,32 @@ impl Car {
             eng_lp: Biquad::lp(sr, 2600.0, 0.7), sub_lp: Biquad::lp(sr, 230.0, 0.8), dc: OnePole::new(sr, 18.0),
             crunch: Biquad::bp(sr, 2300.0, 0.9), crunch_lo: Biquad::bp(sr, 650.0, 1.0), hiss: Svf::default(), rumble: Biquad::lp(sr, 110.0, 0.8),
             squeal_ph: 0.0, squeal_f: 1100.0, skid: Player::default(), skid_lp: Biquad::lp(sr, 2400.0, 0.7), rush: Svf::default(), water: Player::default(),
-            spray: Biquad::hp(sr, 1800.0, 0.7), shots: [(0, Player { pos: 0.0, done: true }, 0.0, 1.0, false); 8], thump: 0.0, thump_ph: 0.0, clunk: 0.0, boom: 0.0, boom_ph: 0.0, boom_t: 1.0, boom_lp: Biquad::lp(sr, 240.0, 0.8), boom_cr: 0.0, upd: 0,
+            spray: Biquad::hp(sr, 1800.0, 0.7), shots: [(0, Player { pos: 0.0, done: true }, 0.0, 1.0, false); 8], thump: 0.0, thump_ph: 0.0, clunk: 0.0, boom: 0.0, boom_ph: 0.0, boom_t: 1.0, boom_lp: Biquad::lp(sr, 240.0, 0.8), boom_cr: 0.0, shot_lp: [(1.0, 0.0); 8], pend: [(-1.0, 0, 1.0, 0.0, 1.0); 8], upd: 0,
             kf: 1.0 - expf(-1.0 / (0.025 * sr)), ks: 1.0 - expf(-1.0 / (0.12 * sr)), kup: 1.0 - expf(-1.0 / (0.7 * sr)), kdn: 1.0 - expf(-1.0 / (0.25 * sr)) }
     }
 
     /// one-shot: sample id, rate, gain, low-pass flag
     pub fn shot(&mut self, id: usize, lo: f32, hi: f32, gain: f32, dark: bool) {
-        let rate = self.rng.range(lo, hi); let mut slot = 0; for i in 0..8 { if self.shots[i].1.done { slot = i; break; } }
-        self.shots[slot] = (id, Player { pos: 0.0, done: false }, gain, rate, dark);
+        let rate = self.rng.range(lo, hi); self.start(id, rate, gain, dark, 1.0);
+    }
+    fn start(&mut self, id: usize, rate: f32, gain: f32, dark: bool, lpk: f32) {
+        // a free slot, else the quietest one
+        let mut slot = 0; let mut q = f32::MAX; for i in 0..8 { if self.shots[i].1.done { slot = i; break; } if self.shots[i].2 < q { q = self.shots[i].2; slot = i; } }
+        self.shots[slot] = (id, Player { pos: 0.0, done: false }, gain, rate, dark); self.shot_lp[slot] = (lpk, 0.0);
+    }
+    /// a one-shot that starts `delay` s from now (sound arriving from far off), through a low-pass of coefficient `lpk` (1 = open)
+    fn later(&mut self, id: usize, delay: f32, rate: f32, gain: f32, lpk: f32) {
+        let mut slot = 0; let mut q = f32::MAX; for i in 0..8 { if self.pend[i].0 < 0.0 { slot = i; break; } if self.pend[i].3 < q { q = self.pend[i].3; slot = i; } }
+        self.pend[slot] = (delay, id, rate, gain, lpk);
+    }
+    #[inline] fn pend_tick(&mut self, sr: f32) {
+        for i in 0..8 { if self.pend[i].0 < 0.0 { continue; } self.pend[i].0 -= 1.0 / sr; if self.pend[i].0 <= 0.0 { let (_, id, rate, g, k) = self.pend[i]; self.pend[i].0 = -1.0; self.start(id, rate, g, false, k); } }
+    }
+    #[inline] fn shots_tick(&mut self, smp: &[Option<Sample>]) -> f32 {
+        let mut out = 0.0;
+        for (s, lp) in self.shots.iter_mut().zip(self.shot_lp.iter_mut()) { if s.1.done { continue; }
+            if let Some(sm) = &smp[s.0] { let (a, _) = s.1.tick(sm, s.3, false); let a = if lp.0 < 1.0 { lp.1 += (a - lp.1) * lp.0; lp.1 } else { a }; out += a * s.2 * if s.4 { 0.8 } else { 1.0 }; } else { s.1.done = true; } }
+        out
     }
     pub fn land(&mut self, v: f32) { self.thump = clampf(v / 7.0, 0.1, 1.0); self.thump_ph = 0.0; if v > 2.5 { self.shot(S_IMPACT, 0.55, 0.7, clampf(v / 9.0, 0.2, 0.9), true); } }
     pub fn impact(&mut self, s: f32, mat: u32) {
@@ -62,12 +83,22 @@ impl Car {
         self.thump = self.thump.max(g * 0.6); self.thump_ph = 0.0;
     }
     pub fn shift(&mut self) { self.clunk = 1.0; }
-    /// a fireball landing `d` m away: a falling sub thump, a roar of low noise and crackle, plus the impact recording slowed right down
-    pub fn boom(&mut self, d: f32) {
-        let g = clampf(1.0 - d / 240.0, 0.0, 1.0); let g = g * g; if g < 0.01 { return; }
+    /// a fireball landing `d` m away: the explosion recording, later and duller the further off it is (sound takes d/343 s to arrive),
+    /// the cinematic boom on top when it is close, and the synthesised sub thump under a near one (or all of it if the recordings are missing)
+    pub fn boom(&mut self, d: f32, have: bool) {
+        let g = clampf(1.0 - d / 260.0, 0.0, 1.0); let g = g * g; if g < 0.01 { return; }
+        let delay = d / 343.0; let lpk = clampf(1.0 - d / 300.0, 0.06, 1.0); let lpk = lpk * lpk;
+        if have {
+            let r = self.rng.range(0.86, 1.08); self.later(S_EXPLO, delay, r, 0.8 * g, lpk);
+            if (10.0..55.0).contains(&d) { let k = 1.0 - d / 55.0; let r = self.rng.range(0.94, 1.04); self.later(S_BOOM, delay, r, 0.7 * k, 1.0); }   // (closer, it hits the car: see hit)
+            if d < 60.0 { let k = 1.0 - d / 60.0; if k > self.boom * 0.6 { self.boom = 0.6 * k; self.boom_ph = 0.0; self.boom_t = 0.0; self.boom_cr = 0.0; } }
+            return;
+        }
         if g > self.boom * 0.6 { self.boom = g; self.boom_ph = 0.0; self.boom_t = 0.0; self.boom_cr = g * clampf(1.0 - d / 90.0, 0.0, 1.0); }
         if d < 120.0 { self.shot(S_IMPACT, 0.36, 0.46, 0.25 + 0.75 * g, true); }
     }
+    /// a blast caught the car: the cinematic boom, full
+    pub fn hit(&mut self, k: f32) { let r = self.rng.range(0.92, 1.0); self.start(S_BOOM, r, 0.65 + 0.25 * clampf(k, 0.0, 1.0), false, 1.0); self.thump = 1.0; self.thump_ph = 0.0; }
     #[inline] fn boom_tick(&mut self, w: f32, sr: f32) -> f32 {
         if self.boom < 0.001 { return 0.0; }
         self.boom_t += 1.0 / sr; let t = self.boom_t; self.boom_ph += (34.0 + 40.0 * expf(-t * 7.0)) / sr;
@@ -87,7 +118,7 @@ impl Car {
             let (wa, _) = if let Some(s) = &smp[S_WATER_A] { self.water.tick(s, 1.0 + spd * 0.02, true) } else { (0.0, 0.0) };
             out += (wa * 0.7 + self.spray.run(w) * 0.25) * self.wet * smooth(1.0, 8.0, spd);
         }
-        for s in self.shots.iter_mut() { if s.1.done { continue; } if let Some(sm) = &smp[s.0] { let (a, _) = s.1.tick(sm, s.3, false); out += a * s.2 * if s.4 { 0.8 } else { 1.0 }; } else { s.1.done = true; } }
+        self.pend_tick(sr); out += self.shots_tick(smp);
         if self.thump > 0.001 { self.thump_ph += 52.0 / sr; out += fsin(self.thump_ph) * self.thump * 0.5; self.thump *= 1.0 - 9.0 / sr; }
         out += self.boom_tick(w, sr);
         out
@@ -178,7 +209,7 @@ impl Car {
 
         // ---- one-shots, landing thump, shift clunk
         let mut fx = 0.0;
-        for s in self.shots.iter_mut() { if s.1.done { continue; } if let Some(sm) = &smp[s.0] { let (a, _) = s.1.tick(sm, s.3, false); fx += a * s.2 * if s.4 { 0.8 } else { 1.0 }; } else { s.1.done = true; } }
+        self.pend_tick(sr); fx += self.shots_tick(smp);
         if self.thump > 0.001 { self.thump_ph += 52.0 / sr; fx += fsin(self.thump_ph) * self.thump * 0.5; self.thump *= 1.0 - 9.0 / sr; }
         fx += self.boom_tick(w, sr);
         if self.clunk > 0.001 { fx += (w * 0.3 + fsin(self.whine_ph * 5.9) * 0.4) * self.clunk * 0.12; self.clunk *= 1.0 - 60.0 / sr; }
