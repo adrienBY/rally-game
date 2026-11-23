@@ -25,6 +25,12 @@ jobs:
         run: sh web/build_web.sh
       - name: The page's scripts parse
         run: node --check web/web_boot.js && node --check web/fw_rtc.js
+      - name: Keep the build (for testing it in a browser)
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-web
+          path: web/dist-web
+          retention-days: 3
   android:
     runs-on: ubuntu-latest
     steps:

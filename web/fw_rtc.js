@@ -6,8 +6,10 @@ export function makeRtc(cb) {
   const links = new Map();   // id -> { pc, dc, remote (the other side's description is set), queued candidates, dead }
   const kill = (id) => { const L = links.get(id); if (!L) return; links.delete(id); L.dead = true;
     for (const f of [() => L.dc.close(), () => L.pc.close()]) { try { f(); } catch (_) {} } };
-  return {
-    open(id, offerer, ice) {
+  const api = {
+    open(id, offerer, ice) { try { api.open_(id, offerer, ice); } catch (_) { kill(id); setTimeout(() => cb.close(id), 0); } },
+    signal(id, kind, text) { try { api.signal_(id, kind, text); } catch (_) { kill(id); setTimeout(() => cb.close(id), 0); } },
+    open_(id, offerer, ice) {
       kill(id);
       let iceServers = []; try { iceServers = JSON.parse(ice); } catch (_) {}
       let pc; try { pc = new RTCPeerConnection({ iceServers }); } catch (e) { setTimeout(() => cb.close(id), 0); return; }
@@ -23,7 +25,7 @@ export function makeRtc(cb) {
       pc.onconnectionstatechange = () => { if (pc.connectionState === "failed" || pc.connectionState === "closed") dead(); };
       if (offerer) pc.createOffer().then((o) => pc.setLocalDescription(o)).then(() => { if (mine()) cb.signal(id, 0, pc.localDescription.sdp); }).catch(dead);
     },
-    signal(id, kind, text) {
+    signal_(id, kind, text) {
       const L = links.get(id); if (!L || L.dead) return; const pc = L.pc;
       const mine = () => links.get(id) === L && !L.dead;
       const fail = () => { if (!mine()) return; L.dead = true; cb.close(id); };
@@ -42,4 +44,5 @@ export function makeRtc(cb) {
     },
     close(id) { kill(id); },
   };
+  return api;
 }

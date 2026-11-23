@@ -68,22 +68,22 @@ mod native {
     impl Links {
         pub fn set_addrs(&mut self, local: Option<SocketAddr>, public: Option<SocketAddr>) { self.local = local; self.public = public; }
         fn new_rtc(&self, now: Instant) -> Option<Rtc> {
-            let mut rtc = Rtc::builder().build(now);
-            let local = self.local?;
-            if let Ok(c) = Candidate::host(local, "udp") { rtc.add_local_candidate(c); }
-            if let Some(p) = self.public { if p != local { if let Ok(c) = Candidate::server_reflexive(p, local, "udp") { rtc.add_local_candidate(c); } } }
-            Some(rtc)
+            let (local, public) = (self.local?, self.public);
+            guarded("rtc new", || make_rtc(local, public, now))
         }
         /// start a link with `id`; the offerer sends its offer (the answerer waits for one)
         pub fn open(&mut self, id: u32, offerer: bool, now: Instant) {
             self.close(id);
             if !offerer { return; }
             let Some(mut rtc) = self.new_rtc(now) else { return };
-            let mut api = rtc.sdp_api(); let cid = api.add_channel_with_config(config());
-            let Some((offer, pending)) = api.apply() else { return };
-            self.signals.push((id, Signal::Offer(offer.to_sdp_string())));
-            let mut l = Link { rtc, cid: Some(cid), pending: Some(pending), open: false, dead: false };
-            drain(id, &mut l, &mut self.inbox, &mut self.transmit); self.links.insert(id, l);
+            let (inbox, transmit) = (&mut self.inbox, &mut self.transmit);
+            let made = guarded("rtc open", || {
+                let mut api = rtc.sdp_api(); let cid = api.add_channel_with_config(config());
+                let (offer, pending) = api.apply()?;
+                let mut l = Link { rtc, cid: Some(cid), pending: Some(pending), open: false, dead: false };
+                drain(id, &mut l, inbox, transmit); Some((l, offer.to_sdp_string()))
+            }).flatten();
+            if let Some((l, offer)) = made { self.signals.push((id, Signal::Offer(offer))); self.links.insert(id, l); }
         }
         pub fn signal(&mut self, id: u32, s: Signal, now: Instant) {
             match s {
@@ -91,18 +91,22 @@ mod native {
                     self.close(id);
                     let Ok(offer) = SdpOffer::from_sdp_string(&sdp) else { return };
                     let Some(mut rtc) = self.new_rtc(now) else { return };
-                    let Ok(answer) = rtc.sdp_api().accept_offer(offer) else { return };
-                    let mut l = Link { rtc, cid: None, pending: None, open: false, dead: false };
-                    drain(id, &mut l, &mut self.inbox, &mut self.transmit);
-                    l.cid = Some(l.rtc.direct_api().create_data_channel(config()));
-                    drain(id, &mut l, &mut self.inbox, &mut self.transmit);
-                    self.signals.push((id, Signal::Answer(answer.to_sdp_string()))); self.links.insert(id, l);
+                    let (inbox, transmit) = (&mut self.inbox, &mut self.transmit);
+                    let made = guarded("rtc answer", || {
+                        let answer = rtc.sdp_api().accept_offer(offer).ok()?;
+                        let mut l = Link { rtc, cid: None, pending: None, open: false, dead: false };
+                        drain(id, &mut l, inbox, transmit);
+                        l.cid = Some(l.rtc.direct_api().create_data_channel(config()));
+                        drain(id, &mut l, inbox, transmit); Some((l, answer.to_sdp_string()))
+                    }).flatten();
+                    if let Some((l, answer)) = made { self.signals.push((id, Signal::Answer(answer))); self.links.insert(id, l); }
                 }
                 Signal::Answer(sdp) => {
                     let Some(l) = self.links.get_mut(&id) else { return }; let Some(p) = l.pending.take() else { return };
                     let Ok(answer) = SdpAnswer::from_sdp_string(&sdp) else { l.dead = true; return };
-                    if l.rtc.sdp_api().accept_answer(p, answer).is_err() { l.dead = true; return; }
-                    drain(id, l, &mut self.inbox, &mut self.transmit);
+                    let (inbox, transmit) = (&mut self.inbox, &mut self.transmit);
+                    let ok = guarded("rtc accept", || { let ok = l.rtc.sdp_api().accept_answer(p, answer).is_ok(); if ok { drain(id, l, inbox, transmit); } ok });
+                    if ok != Some(true) { l.dead = true; }
                 }
                 Signal::Cand(c) => {
                     let Some(l) = self.links.get_mut(&id) else { return };
@@ -110,7 +114,8 @@ mod native {
                     // public one, and the address its checks arrive from, are what we can use)
                     let line = c.rsplit('\n').next().unwrap_or(&c); let line = line.trim().trim_start_matches("a=");
                     if line.contains(".local ") || line.is_empty() { return; }
-                    if let Ok(cand) = Candidate::from_sdp_string(line) { l.rtc.add_remote_candidate(cand); drain(id, l, &mut self.inbox, &mut self.transmit); }
+                    let (inbox, transmit) = (&mut self.inbox, &mut self.transmit);
+                    if let Ok(cand) = Candidate::from_sdp_string(line) { if guarded("rtc candidate", || { l.rtc.add_remote_candidate(cand); drain(id, l, inbox, transmit); }).is_none() { l.dead = true; } }
                 }
             }
         }
@@ -120,30 +125,46 @@ mod native {
             let Some(dest) = self.local else { return false };
             let Ok(r) = Receive::new(Protocol::Udp, source, dest, b) else { return false };
             let input = Input::Receive(now, r);
-            let Some(id) = self.links.iter().find(|(_, l)| !l.dead && l.rtc.accepts(&input)).map(|(id, _)| *id) else { return false };
-            let l = self.links.get_mut(&id).unwrap();
-            if l.rtc.handle_input(input).is_err() { l.dead = true; }
-            drain(id, l, &mut self.inbox, &mut self.transmit); true
+            let (links, inbox, transmit) = (&mut self.links, &mut self.inbox, &mut self.transmit);
+            guarded("rtc datagram", || {
+                let Some((id, l)) = links.iter_mut().find(|(_, l)| !l.dead && l.rtc.accepts(&input)) else { return false };
+                if l.rtc.handle_input(input).is_err() { l.dead = true; }
+                drain(*id, l, inbox, transmit); true
+            }).unwrap_or_else(|| { for l in self.links.values_mut() { l.dead = true; } true })
         }
         /// once a frame: timers (ICE checks, DTLS / SCTP retransmissions, keep-alives)
         pub fn tick(&mut self, now: Instant) {
-            for (id, l) in self.links.iter_mut() { if l.dead { continue; } if l.rtc.handle_input(Input::Timeout(now)).is_err() { l.dead = true; } drain(*id, l, &mut self.inbox, &mut self.transmit); }
+            for (id, l) in self.links.iter_mut() {
+                if l.dead { continue; }
+                let (inbox, transmit) = (&mut self.inbox, &mut self.transmit);
+                if guarded("rtc tick", || { if l.rtc.handle_input(Input::Timeout(now)).is_err() { l.dead = true; } drain(*id, l, inbox, transmit); }).is_none() { l.dead = true; }
+            }
         }
         pub fn send(&mut self, id: u32, b: &[u8]) -> bool {
             let Some(l) = self.links.get_mut(&id) else { return false }; if !l.open || l.dead { return false; }
             let Some(cid) = l.cid else { return false };
-            let ok = match l.rtc.channel(cid) { Some(mut ch) => ch.write(true, b).unwrap_or(false), None => false };
-            drain(id, l, &mut self.inbox, &mut self.transmit); ok
+            let (inbox, transmit) = (&mut self.inbox, &mut self.transmit);
+            let ok = guarded("rtc send", || { let ok = match l.rtc.channel(cid) { Some(mut ch) => ch.write(true, b).unwrap_or(false), None => false }; drain(id, l, inbox, transmit); ok });
+            if ok.is_none() { l.dead = true; } ok.unwrap_or(false)
         }
         pub fn is_open(&self, id: u32) -> bool { self.links.get(&id).map(|l| l.open && !l.dead).unwrap_or(false) }
         /// a link that failed or was closed by the other side
         pub fn is_dead(&self, id: u32) -> bool { self.links.get(&id).map(|l| l.dead).unwrap_or(false) }
         pub fn exists(&self, id: u32) -> bool { self.links.contains_key(&id) }
-        pub fn close(&mut self, id: u32) { if let Some(mut l) = self.links.remove(&id) { l.rtc.disconnect(); } }
+        pub fn close(&mut self, id: u32) { if let Some(mut l) = self.links.remove(&id) { guarded("rtc close", || l.rtc.disconnect()); } }
         pub fn take_signals(&mut self) -> Vec<(u32, Signal)> { std::mem::take(&mut self.signals) }
         pub fn take_inbox(&mut self) -> Vec<(u32, Vec<u8>)> { std::mem::take(&mut self.inbox) }
         pub fn take_transmit(&mut self) -> Vec<(SocketAddr, Vec<u8>)> { std::mem::take(&mut self.transmit) }
         pub fn ids(&self) -> Vec<u32> { self.links.keys().copied().collect() }
+    }
+
+    /// str0m behind a panic guard: a bug in it costs that one link (the relay carries on), never the race
+    fn guarded<T>(what: &str, f: impl FnOnce() -> T) -> Option<T> { crate::guard::run_noted(what, f) }
+    fn make_rtc(local: SocketAddr, public: Option<SocketAddr>, now: Instant) -> Rtc {
+        let mut rtc = Rtc::builder().build(now);
+        if let Ok(c) = Candidate::host(local, "udp") { rtc.add_local_candidate(c); }
+        if let Some(p) = public { if p != local { if let Ok(c) = Candidate::server_reflexive(p, local, "udp") { rtc.add_local_candidate(c); } } }
+        rtc
     }
 
     /// everything the link has to say after a change (str0m wants every change followed by this)
@@ -176,14 +197,16 @@ mod web {
     use wasm_bindgen::prelude::*;
     #[wasm_bindgen]
     extern "C" {
-        #[wasm_bindgen(js_namespace = __fwRtc, js_name = open)]
-        fn rtc_open(id: u32, offerer: bool, ice: &str);
-        #[wasm_bindgen(js_namespace = __fwRtc, js_name = signal)]
-        fn rtc_signal(id: u32, kind: u8, text: &str);
-        #[wasm_bindgen(js_namespace = __fwRtc, js_name = send)]
-        fn rtc_send(id: u32, b: &[u8]) -> bool;
-        #[wasm_bindgen(js_namespace = __fwRtc, js_name = close)]
-        fn rtc_close(id: u32);
+        // `catch`: a JS exception (no WebRTC in this browser, an old page script) comes back as an Err instead of
+        // unwinding through the engine's frame with its borrows still held
+        #[wasm_bindgen(catch, js_namespace = __fwRtc, js_name = open)]
+        fn rtc_open(id: u32, offerer: bool, ice: &str) -> Result<(), JsValue>;
+        #[wasm_bindgen(catch, js_namespace = __fwRtc, js_name = signal)]
+        fn rtc_signal(id: u32, kind: u8, text: &str) -> Result<(), JsValue>;
+        #[wasm_bindgen(catch, js_namespace = __fwRtc, js_name = send)]
+        fn rtc_send(id: u32, b: &[u8]) -> Result<bool, JsValue>;
+        #[wasm_bindgen(catch, js_namespace = __fwRtc, js_name = close)]
+        fn rtc_close(id: u32) -> Result<(), JsValue>;
     }
     #[derive(Default)]
     struct St { open: HashMap<u32, bool>, dead: HashSet<u32>, signals: Vec<(u32, Signal)>, inbox: Vec<(u32, Vec<u8>)> }
@@ -198,20 +221,20 @@ mod web {
     pub struct Links { mine: Vec<u32> }
     impl Links {
         pub fn set_addrs(&mut self, _l: Option<std::net::SocketAddr>, _p: Option<std::net::SocketAddr>) {}
-        pub fn open(&mut self, id: u32, offerer: bool, _now: Instant) { self.close(id); ST.with(|s| { let mut s = s.borrow_mut(); s.open.insert(id, false); s.dead.remove(&id); }); self.mine.push(id); rtc_open(id, offerer, super::ICE_SERVERS); }
+        pub fn open(&mut self, id: u32, offerer: bool, _now: Instant) { self.close(id); ST.with(|s| { let mut s = s.borrow_mut(); s.open.insert(id, false); s.dead.remove(&id); }); self.mine.push(id); if rtc_open(id, offerer, super::ICE_SERVERS).is_err() { on_close(id); } }
         pub fn signal(&mut self, id: u32, s: Signal, now: Instant) {
             // an offer for a link we don't have yet: open it as the answerer first
             if matches!(s, Signal::Offer(_)) && !self.mine.contains(&id) { self.open(id, false, now); }
             if !self.mine.contains(&id) { return; }
-            rtc_signal(id, s.kind(), s.text());
+            if rtc_signal(id, s.kind(), s.text()).is_err() { on_close(id); }
         }
         pub fn datagram(&mut self, _s: std::net::SocketAddr, _b: &[u8], _now: Instant) -> bool { false }
         pub fn tick(&mut self, _now: Instant) {}
-        pub fn send(&mut self, id: u32, b: &[u8]) -> bool { self.is_open(id) && rtc_send(id, b) }
+        pub fn send(&mut self, id: u32, b: &[u8]) -> bool { self.is_open(id) && rtc_send(id, b).unwrap_or(false) }
         pub fn is_open(&self, id: u32) -> bool { ST.with(|s| s.borrow().open.get(&id).copied().unwrap_or(false)) }
         pub fn is_dead(&self, id: u32) -> bool { self.mine.contains(&id) && ST.with(|s| s.borrow().dead.contains(&id)) }
         pub fn exists(&self, id: u32) -> bool { self.mine.contains(&id) }
-        pub fn close(&mut self, id: u32) { if self.mine.contains(&id) { rtc_close(id); self.mine.retain(|x| *x != id); ST.with(|s| { let mut s = s.borrow_mut(); s.open.remove(&id); s.dead.remove(&id); }); } }
+        pub fn close(&mut self, id: u32) { if self.mine.contains(&id) { let _ = rtc_close(id); self.mine.retain(|x| *x != id); ST.with(|s| { let mut s = s.borrow_mut(); s.open.remove(&id); s.dead.remove(&id); }); } }
         pub fn take_signals(&mut self) -> Vec<(u32, Signal)> { ST.with(|s| std::mem::take(&mut s.borrow_mut().signals)) }
         pub fn take_inbox(&mut self) -> Vec<(u32, Vec<u8>)> { ST.with(|s| std::mem::take(&mut s.borrow_mut().inbox)) }
         pub fn take_transmit(&mut self) -> Vec<(std::net::SocketAddr, Vec<u8>)> { Vec::new() }
