@@ -15,6 +15,8 @@ pub struct Volc { pub ims: [usize; 5], pub crater: [f64; 3], pub rivers: Vec<Riv
 pub struct RgPart { pub obj: usize, pub src: Vec<(usize, M)>, pub model: Option<usize>, pub tint: bool }
 
 pub struct Rt {
+    /// the packet as the page sent it (the host uploads it to the relay server for its AI cars)
+    pub raw: Vec<u8>,
     pub map: String, pub map_id: i32, pub np: usize, pub gxh: i32, pub gzh: i32,
     pub sun: [f64; 3], pub near: f64, pub far: f64,
     pub path: Vec<[f64; 2]>, pub tan: Vec<[f64; 2]>, pub roadh: Vec<f64>, pub vprof: Vec<f64>, pub vcurve: Vec<f64>, pub jcap: Vec<f64>, pub drop: Vec<i32>,
@@ -71,7 +73,7 @@ pub fn parse(pkt: &[u8]) -> Result<Rt, String> {
     let tune = j["tune"].as_object().map(|o| o.iter().map(|(k, v)| (k.clone(), f(v))).collect()).unwrap_or_default();
     let s = &j["susp"];
     let sp = arr(&j["split"]); let mut split = [0f32; 6]; for i in 0..6.min(sp.len()) { split[i] = sp[i] as f32; }
-    Ok(Rt {
+    Ok(Rt { raw: pkt.to_vec(),
         map: j["map"].as_str().unwrap_or("forest").to_string(), map_id: j["mapId"].as_i64().unwrap_or(0) as i32, np,
         gxh: j["GXH"].as_i64().unwrap_or(0) as i32, gzh: j["GZH"].as_i64().unwrap_or(0) as i32,
         sun: v3(&j["sun"]), near: j["near"].as_f64().unwrap_or(0.12), far: j["far"].as_f64().unwrap_or(1900.0),

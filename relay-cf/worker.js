@@ -5,6 +5,14 @@
 // Open rooms: a host sends 0x05 ANNOUNCE + JSON {c: code, n: host name, m: stage, p: players, r: racing, x: closed}
 // every few seconds; the room list lives in one Directory object. Clients connect to wss://<host>/lobby and send
 // 0x06 LIST; the answer is 0x86 + JSON [{c, n, m, p, r}] of rooms heard from in the last 12 s.
+// AI cars: WELCOME carries one more byte, bit 0 set: this relay drives a race's AI cars. The host sends 0x07 STAGE +
+// the stage blob (rust/src/server.rs, stage_blob), answered 0x87 + 1 (ready) or 2 (failed); the room's packets (to
+// everyone, or to the server's id) then also go to the race simulation (fogwood_core::server through WebAssembly, built
+// into sim/ by the deploy workflow), stepped every 20 ms, and what it sends goes out as from that id.
+import simWasm from "./sim/fogwood_sim_bg.wasm";
+import { initSync, Room as SimRoom, server_id } from "./sim/fogwood_sim.js";
+let simReady = false;
+function simInit() { if (!simReady) { initSync({ module: simWasm }); simReady = true; } return server_id(); }
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
@@ -17,7 +25,26 @@ export default {
 };
 
 export class Room {
-  constructor(ctx, env) { this.ctx = ctx; this.env = env; }
+  constructor(ctx, env) { this.ctx = ctx; this.env = env; this.sim = null; this.timer = null; this.code = 0; }
+  // the AI cars: moved on to now, and what they have to say sent to the room
+  simTick() {
+    const now = Date.now() / 1000, sim = this.sim; if (!sim) return;
+    try {
+      sim.step(now); this.simFlush();
+      const l = sim.log(); if (l) console.log("room " + this.code + ": " + l);
+      if (sim.idle(now) || this.ctx.getWebSockets().length === 0) this.simStop();
+    } catch (e) { console.log("sim error: " + e); this.simStop(); }
+  }
+  simFlush() {
+    const out = this.sim.take_out(); if (out.length === 0) return;
+    const dv = new DataView(out.buffer, out.byteOffset, out.byteLength), socks = this.ctx.getWebSockets(), sid = server_id();
+    for (let o = 0; o + 6 <= out.length;) {
+      const to = dv.getUint32(o, true), n = dv.getUint16(o + 4, true); o += 6;
+      const w = new Uint8Array(n + 5); w[0] = 0x82; new DataView(w.buffer).setUint32(1, sid, true); w.set(out.subarray(o, o + n), 5); o += n;
+      for (const s of socks) { const a = s.deserializeAttachment(); if (!a || (to !== 0 && a.id !== to)) continue; try { s.send(w); } catch (_) {} }
+    }
+  }
+  simStop() { if (this.timer) clearInterval(this.timer); this.timer = null; if (this.sim) { try { this.sim.free(); } catch (_) {} } this.sim = null; }
   async fetch() {
     if (this.ctx.getWebSockets().length >= 16) return new Response("room full", { status: 503 });
     const [client, server] = Object.values(new WebSocketPair());
@@ -29,14 +56,23 @@ export class Room {
     const b = new Uint8Array(msg); if (b.length === 0) return;
     const dv = new DataView(msg); const now = Date.now() / 1000;
     if (b[0] === 0x01 && b.length >= 9) {
-      ws.serializeAttachment({ id: dv.getUint32(5, true) });
-      const w = new ArrayBuffer(10), o = new DataView(w); o.setUint8(0, 0x81); o.setFloat64(1, now, true); o.setUint8(9, this.ctx.getWebSockets().length);
+      ws.serializeAttachment({ id: dv.getUint32(5, true) }); this.code = dv.getUint32(1, true);
+      const w = new ArrayBuffer(11), o = new DataView(w); o.setUint8(0, 0x81); o.setFloat64(1, now, true); o.setUint8(9, this.ctx.getWebSockets().length); o.setUint8(10, 1);
       ws.send(w);
     } else if (b[0] === 0x02 && b.length >= 5 && b.length <= 1205) {
       const me = ws.deserializeAttachment(); if (!me) return;
-      const to = dv.getUint32(1, true);
-      const w = new Uint8Array(b.length); w[0] = 0x82; new DataView(w.buffer).setUint32(1, me.id, true); w.set(b.subarray(5), 5);
-      for (const o of this.ctx.getWebSockets()) { if (o === ws) continue; const a = o.deserializeAttachment(); if (!a || a.id === me.id || (to !== 0 && a.id !== to)) continue; try { o.send(w); } catch (_) {} }
+      const to = dv.getUint32(1, true), toSim = simReady && to === server_id();
+      if (!toSim) { const w = new Uint8Array(b.length); w[0] = 0x82; new DataView(w.buffer).setUint32(1, me.id, true); w.set(b.subarray(5), 5);
+        for (const o of this.ctx.getWebSockets()) { if (o === ws) continue; const a = o.deserializeAttachment(); if (!a || a.id === me.id || (to !== 0 && a.id !== to)) continue; try { o.send(w); } catch (_) {} } }
+      if (this.sim && (to === 0 || toSim)) { try { this.sim.packet(me.id, b.subarray(5), now); } catch (e) { console.log("sim packet: " + e); } }
+    } else if (b[0] === 0x07 && b.length > 8) {   // the stage for this room's AI cars (from the host)
+      const me = ws.deserializeAttachment(); if (!me) return;
+      let ok = 2;
+      try { simInit(); this.simStop(); const t0 = Date.now(); this.sim = new SimRoom(b.subarray(1), this.code, me.id, now); ok = 1;
+        console.log("room " + this.code + ": AI cars on " + this.sim.map() + " (" + (Date.now() - t0) + " ms)");
+        this.timer = setInterval(() => this.simTick(), 20);
+      } catch (e) { console.log("room " + this.code + ": stage refused: " + e); this.simStop(); }
+      ws.send(new Uint8Array([0x87, ok]));
     } else if (b[0] === 0x03 && b.length >= 9) {
       const w = new Uint8Array(17); w[0] = 0x83; w.set(b.subarray(1, 9), 1); new DataView(w.buffer).setFloat64(9, now, true); ws.send(w);
     } else if (b[0] === 0x04) { try { ws.close(1000, "bye"); } catch (_) {} }

@@ -52,6 +52,12 @@ impl Game {
             if st.map != self.rt.map { if self.loading.is_none() { self.switch_map(&st.map); } }   // the start stays pending until that stage is built
             else if self.loading.is_none() { net::with(|s| s.start_in = None); self.online_begin(w, st); }
         }
+        // host: the relay was to drive the AI cars but has said nothing since the lights (or failed): this phone takes them
+        if self.race.online && self.state == State::Drive {
+            let back = net::with(|s| s.is_host && s.server_bots && (s.sim_state() == Some(2) || (s.host_now() > self.race.go_at + 1.0 && s.server_silence() > 2.0))).unwrap_or(false);
+            if back { net::with(|s| s.take_back_bots()); for c in self.race.cars.iter_mut() { if c.bot.is_some() { c.remote = None; } }
+                if std::env::var("FW_DEBUG").is_ok() { eprintln!("relay AI cars silent: the host drives them"); } }
+        }
         if self.race.online && self.state == State::Drive {
             let mine = snap_of(&self.car, self.race.epoch);
             let ids: Vec<(usize, u32)> = self.race.cars.iter().enumerate().filter_map(|(k, c)| c.remote.map(|id| (k, id))).collect();
@@ -119,7 +125,7 @@ impl Game {
         self.state = State::Drive; self.lap = 1; self.started = false; self.g_t = 0.0; self.flags = [false; 3]; self.car_audio_on = true;
         let np = self.np; let rc = &mut self.race; rc.on = true; rc.online = true; rc.phase = race::Phase::Grid; rc.t = 0.0; rc.done_t = 0.0; rc.note.clear(); rc.cars.clear(); rc.pos = 0; rc.order.clear();
         rc.laps = st.laps.max(1) as i64; rc.go_at = st.go_at; rc.me_id = me; rc.hits.clear(); rc.net_hits.clear(); rc.touch_t.clear(); rc.pushed_t.clear();
-        let is_host = net::with(|s| { s.begin_race(st.bots.len()); s.is_host }).unwrap_or(false);
+        let is_host = net::with(|s| { s.begin_race(st.bots.len(), st.srv); s.is_host }).unwrap_or(false);
         // players' cars take the rival colours the AI cars leave free first
         let taken: Vec<usize> = st.bots.iter().map(|b| b.0 as usize % race::RIVALS.len()).collect();
         let free: Vec<usize> = (0..race::RIVALS.len()).filter(|c| !taken.contains(c)).chain(taken.iter().copied()).collect();
@@ -127,8 +133,8 @@ impl Game {
         for (idx, (ri, k)) in st.bots.iter().enumerate() {
             let (i, lat) = race::slot(np, *k as usize); let ri = *ri as usize % race::RIVALS.len();
             let mut c: RCar = race::mk_car(self, Some(ri), i, lat); race::rc_place(&mut c.car, &self.rt, w, i, lat, 0.0); c.bot = Some(idx as u8);
-            // the host's phone drives them; on the guests they come in like another player's car
-            if !is_host { c.remote = Some(net::bot_id(idx as u8)); c.name = race::RIVALS[ri].name.to_string(); }
+            // the host's phone (or the relay) drives them; elsewhere they come in like another player's car
+            if !is_host || st.srv { c.remote = Some(net::bot_id(idx as u8)); c.name = race::RIVALS[ri].name.to_string(); }
             self.race.cars.push(c);
         }
         for (id, k) in &st.slots {
@@ -181,7 +187,11 @@ impl Game {
                 // the AI cars: the rivals, fastest first, as many as picked
                 let mut order: Vec<u8> = (0..race::RIVALS.len() as u8).collect(); order.sort_by(|a, b| race::RIVALS[*b as usize].pace.partial_cmp(&race::RIVALS[*a as usize].pace).unwrap());
                 let bots: Vec<u8> = order.into_iter().take(self.ps.online_bots as usize).collect();
-                if let Some(Some(st)) = net::with(|s| if s.peers.is_empty() { None } else { s.start_race(&map, laps, 7.0, &bots) }) { net::with(|s| s.start_in = Some(st)); }
+                // the relay drives the AI cars when it can (the stage goes up first; the host takes them back if it never answers)
+                let blob = if bots.is_empty() || std::env::var("FW_NOSIM").is_ok() { None } else { Some(crate::server::stage_blob(&self.rt.raw)) };
+                if let Some(Some(st)) = net::with(|s| if s.peers.is_empty() { None } else {
+                    let srv = blob.as_ref().map(|b| s.sim_capable() && s.upload_stage(b)).unwrap_or(false);
+                    s.start_race(&map, laps, 7.0, &bots, srv) }) { net::with(|s| s.start_in = Some(st)); }
                 else { self.flash_msg("WAITING FOR PLAYERS", 1.5); } }
             _ => return false,
         }

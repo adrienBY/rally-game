@@ -51,6 +51,7 @@ impl Saves {
         let text = crate::web_api::store_load(path);
         #[cfg(not(target_arch = "wasm32"))]
         let text = std::fs::read_to_string(path);
+        let text = if path.is_empty() { Err(()) } else { text.map_err(|_| ()) };   // no file: the relay server's game
         if let Ok(s) = text { for l in s.lines() { if let Some((k, v)) = l.split_once('=') { kv.insert(k.to_string(), v.to_string()); } } }
         Saves { path: path.to_string(), kv, dirty: false }
     }
@@ -142,6 +143,8 @@ pub struct Game {
     pub rg_cols: Vec<Vec<f32>>, crash_flip: bool, crash_dt: f64,
     /// tools only: a camera placed from outside (eye, target, fov) and a fixed pixel height
     pub cam_ovr: Option<([f64; 3], [f64; 3], f64)>, pub pix_h: Option<f64>, pub inp_ovr: Option<Input>,
+    /// the relay server's race: the host's clock, set from outside (instead of the online session's)
+    pub race_clock: Option<f64>,
     /// prism waves: run on the game clock instead of the wall clock (headless runs faster than real time); the heaving deck meshes
     pub wave_sim: bool, pub wave_t0: f64, wave_mesh: Vec<WaveMesh>, wave_tab: Vec<f32>,
     pub tune: Tune, pub cam_follow: f64, pub car: Car, pub rpm_shown: f64, pub shake: f64, pub car_hit: f64, pub prev_throttle: f64,
@@ -205,7 +208,7 @@ impl Game {
         let race = Race::new(&rt, &ps);
         let ncull = rt.cull.len(); let nglit = rt.glit.len();
         let mut g = Game {
-            np, snow: mid == 1, can: mid == 2, lak: mid == 3, tou: mid == 5, riv: mid == 6, pri: mid == 7, pri_last: None, vol: mid == 8, volc_tp: -1.0, rg_cols: Vec::new(), cam_ovr: None, pix_h: None, inp_ovr: None, crash_flip: false, crash_dt: 0.0, wave_sim: false, wave_t0: 0.0, wave_mesh: Vec::new(), wave_tab: Vec::new(),
+            np, snow: mid == 1, can: mid == 2, lak: mid == 3, tou: mid == 5, riv: mid == 6, pri: mid == 7, pri_last: None, vol: mid == 8, volc_tp: -1.0, rg_cols: Vec::new(), cam_ovr: None, pix_h: None, inp_ovr: None, race_clock: None, crash_flip: false, crash_dt: 0.0, wave_sim: false, wave_t0: 0.0, wave_mesh: Vec::new(), wave_tab: Vec::new(),
             tune: cars::tune_for(&Tune::from_slice(&tv), ps.car), base_tune: Tune::from_slice(&tv), gar: Default::default(), car_vis: None, paint_vis: None, menu: menu::fresh(), crash: crash::Crash::new(), cam_follow, car: Car::new(), rpm_shown: 900.0, shake: 0.0, car_hit: 0.0, prev_throttle: 0.0,
             state: State::Title, g_t: 0.0, lap: 1, lap_start: 0.0, best, flags: [false; 3], last_idx: 0, msg: String::new(), msg_t: 0.0, wrong_t: 0.0, started: false, go: 0.0,
             cam: CamState { y: 0.0, h: 0.0, init: false, mode: ps.cam_mode as i32, fov: 56.0, lag: 0.0, cp: None, cr: None, shot: -1, cut_t: 0.0, passed: 0.0, anchor: [0.0; 3], target: 0, side: 1.0 },
@@ -359,9 +362,7 @@ impl Game {
     /// the road before the crossing
     fn volc_step(&mut self, r: &mut Renderer, w: &World, dt: f64) {
         let Some(ims) = self.rt.volc.as_ref().map(|v| v.ims) else { return };
-        w.bridge.get_or_init(|| { let np = self.rt.path.len(); let mut on = vec![false; np];
-            if let Some(v) = self.rt.volc.as_ref() { for &(a, b) in &v.bridges { let mut k = a; for _ in 0..np { on[k % np] = true; if k % np == b % np { break; } k += 1; } } }
-            crate::world::Bridges { path: self.rt.path.iter().map(|p| (p[0], p[1])).collect(), tan: self.rt.tan.iter().map(|t| (t[0], t[1])).collect(), roadh: self.rt.roadh.clone(), on } });
+        volc::init_bridges(&self.rt, w);
         let t = if self.wave_sim { (self.wave_t0 + self.time).rem_euclid(volc::PERIOD) } else { web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| (d.as_millis() % (volc::PERIOD as u128 * 1000)) as f64 / 1000.0).unwrap_or(self.time % volc::PERIOD) };
         let tp = if self.volc_tp < 0.0 || self.volc_tp > t || t - self.volc_tp > 1.0 { t - dt.max(0.0) } else { self.volc_tp }; self.volc_tp = t;
         let f = volc::frame(&self.rt, w, t, tp, self.cam_pos);

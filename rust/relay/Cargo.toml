@@ -5,6 +5,8 @@ edition = "2021"
 description = "Fogwood Rally relay: rooms, packet fan-out over UDP (app) and WebSocket (browser), a shared clock"
 
 [dependencies]
+# the relay's own AI cars (fogwood_core::server): the same race code the phones run
+fogwood_core = { path = ".." }
 tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
 
 [profile.release]

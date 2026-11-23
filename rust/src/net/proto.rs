@@ -36,7 +36,9 @@ pub struct Hello { pub host: bool, pub racing: bool, pub name: String, pub map: 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Start { pub map: String, pub laps: u8, pub go_at: f64, pub slots: Vec<(u32, u8)>,
     /// AI cars, driven by the host's phone: (rival, grid slot); their index in this list is their id on the wire
-    pub bots: Vec<(u8, u8)> }
+    pub bots: Vec<(u8, u8)>,
+    /// the AI cars run on the relay server (net::SERVER_ID), not on the host's phone
+    pub srv: bool }
 
 #[derive(Default)]
 pub struct W(pub Vec<u8>);
@@ -79,13 +81,14 @@ pub fn read_hello(r: &mut R) -> Option<Hello> {
 }
 pub fn start(e: Env, s: &Start) -> Vec<u8> {
     let mut w = W::env(e); w.str(&s.map); w.u8(s.laps); w.f64(s.go_at); w.u8(s.slots.len().min(12) as u8); for (id, k) in s.slots.iter().take(12) { w.u32(*id); w.u8(*k); }
-    w.u8(s.bots.len().min(11) as u8); for (r, k) in s.bots.iter().take(11) { w.u8(*r); w.u8(*k); } w.0
+    w.u8(s.bots.len().min(11) as u8); for (r, k) in s.bots.iter().take(11) { w.u8(*r); w.u8(*k); } w.u8(s.srv as u8); w.0
 }
 pub fn read_start(r: &mut R) -> Option<Start> {
     let map = r.str()?; let laps = r.u8()?; let go_at = r.f64()?; let n = r.u8()? as usize; let mut slots = Vec::new(); for _ in 0..n { slots.push((r.u32()?, r.u8()?)); }
     // AI cars came later: older hosts stop before them
     let mut bots = Vec::new(); if let Some(nb) = r.u8() { for _ in 0..nb { match (r.u8(), r.u8()) { (Some(a), Some(b)) => bots.push((a, b)), _ => break } } }
-    Some(Start { map, laps, go_at, slots, bots })
+    let srv = r.u8() == Some(1);   // newer still: where the AI cars run
+    Some(Start { map, laps, go_at, slots, bots, srv })
 }
 pub fn car(e: Env, c: &CarSnap) -> Vec<u8> {
     let mut w = W::env(e); w.f64(c.t);
@@ -156,7 +159,7 @@ mod tests {
         let e = Env { kind: K_HELLO, room: 123456, from: 0xdeadbeef, to: 0, seq: 9 };
         let h = Hello { host: true, racing: false, name: "ADRIEN".into(), map: "lakes".into(), cands: vec![([192, 168, 1, 20], 40000), ([203, 0, 113, 9], 51234)], car: 3, brokers: 5 };
         let b = hello(e, &h); let (e2, mut r) = read_env(&b).unwrap(); assert_eq!(e2, e); assert_eq!(read_hello(&mut r).unwrap(), h);
-        let s = Start { map: "snow".into(), laps: 3, go_at: 1234.5, slots: vec![(1, 0), (2, 1)], bots: vec![(0, 2), (3, 3)] };
+        let s = Start { map: "snow".into(), laps: 3, go_at: 1234.5, slots: vec![(1, 0), (2, 1)], bots: vec![(0, 2), (3, 3)], srv: true };
         let b = start(Env { kind: K_START, ..e }, &s); let (_, mut r) = read_env(&b).unwrap(); assert_eq!(read_start(&mut r).unwrap(), s);
         // an older host's start (no AI cars) still reads
         let old = { let mut b = start(Env { kind: K_START, ..e }, &Start { bots: vec![], ..s.clone() }); b.pop(); b }; let (_, mut r) = read_env(&old).unwrap(); assert!(read_start(&mut r).unwrap().bots.is_empty());

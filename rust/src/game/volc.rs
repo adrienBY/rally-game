@@ -41,6 +41,18 @@ pub fn ball(rt: &Rt, w: &World, n: i64) -> Option<Ball> {
     Some(Ball { t0: n as f64 * SLOT, from: [v.crater[0] + a.cos() * r, v.crater[1] + 2.0, v.crater[2] + a.sin() * r], to: [x, w.height(x, z), z], spin: if h & 1 == 0 { 1.0 } else { -1.0 } })
 }
 
+/// the bridges into the world (once): the road spans the stage says they carry
+pub fn init_bridges(rt: &Rt, w: &World) {
+    w.bridge.get_or_init(|| { let np = rt.path.len(); let mut on = vec![false; np];
+        if let Some(v) = rt.volc.as_ref() { for &(a, b) in &v.bridges { let mut k = a; for _ in 0..np { on[k % np] = true; if k % np == b % np { break; } k += 1; } } }
+        crate::world::Bridges { path: rt.path.iter().map(|p| (p[0], p[1])).collect(), tan: rt.tan.iter().map(|t| (t[0], t[1])).collect(), roadh: rt.roadh.clone(), on } });
+}
+/// the fireballs that landed in (t_prev, t] (the shared clock, mod PERIOD)
+pub fn landed(rt: &Rt, w: &World, t: f64, t_prev: f64) -> Vec<Ball> {
+    let (lo, hi) = (((t_prev - FLIGHT) / SLOT).floor() as i64, ((t - FLIGHT) / SLOT).ceil() as i64);
+    (lo..=hi).filter_map(|n| ball(rt, w, n)).filter(|b| { let tl = b.t0 + FLIGHT; tl > t_prev && tl <= t }).collect()
+}
+
 /// fallen into a lava canyon: well below the rim (off a bridge or over the edge) - the river whose bridge to go back before
 pub fn in_canyon<'a>(rt: &'a Rt, w: &World, x: f64, y: f64, z: f64) -> Option<&'a River> {
     let v = rt.volc.as_ref()?; let (dc, j) = crate::world::ember_canyon(x, z);

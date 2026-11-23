@@ -2,10 +2,12 @@ name: Relay (Cloudflare)
 
 # Deploys relay-cf/ to Cloudflare Workers (free plan). Needs the repository secrets CLOUDFLARE_API_TOKEN and
 # CLOUDFLARE_ACCOUNT_ID. The relay ends up at https://fogwood-relay.<your workers.dev subdomain>.workers.dev
+# Its AI cars are the game's own race code (rust/src/server.rs), built here into relay-cf/sim through WebAssembly, so the
+# relay is deployed again whenever that code changes.
 on:
   push:
     branches: [main]
-    paths: ["relay-cf/**", ".github/workflows/relay-cf.yml"]
+    paths: ["relay-cf/**", ".github/workflows/relay-cf.yml", "rust/src/**", "rust/simwasm/**", "rust/Cargo.toml"]
   workflow_dispatch:
 
 jobs:
@@ -15,6 +17,33 @@ jobs:
       CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@0.2.130
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust/simwasm
+      - name: Build the AI cars (WebAssembly)
+        run: |
+          cd rust/simwasm
+          cargo build --release --target wasm32-unknown-unknown
+          wasm-bindgen --target web --out-dir ../../relay-cf/sim target/wasm32-unknown-unknown/release/fogwood_sim.wasm
+          ls -la ../../relay-cf/sim
+          gzip -9 -c ../../relay-cf/sim/fogwood_sim_bg.wasm | wc -c
+      - name: Smoke test (the simulation loads and refuses a bad stage)
+        run: |
+          cd relay-cf/sim
+          cat > t.mjs <<'JS'
+          import { readFileSync } from "fs";
+          import { initSync, Room, server_id } from "./fogwood_sim.js";
+          initSync({ module: new WebAssembly.Module(readFileSync("./fogwood_sim_bg.wasm")) });
+          console.log("server id", server_id().toString(16));
+          try { new Room(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9]), 1, 2, 0); console.log("accepted junk?"); process.exit(1); } catch (e) { console.log("refused junk:", String(e)); }
+          JS
+          node t.mjs && rm t.mjs
       - name: No token yet
         if: env.CF_TOKEN == ''
         run: echo "Add CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID to deploy the relay."

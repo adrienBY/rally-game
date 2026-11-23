@@ -42,6 +42,7 @@ const QUIET_RACING: f64 = 1.5; const QUIET_LOBBY: f64 = 3.5;
 /// the ids AI cars go by on the guests' phones (BOT_ID | index in the start message)
 pub const BOT_ID: u32 = 0xB07A_1000;
 pub fn bot_id(k: u8) -> u32 { BOT_ID | k as u32 }
+pub use crate::server::SERVER_ID;
 pub fn bot_of(id: u32) -> Option<u8> { if id & !0xFF == BOT_ID { Some((id & 0xFF) as u8) } else { None } }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -100,6 +101,8 @@ pub struct Session {
     pub bots: HashMap<u8, BotIn>, bots_out: Vec<BotOut>, pub race_bots: usize, pub bot_hits_in: Vec<(u32, u8, [f32; 5], f32)>,
     /// when the current race began (our clock)
     race_t0: f64,
+    /// this race's AI cars run on the relay server (SERVER_ID), and when it last sent one of them
+    pub server_bots: bool, srv_heard: f64,
     /// send thresholds (FW_THR="pos,heading,speed[,heartbeat]" overrides) and a fixed heartbeat if set
     /// test hook FW_CUT="from,to" (seconds on our clock): the direct packets that arrive then are lost (a path dying)
     cut: Option<[f64; 2]>,
@@ -165,7 +168,7 @@ fn open(code: u32, name: &str, map: &str, is_host: bool) {
         cut: std::env::var("FW_CUT").ok().and_then(|v| { let q: Vec<f64> = v.split(',').filter_map(|x| x.parse().ok()).collect(); if q.len() == 2 { Some([q[0], q[1]]) } else { None } }),
         loss: std::env::var("FW_LOSS").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0),
         thr: smooth::Thresholds::default(), heartbeat: None,
-        relay: if std::env::var("FW_NORELAY").is_ok() { None } else { Some(relay::Client::start(code, me)) }, last_announce: -9.0 };
+        server_bots: false, srv_heard: -9.0, relay: if std::env::var("FW_NORELAY").is_ok() { None } else { Some(relay::Client::start(code, me)) }, last_announce: -9.0 };
     let mut s = s;
     if let Ok(v) = std::env::var("FW_THR") { let q: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect();
         if q.len() >= 3 { s.thr.pos = q[0]; s.thr.head = q[1]; s.thr.speed = q[2]; } if q.len() >= 4 { s.heartbeat = Some(q[3]); } }
@@ -208,6 +211,7 @@ impl Session {
     }
     fn send_to(&self, to: u32, b: &[u8]) {
         let now = self.now();
+        if to == SERVER_ID { self.relay_send(to, b, now); return; }
         let Some(p) = self.peers.get(&to) else { self.relay_for(b, &[]); return };
         let (d, ours, brokers) = self.route(p, now);
         if let Some(a) = d { self.udp(b, a); }
@@ -220,7 +224,7 @@ impl Session {
         let routes: Vec<(u32, (Option<SocketAddr>, bool, bool), u8)> = self.peers.values().map(|p| (p.id, self.route(p, now), p.brokers)).collect();
         for (id, (d, ours, brokers), mask) in routes { if let Some(a) = d { out.push(a); if let Some(p) = self.peers.get_mut(&id) { p.last_tx = now; } } if ours { via_ours = true; } if brokers { relayed.push(mask); } }
         for a in out { self.udp(b, a); }
-        if via_ours { self.relay_send(0, b, now); }
+        if via_ours { self.relay_send(0, b, now); } else if self.server_bots && self.racing { self.relay_send(SERVER_ID, b, now); }
         if !relayed.is_empty() { self.relay_for(b, &relayed); }
     }
     fn bye(&mut self) { let e = self.env(K_BYE, 0); let b = bare(e); self.relay_all(&b); for p in self.peers.values() { if let Some(a) = p.direct { self.udp(&b, a); } }  if let Some(r) = &self.relay { if self.is_host { r.announce(&self.name, &self.map, 0, false, true); } r.leave(); } }
@@ -270,7 +274,8 @@ impl Session {
             .map(|p| { p.hit_tx = now; (p.id, std::mem::take(&mut p.hit_acc)) }).collect();
         for (id, list) in due { for (by, d, imp) in list { let e = self.env(K_HIT, id); let b = hit(e, d, imp, by); self.send_to(id, &b); } }
         // bumps we gave the host's AI cars go to the host, whose phone drives them
-        if let Some(h) = self.host_id.filter(|_| !self.is_host) {
+        let driver = if self.server_bots { Some(SERVER_ID) } else { self.host_id.filter(|_| !self.is_host) };
+        if let Some(h) = driver {
             let due: Vec<(u8, [f32; 5], f32)> = self.bots.iter_mut().filter(|(_, b)| b.hit_acc.is_some() && now - b.hit_tx >= 0.06)
                 .map(|(k, b)| { b.hit_tx = now; let (d, imp) = b.hit_acc.take().unwrap(); (*k, d, imp) }).collect();
             for (k, d, imp) in due { let e = self.env(K_BOTHIT, h); let b = bot_hit(e, k, d, imp); self.send_to(h, &b); } }
@@ -289,6 +294,10 @@ impl Session {
         let Some((e, mut r)) = read_env(b) else { return };
         if e.room != self.code || e.from == self.me || (e.to != 0 && e.to != self.me) { return; }
         if e.kind == K_BYE { self.peers.remove(&e.from); return; }
+        if e.from == SERVER_ID { match e.kind {
+            K_PING => { if self.is_host { if let Some(t) = r.f64() { let o = self.env(K_PONG, SERVER_ID); let b = time_pair(Env { seq: e.seq, ..o }, t, now); self.send_to(SERVER_ID, &b); } } }
+            K_HIT => { if let Some((d, imp, by)) = read_hit(&mut r) { if self.hits_in.len() < 64 { self.hits_in.push((SERVER_ID, by, d, imp)); } } }
+            _ => {} } return; }
         let p = self.peers.entry(e.from).or_insert_with(|| Peer { id: e.from, name: "?".into(), map: String::new(), host: false, racing: false, first_seen: now, last_seen: now, car: 0,
             cands: Vec::new(), punch_from: now, last_probe: -9.0, direct: None, last_udp: -9.0, seen: VecDeque::new(), rtt: -1.0, last_tx: -9.0, track: Default::default(), last_seq: 0, brokers: 0xFF, via_relay: -99.0, hit_acc: Vec::new(), hit_tx: -9.0, mirror_until: -9.0 });
         p.last_seen = now;
@@ -318,7 +327,7 @@ impl Session {
     /// first). Like a solo race the players start mid-grid: the quicker half of the AI cars ahead of them, the rest behind; the players'
     /// own order is shuffled each race.
     /// Returns the start for the host itself.
-    pub fn start_race(&mut self, map: &str, laps: u8, delay: f64, bots: &[u8]) -> Option<Start> {
+    pub fn start_race(&mut self, map: &str, laps: u8, delay: f64, bots: &[u8], srv: bool) -> Option<Start> {
         if !self.is_host { return None; }
         let mut ids: Vec<(f64, u32)> = self.peers.values().map(|p| (p.first_seen, p.id)).collect(); ids.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let mut players = vec![self.me]; players.extend(ids.iter().take(11).map(|x| x.1));
@@ -328,14 +337,24 @@ impl Session {
         let nb = bots.len().min(12 - players.len()); let ahead = (nb + 1) / 2;
         let bot_slots: Vec<(u8, u8)> = bots.iter().take(nb).enumerate().map(|(k, r)| (*r, if k < ahead { k } else { k + players.len() } as u8)).collect();
         let slots = players.iter().enumerate().map(|(k, id)| (*id, (ahead + k) as u8)).collect();
-        let s = Start { map: map.to_string(), laps, go_at: self.host_now() + delay, slots, bots: bot_slots }; self.start_out = Some((s.clone(), self.now() + 3.0)); Some(s)
+        let s = Start { map: map.to_string(), laps, go_at: self.host_now() + delay, slots, bots: bot_slots, srv: srv && !bots.is_empty() }; self.start_out = Some((s.clone(), self.now() + 3.0)); Some(s)
     }
     /// a race begins with `n` AI cars (driven by the host's phone): fresh tracks and senders
-    pub fn begin_race(&mut self, n: usize) {
+    pub fn begin_race(&mut self, n: usize, srv: bool) {
         self.race_bots = n; self.race_t0 = self.now(); self.bots.clear(); self.bot_hits_in.clear(); self.hits_in.clear();
-        self.bots_out = (0..n).map(|_| BotOut::default()).collect();
-        if !self.is_host { for k in 0..n { self.bots.insert(k as u8, BotIn::default()); } }
+        self.bots_out = (0..n).map(|_| BotOut::default()).collect(); self.server_bots = srv && n > 0; self.srv_heard = -9.0;
+        if !self.is_host || self.server_bots { for k in 0..n { self.bots.insert(k as u8, BotIn::default()); } }
     }
+    /// the relay can drive this race's AI cars
+    pub fn sim_capable(&self) -> bool { let now = self.now(); self.relay.as_ref().map(|r| r.is_up(now) && r.sim).unwrap_or(false) }
+    /// host: the stage for the relay's AI cars (server::stage_blob)
+    pub fn upload_stage(&mut self, blob: &[u8]) -> bool { self.relay.as_mut().map(|r| r.stage(blob)).unwrap_or(false) }
+    /// what the relay said about the stage: 1 ready, 2 failed (None: nothing yet)
+    pub fn sim_state(&self) -> Option<u8> { self.relay.as_ref().and_then(|r| r.sim_state.map(|s| s.0)) }
+    /// seconds since the relay last sent one of this race's AI cars (since the race began if it never did)
+    pub fn server_silence(&self) -> f64 { self.now() - self.srv_heard.max(self.race_t0) }
+    /// host: the relay has gone quiet: this phone drives the AI cars from here on (and sends them like before)
+    pub fn take_back_bots(&mut self) { self.server_bots = false; }
 
     /// How fast car states may go out, and the longest gap between them, so the whole session stays inside BUDGET.
     /// Every phone applies the same rule, so what we receive is bounded the same way as what we send.
@@ -374,7 +393,7 @@ impl Session {
     /// Host: one of our AI cars (index `k` in the start message), right after our own car in the frame (same stamp, same
     /// rules: it goes out when the receivers' prediction has drifted, within the data budget).
     pub fn send_bot(&mut self, k: usize, mut c: CarSnap, dt: f64, g: smooth::Ground, near: bool) {
-        if !self.is_host || k >= self.bots_out.len() { return; }
+        if !self.is_host || self.server_bots || k >= self.bots_out.len() { return; }
         let now = self.now(); let th = self.stamp.get().unwrap_or_else(|| self.host_now()); c.t = th; c.a = self.bots_out[k].policy.accel(c.u, dt as f32);
         let (rate, beat) = self.car_rate();
         let thr = if near { smooth::Thresholds { pos: self.thr.pos * 0.4, head: self.thr.head * 0.5, speed: self.thr.speed * 0.5, height: self.thr.height, body: self.thr.body } } else { self.thr };
@@ -407,17 +426,22 @@ impl Session {
     pub fn take_bot_hits(&mut self) -> Vec<(u32, u8, [f32; 5], f32)> { std::mem::take(&mut self.bot_hits_in) }
     /// seconds since a car last reported (None once its player, or the host for an AI car, has left the room)
     pub fn car_silence(&self, id: u32) -> Option<f64> {
-        let first = match bot_of(id) { Some(_) => self.peers.get(&self.host_id?)?.first_seen, None => self.peers.get(&id)?.first_seen };
+        let first = match bot_of(id) { Some(_) if self.server_bots => self.race_t0, Some(_) => self.peers.get(&self.host_id?)?.first_seen, None => self.peers.get(&id)?.first_seen };
         Some(match self.track(id)?.latest { Some(c) => self.host_now() - c.t, None => (self.now() - first).min(self.now() - self.race_t0) }) }
 
     fn handle_car(&mut self, b: &[u8], from: Option<SocketAddr>, now: f64) {
         let Some((sid, seq, ms, mut c)) = read_car2(b) else { return };
         let th = self.host_now();
+        if sid == SERVER_ID as u16 { if let Some(k) = bot_idx(b) { if !self.server_bots { return; } self.srv_heard = now;
+            let Some(bt) = self.bots.get_mut(&k) else { return };
+            if bt.track.latest.is_some() && (seq.wrapping_sub(bt.last_seq) as i8) <= 0 { return; }
+            let age = ((th * 1000.0).rem_euclid(65536.0) - ms as f64).rem_euclid(65536.0) / 1000.0; c.t = th - if age < 10.0 { age } else { 0.0 };
+            bt.last_seq = seq; bt.track.push_at(c, th); } return; }
         let Some(p) = self.peers.values_mut().find(|p| p.id as u16 == sid && (from.is_none() || p.direct == from || p.cands.contains(&from.unwrap()))) else { return };
         p.last_seen = now; if from.is_some() { p.last_udp = now; } else if p.direct.is_some() { p.mirror_until = now + 2.0; }
         let age = ((th * 1000.0).rem_euclid(65536.0) - ms as f64).rem_euclid(65536.0) / 1000.0; c.t = th - if age < 10.0 { age } else { 0.0 };
         // one of the host's AI cars
-        if let Some(k) = bot_idx(b) { if !p.host || self.is_host { return; }
+        if let Some(k) = bot_idx(b) { if !p.host || self.is_host { return; } if self.server_bots { self.server_bots = false; }   // the host took the AI cars back
             let Some(bt) = self.bots.get_mut(&k) else { return };
             if bt.track.latest.is_some() && (seq.wrapping_sub(bt.last_seq) as i8) <= 0 { return; }
             bt.last_seq = seq; bt.track.push_at(c, th); return; }

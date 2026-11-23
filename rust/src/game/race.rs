@@ -311,7 +311,7 @@ pub fn results(g: &Game) -> Vec<(usize, f64, bool)> {
 }
 
 pub fn step(g: &mut Game, w: &World, obs: &Obstacles, dt: f64) {
-    if g.race.online { if let Some(hn) = crate::net::with(|s| s.host_now()) { g.go = (g.race.go_at - hn + 0.9).max(0.0); if g.race.phase != Phase::Grid { g.race.t = (hn - g.race.go_at).max(0.0); } } }
+    if g.race.online { if let Some(hn) = g.race_clock.or_else(|| crate::net::with(|s| s.host_now())) { g.go = (g.race.go_at - hn + 0.9).max(0.0); if g.race.phase != Phase::Grid { g.race.t = (hn - g.race.go_at).max(0.0); } } }
     else if g.go > 0.0 { g.go -= dt; }
     if g.race.phase == Phase::Grid && g.go <= 0.9 { g.race.phase = Phase::Race; }
     if g.race.phase != Phase::Grid && !g.race.online { g.race.t += dt; }

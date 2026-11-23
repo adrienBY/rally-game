@@ -11,3 +11,5 @@ rust/audio/target/
 web/dist-web/
 rust/relay/target/
 relay-cf/.wrangler/
+rust/relay/target/
+rust/simwasm/target/

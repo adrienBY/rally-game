@@ -18,6 +18,9 @@ const DOWN_AFTER: f64 = 5.0;
 
 pub struct Client {
     room: u32, me: u32, last_join: f64, last_rx: f64, pub members: u8, last_kick: f64,
+    /// the relay can drive a race's AI cars (it said so when we joined), and what it said about the stage we uploaded
+    /// (1 ready, 2 failed) and when
+    pub sim: bool, pub sim_state: Option<(u8, f64)>,
     #[cfg(not(target_arch = "wasm32"))] ws: Option<super::ws::Ws>,
     #[cfg(not(target_arch = "wasm32"))] sock: Option<UdpSocket>,
     #[cfg(not(target_arch = "wasm32"))] addr: Option<SocketAddr>,
@@ -36,12 +39,12 @@ impl Client {
                 let sock = UdpSocket::bind("0.0.0.0:0").ok().filter(|s| s.set_nonblocking(true).is_ok());
                 // name lookup can block: on a thread
                 let (t, r) = channel(); std::thread::Builder::new().name("relay dns".into()).spawn(move || { let _ = t.send(host.to_socket_addrs().ok().and_then(|mut a| a.find(|x| x.is_ipv4()))); }).ok();
-                return Client { room, me, last_join: -99.0, last_rx: -99.0, members: 0, last_kick: 0.0, ws: None, sock, addr: None, resolving: Some(r) };
+                return Client { room, me, last_join: -99.0, last_rx: -99.0, members: 0, last_kick: 0.0, sim: false, sim_state: None, ws: None, sock, addr: None, resolving: Some(r) };
             }
-            Client { room, me, last_join: -99.0, last_rx: -99.0, members: 0, last_kick: 0.0, ws: Some(super::ws::Ws::open(format!("{}/{}", target.trim_end_matches('/'), room))), sock: None, addr: None, resolving: None }
+            Client { room, me, last_join: -99.0, last_rx: -99.0, members: 0, last_kick: 0.0, sim: false, sim_state: None, ws: Some(super::ws::Ws::open(format!("{}/{}", target.trim_end_matches('/'), room))), sock: None, addr: None, resolving: None }
         }
         #[cfg(target_arch = "wasm32")]
-        { Client { room, me, last_join: -99.0, last_rx: -99.0, members: 0, last_kick: 0.0, ws: web::Sock::open(web::SOCK, format!("{}/{}", URL, room)) } }
+        { Client { room, me, last_join: -99.0, last_rx: -99.0, members: 0, last_kick: 0.0, sim: false, sim_state: None, ws: web::Sock::open(web::SOCK, format!("{}/{}", URL, room)) } }
     }
     pub fn is_up(&self, now: f64) -> bool { now - self.last_rx < DOWN_AFTER }
     fn raw(&self, b: &[u8]) -> bool {
@@ -68,7 +71,8 @@ impl Client {
         { self.ws.tick(); msgs = self.ws.take(); if self.ws.fresh() { self.last_join = -99.0; } }
         for m in msgs {
             match m.first() {
-                Some(0x81) => { self.last_rx = now; self.members = m.get(9).copied().unwrap_or(0); }
+                Some(0x81) => { self.last_rx = now; self.members = m.get(9).copied().unwrap_or(0); self.sim = m.get(10).map(|c| c & 1 != 0).unwrap_or(false); }
+                Some(0x87) => { self.last_rx = now; self.sim_state = m.get(1).map(|v| (*v, now)); }
                 Some(0x82) if m.len() >= 5 => { self.last_rx = now; out.push((u32::from_le_bytes([m[1], m[2], m[3], m[4]]), m[5..].to_vec())); }
                 Some(0x83) => { self.last_rx = now; }
                 _ => {}
@@ -87,6 +91,12 @@ impl Client {
         out
     }
     pub fn leave(&self) { self.raw(&[0x04]); }
+    /// the stage for the relay's AI cars (server::stage_blob); only over a WebSocket (it is too big for a datagram)
+    pub fn stage(&mut self, blob: &[u8]) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.ws.is_none() { return false; }
+        self.sim_state = None; let mut w = Vec::with_capacity(blob.len() + 1); w.push(0x07); w.extend_from_slice(blob); self.raw(&w)
+    }
     /// a host's room for the open-rooms list (`closed`: take it off)
     pub fn announce(&self, name: &str, map: &str, players: usize, racing: bool, closed: bool) {
         let clean: String = name.chars().filter(|c| c.is_ascii_alphanumeric() || *c == ' ').take(16).collect();
