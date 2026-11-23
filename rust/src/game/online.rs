@@ -86,10 +86,10 @@ impl Game {
                 for (k, sn, nr) in &bots_out { s.send_bot(*k, *sn, dt, g, *nr); }
                 s.flush();
                 s.advance_view(dt);
-                (ids.iter().map(|(k, id)| (*k, s.remote(*id, g))).collect::<Vec<_>>(), ids.iter().map(|(k, id)| (*k, s.owned(*id))).collect::<Vec<_>>(), s.take_hits(), s.take_bot_hits())
+                (ids.iter().map(|(k, id)| (*k, s.remote(*id, g))).collect::<Vec<_>>(), ids.iter().map(|(k, id)| (*k, s.owned(*id), s.horizon(*id))).collect::<Vec<_>>(), s.take_hits(), s.take_bot_hits())
             }).unwrap_or_default();
             for (k, sn) in snaps { if let Some(sn) = sn { let mut c = self.race.cars[k].car; apply(&mut c, &sn, w, dt); self.race.cars[k].car = c; } }
-            for (k, o) in owned { self.race.cars[k].owned = o; }
+            for (k, o, h) in owned { self.race.cars[k].owned = o; self.race.cars[k].horizon = h; }
             // pushes other phones gave our car (by their own car, or by one of the host's AI cars), and on the host the pushes
             // guests gave our AI cars: taken (in the race step, with the other contacts) unless this phone settled that
             // contact itself a moment ago

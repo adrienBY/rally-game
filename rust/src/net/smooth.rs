@@ -164,6 +164,8 @@ impl Track {
         while self.queue.len() > 24 { self.queue.pop_front(); }
         self.late.push_back(((arrival - c.t) as f32).clamp(0.0, 2.0)); while self.late.len() > 40 { self.late.pop_front(); }
     }
+    /// how far ahead of its newest state the car is drawn (s): how much of what is shown is prediction
+    pub fn horizon(&self) -> f32 { self.latest.map(|c| (self.shown_t - c.t).max(0.0) as f32).unwrap_or(0.0) }
     /// how bursty its arrivals are: the 95th minus the median lateness (s; a TCP stall shows as a long tail)
     pub fn spread(&self) -> f32 {
         if self.late.len() < 12 { return 0.0; } let mut v: Vec<f32> = self.late.iter().copied().collect(); v.sort_by(|a, b| a.partial_cmp(b).unwrap());

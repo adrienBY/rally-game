@@ -35,6 +35,8 @@ pub struct RCar {
     /// online: whether, for now, only its own phone moves this car (a contact its states already include: pushing it
     /// here too would make it twitch)
     pub owned: bool,
+    /// online: how far ahead of its newest state this car is drawn (s): how much of it is prediction
+    pub horizon: f32,
     /// online: one of the host's AI cars (its index in the start message); driven here on the host, shown from the
     /// host's states on the guests
     pub bot: Option<u8>,
@@ -93,7 +95,7 @@ impl Race {
 pub(crate) fn mk_car(g: &mut Game, r: Option<usize>, k: usize, lat: f64) -> RCar {
     let form = 0.98 + g.rng.f() * 0.04; let mist_cd = 5.0 + g.rng.f() * 5.0; let react = 0.12 + g.rng.f() * 0.4;
     RCar { paint: 0, team: None, r, car: Car::new(), prog: k as f64 - g.np as f64, last_idx: k, i: k, lat, v: 0.0, lane: lat, lane_t: lat, pass_t: 3.0, cap: 99.0, pv: 1.0, boost: 0.0, form, mist: 0.0, mist_cd,
-        stuck_t: 0.0, lap_t0: 0.0, laps_done: 0, last: None, best: None, finished: false, finish_t: 0.0, react, tag_x: -99.0, tag_y: -99.0, tag_on: false, err: 0.0, trust: 1.0, off_at: None, resets: 0, remote: None, name: String::new(), left: false, owned: false, bot: None, epoch: 0,
+        stuck_t: 0.0, lap_t0: 0.0, laps_done: 0, last: None, best: None, finished: false, finish_t: 0.0, react, tag_x: -99.0, tag_y: -99.0, tag_on: false, err: 0.0, trust: 1.0, off_at: None, resets: 0, remote: None, name: String::new(), left: false, owned: false, horizon: 0.0, bot: None, epoch: 0,
         model: match r { Some(i) => super::cars::rival_model(i), None => g.ps.car } }
 }
 /// rcPlace: on the road at index i, lat metres right of the centre line, optionally already rolling
@@ -213,17 +215,19 @@ fn recover(g: &mut Game, w: &World, k: usize, dt: f64) {
 
 /// Two cars touching (three circles along each body): pushed apart, impulses with friction at the contact point.
 /// Returns the closing speed of the hardest touch (0 if none). Used by races and by the netcode simulator.
-pub fn bump(a: &mut Car, b: &mut Car, m: f64, iz: f64) -> f64 {
+pub fn bump(a: &mut Car, b: &mut Car, m: f64, iz: f64) -> f64 { bump_r(a, b, m, iz, 1.72, 1.3) }
+/// the same with the cars' half-width `rr` (m) and the impulse factor `e` (1 + restitution: 1.3 bounces a little, 1.0 not at all)
+pub fn bump_r(a: &mut Car, b: &mut Car, m: f64, iz: f64, rr: f64, e: f64) -> f64 {
     let (sa, ca, sb, cb) = (a.h.sin(), a.h.cos(), b.h.sin(), b.h.cos()); let mut hit: f64 = 0.0;
     for oa in [1.3, 0.0, -1.3] { for ob in [1.3, 0.0, -1.3] {
-        let (ax, az, bx, bz) = (a.x + sa * oa, a.z + ca * oa, b.x + sb * ob, b.z + cb * ob); let (dx, dz) = (ax - bx, az - bz); let rr = 1.72; let d2 = dx * dx + dz * dz;
+        let (ax, az, bx, bz) = (a.x + sa * oa, a.z + ca * oa, b.x + sb * ob, b.z + cb * ob); let (dx, dz) = (ax - bx, az - bz); let d2 = dx * dx + dz * dz;
         if d2 >= rr * rr || d2 < 1e-6 { continue; }
         let d = d2.sqrt(); let (nx, nz) = (dx / d, dz / d); let pen = (rr - d) * 0.5;
         a.x += nx * pen; a.z += nz * pen; b.x -= nx * pen; b.z -= nz * pen;
         let (cx, cz) = ((ax + bx) / 2.0, (az + bz) / 2.0); let (pax, paz, pbx, pbz) = (cx - a.x, cz - a.z, cx - b.x, cz - b.z);
         let (vax, vaz, vbx, vbz) = (a.vx + a.r * paz, a.vz - a.r * pax, b.vx + b.r * pbz, b.vz - b.r * pbx);
         let vn = (vax - vbx) * nx + (vaz - vbz) * nz; if vn >= 0.0 { continue; }
-        let (ra, rb) = (paz * nx - pax * nz, pbz * nx - pbx * nz); let jn = -1.3 * vn / (2.0 / m + ra * ra / iz + rb * rb / iz);
+        let (ra, rb) = (paz * nx - pax * nz, pbz * nx - pbx * nz); let jn = -e * vn / (2.0 / m + ra * ra / iz + rb * rb / iz);
         a.vx += jn * nx / m; a.vz += jn * nz / m; a.r += jn * ra / iz; b.vx -= jn * nx / m; b.vz -= jn * nz / m; b.r -= jn * rb / iz;
         let (tx, tz) = (-nz, nx); let vt = (vax - vbx) * tx + (vaz - vbz) * tz; let (rta, rtb) = (paz * tx - pax * tz, pbz * tx - pbx * tz);
         let jt = clamp(-vt / (2.0 / m + rta * rta / iz + rtb * rtb / iz), -0.35 * jn, 0.35 * jn);
@@ -231,6 +235,13 @@ pub fn bump(a: &mut Car, b: &mut Car, m: f64, iz: f64) -> f64 {
         hit = hit.max(-vn); } }
     hit
 }
+
+/// Contacts with a car another phone drives, tuned in net_contact (two phones door to door through 40-160 ms links):
+/// its push is shown at SHOW of what this phone worked out (its own phone's states bring the rest, or correct it), which
+/// halves the twitch of a car pushed here and then pulled about by its real states; and while it is drawn from
+/// prediction it is met slightly narrower (MARGIN a second of prediction, at most MARGIN_MAX), so a car drawn a little
+/// off its true place is bumped less often where it isn't. The push sent to its phone is the full one.
+pub const SHOW: f64 = 0.5; const MARGIN: f64 = 0.25; const MARGIN_MAX: f64 = 0.25;
 
 fn contacts(g: &mut Game) {
     let n = g.race.cars.len(); let (m, iz) = (1180.0, g.tune.iz);
@@ -256,7 +267,9 @@ fn contacts(g: &mut Game) {
         // car's push is shown here and sent to its phone, until that phone's states (which took it in) arrive
         let (sa0, sb0) = (st[a], st[b]);
         let (dx0, dz0) = (st[a].x - st[b].x, st[a].z - st[b].z); if dx0 * dx0 + dz0 * dz0 > 30.0 || (st[a].y - st[b].y).abs() > 1.6 { continue; }
-        let hit = { let (l, r) = st.split_at_mut(b); bump(&mut l[a], &mut r[0], m, iz) };
+        let h = |k: usize| if online && !local[k] { (g.race.cars[k].horizon as f64 * MARGIN).min(MARGIN_MAX) } else { 0.0 };
+        let rr = 1.72 - h(a).max(h(b));
+        let hit = { let (l, r) = st.split_at_mut(b); bump_r(&mut l[a], &mut r[0], m, iz, rr, 1.3) };
         if hit > 0.3 { for x in [a, b] { st[x].impact = st[x].impact.max(hit); st[x].hb_t = st[x].hb_t.max(clamp((hit - 2.0) / 6.0, 0.0, 0.6)); }
             if a == pl || b == pl { g.car_hit = g.car_hit.max(hit); } }
         if online { for (x, o, x0) in [(a, b, sa0), (b, a, sb0)] {
@@ -265,7 +278,9 @@ fn contacts(g: &mut Game) {
             if d.iter().any(|v| v.abs() > 1e-6) { if let Some(id) = g.race.cars[x].remote {
                 let by = if o == pl { crate::net::proto::BY_PLAYER } else { g.race.cars[o].bot.unwrap_or(crate::net::proto::BY_PLAYER) };
                 g.race.hits.push((id, by, d, hit));
-                if g.race.new_contact(o, x) { g.race.tick_epoch(o); } g.race.touch_t.insert(Race::key(o, x), g.race.t); } }
+                if g.race.new_contact(o, x) { g.race.tick_epoch(o); } g.race.touch_t.insert(Race::key(o, x), g.race.t); }
+                // shown here at SHOW of it
+                let c = &mut st[x]; c.vx = x0.vx + d[0] * SHOW; c.vz = x0.vz + d[1] * SHOW; c.r = x0.r + d[2] * SHOW; c.x = x0.x + d[3] * SHOW; c.z = x0.z + d[4] * SHOW; }
         } }
     } }
     // a car whose own phone is already handling this contact is not moved here (it would jump back next frame)

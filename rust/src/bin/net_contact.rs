@@ -12,8 +12,10 @@
 //!   jolt     how much more the drawn car is thrown about than the real one in the second around a contact (m/s of
 //!            summed acceleration, median / 90th pct): 0 when the drawn car takes the knock once, the way it happened
 //! Env: SECS (120), LAT ms (50), JIT ms (20), LOSS (0.02), TCP=1 (relay over a WebSocket: in order, stalls on loss),
-//!      TICKJIT ms (4, when in the frame each phone runs), SEED.
-use fogwood_core::game::race::bump;
+//!      TICKJIT ms (4, when in the frame each phone runs), SEED; the contact tuning (race::contacts): NUDGE (share of the
+//!      push shown on the other car, game: race::SHOW), AMARGIN (narrower per second of prediction, game 0.25), MARGIN,
+//!      RESTI (impulse factor), COMP=1 (lag-compensated pushes), NEARRATE=1 (smooth::relevance near the other car).
+use fogwood_core::game::race::{bump, bump_r};
 use fogwood_core::net::proto::{self, CarSnap};
 use fogwood_core::net::smooth::{self, Ground, Policy, Thresholds, Track, ViewClock};
 use fogwood_core::physics::{Car, Input, Tune, NPARAM};
@@ -32,7 +34,7 @@ impl Link {
         if self.tcp { if lost { a += 0.2 + self.lat * 2.0; } a = a.max(self.last); self.last = a; Some(a) } else if lost { None } else { Some(a) }
     }
 }
-enum Msg { Car(Vec<u8>), Hit([f32; 5], f32) }
+enum Msg { Car(Vec<u8>), Hit([f32; 5], f32, f64) }
 
 fn snap_of(c: &Car, epoch: u8) -> CarSnap {
     CarSnap { t: 0.0, x: c.x as f32, y: c.y as f32, z: c.z as f32, h: c.h as f32, vx: c.vx as f32, vy: c.vy as f32, vz: c.vz as f32, r: c.r as f32, pitch: c.pitch as f32, roll: c.roll as f32,
@@ -46,12 +48,15 @@ struct Phone {
     epoch: u8, contact_t: f64, hit_t: f64, shown: Car, have: bool,
     /// times this phone pushed its own car (local contact or a push from the other phone)
     pushes: Vec<f64>,
+    /// lag compensation: the position and heading still to add to our car (spread over a few frames), and over how long
+    catch: [f64; 3], catch_t: f64, hit_t0: f64,
 }
 
 fn main() {
     let maps: Vec<String> = { let a: Vec<String> = std::env::args().skip(1).collect(); if a.is_empty() { vec!["lakes".into(), "touge".into()] } else { a } };
     let secs = env("SECS", 120.0); let lat = env("LAT", 50.0) / 1000.0; let jit = env("JIT", 20.0) / 1000.0; let loss = env("LOSS", 0.02); let tcp = env("TCP", 0.0) > 0.0;
     let tickjit = env("TICKJIT", 4.0) / 1000.0; let dt = 1.0 / 60.0; let seed = env("SEED", 1.0) as u64;
+    let comp = env("COMP", 0.0) > 0.0; let margin = env("MARGIN", 0.0); let nudge_k = env("NUDGE", fogwood_core::game::race::SHOW); let amargin = env("AMARGIN", 0.25); let resti = env("RESTI", 1.3); let near_rate = env("NEARRATE", 0.0) > 0.0;
     println!("link: {:.0} ms +/- {:.0} ms, {:.0}% loss, {}   frame-timing jitter {:.0} ms", lat * 1000.0, jit * 1000.0, loss * 100.0, if tcp { "relay over TCP" } else { "UDP" }, tickjit * 1000.0);
     println!("{:7} {:4} {:>7} {:>16} {:>6} {:>14} {:>14} {:>7} {:>12}", "map", "", "felt", "latency avg/p90", "ghost", "err rms/p99", "shake p50/p99", "gap rms", "jolt p50/p90");
     for map in &maps {
@@ -89,7 +94,7 @@ fn main() {
         for ver in ["old", "now"] {
             let legacy = ver == "old";
             let mk = |c: Car| Phone { car: c, tr: { let mut t = Track::default(); t.legacy = legacy; t }, pol: Policy::default(), stamp: ViewClock::default(), view: ViewClock::default(), seq: 0, last_seq: None,
-                inbox: Vec::new(), hit_acc: None, hit_tx: -9.0, net_hits: Vec::new(), epoch: 0, contact_t: -9.0, hit_t: -9.0, shown: c, have: false, pushes: Vec::new() };
+                inbox: Vec::new(), hit_acc: None, hit_tx: -9.0, net_hits: Vec::new(), epoch: 0, contact_t: -9.0, hit_t: -9.0, shown: c, have: false, pushes: Vec::new(), catch: [0.0; 3], catch_t: 0.0, hit_t0: 0.0 };
             let mut ph = [mk(place(0, 1.2)), mk(place(4, -1.2))];
             let mut links = [Link { lat, jit, loss, tcp, last: 0.0, rng: Rng(seed * 77 + 1) }, Link { lat, jit, loss, tcp, last: 0.0, rng: Rng(seed * 77 + 2) }];
             let mut rng = Rng(seed * 31 + 7); let mut wob = [0.0f64; 2];
@@ -116,19 +121,19 @@ fn main() {
                         Msg::Car(b) => { let (_, sq, ms, mut c) = proto::read_car2(&b).unwrap(); let me = &mut ph[p];
                             if let Some(l) = me.last_seq { if (sq.wrapping_sub(l) as i8) <= 0 { continue; } } me.last_seq = Some(sq);
                             let age = ((tick * 1000.0).rem_euclid(65536.0) - ms as f64).rem_euclid(65536.0) / 1000.0; c.t = tick - age; me.tr.push_at(c, tick); me.have = true; }
-                        Msg::Hit(d, imp) => { let me = &mut ph[p]; if legacy { continue; } me.epoch = (me.epoch + 1) & 15; if t - me.contact_t < 0.35 { continue; } me.net_hits.push((d.map(|v| v as f64), imp as f64)); }
+                        Msg::Hit(d, imp, t0) => { let me = &mut ph[p]; if legacy { continue; } me.epoch = (me.epoch + 1) & 15; if t - me.contact_t < 0.35 { continue; } me.hit_t0 = t0; me.net_hits.push((d.map(|v| v as f64), imp as f64)); }
                     } }
                     // 2. our state out (before the physics step, like the game), bumps out
                     let dist = (ph[p].shown.x - ph[p].car.x).hypot(ph[p].shown.z - ph[p].car.z); let close = dist < if legacy { 25.0 } else { 30.0 };
                     let me = &mut ph[p]; let mut s = snap_of(&me.car, me.epoch); s.t = if legacy { tick } else { me.stamp.advance(tick, dt) }; s.a = me.pol.accel(s.u, dt as f32);
                     let mut thr = Thresholds::default(); let (mut r, mut bt) = (rate, beat);
-                    if close { thr.pos *= 0.4; thr.head *= 0.5; thr.speed *= 0.5; r = (r * 1.5).min(30.0); bt = bt.min(0.25); }
+                    if close { if near_rate && !legacy { let (t2, r2, b2) = smooth::relevance(thr, r, bt, dist as f32); thr = t2; r = r2; bt = b2; } else { thr.pos *= 0.4; thr.head *= 0.5; thr.speed *= 0.5; r = (r * 1.5).min(30.0); bt = bt.min(0.25); } }
                     if me.pol.due(&s, g, &thr, r, bt) {
                         me.seq = me.seq.wrapping_add(1); let b = proto::car3(7, me.seq, &s); let (_, _, _, mut q) = proto::read_car2(&b).unwrap(); q.t = s.t; me.pol.sent = Some(q);
                         if let Some(a) = links[p].arrival(tick) { ph[o].inbox.push((a, Msg::Car(b))); }
                     }
-                    if !legacy { if let Some((d, imp)) = ph[p].hit_acc { if tick - ph[p].hit_tx >= 0.06 { ph[p].hit_tx = tick; ph[p].hit_acc = None;
-                        if let Some(a) = links[p].arrival(tick) { ph[o].inbox.push((a, Msg::Hit(d, imp))); } } } }
+                    if !legacy { if let Some((d, imp)) = ph[p].hit_acc { if tick - ph[p].hit_tx >= 0.06 { ph[p].hit_tx = tick; ph[p].hit_acc = None; let t0 = ph[p].contact_t;
+                        if let Some(a) = links[p].arrival(tick) { ph[o].inbox.push((a, Msg::Hit(d, imp, t0))); } } } }
                     // 3. the other car, drawn where it is at the end of this frame (old: at its start)
                     let me = &mut ph[p]; let vt = me.view.advance(tick, dt);
                     me.tr.near = if legacy { if dist < 25.0 { 1.0 } else { 0.0 } } else { let q = ((40.0 - dist) / 25.0).clamp(0.0, 1.0); (q * q * (3.0 - 2.0 * q)) as f32 };
@@ -139,17 +144,20 @@ fn main() {
                     wob[p] += (rng.f() - 0.5) * 0.01 - wob[p] * 0.03; let inp = drive(&me.car, t, p, wob[p], catch[p]); me.car.update(w, &e.obstacles, &tune, dt, &inp);
                     // 5. pushes from the other phone
                     for (d, _) in std::mem::take(&mut me.net_hits) { me.car.vx += d[0]; me.car.vz += d[1]; me.car.r += d[2];
-                        let s = (d[3].hypot(d[4]) / 0.25).max(1.0); me.car.x += d[3] * 0.5 / s; me.car.z += d[4] * 0.5 / s;
+                        let s = (d[3].hypot(d[4]) / 0.25).max(1.0);
+                        if comp { let age = (t - me.hit_t0).clamp(0.0, 0.4); me.catch = [me.catch[0] + d[3] + d[0] * age, me.catch[1] + d[4] + d[1] * age, me.catch[2] + d[2] * age]; me.catch_t = 0.12; }
+                        else { me.car.x += d[3] * 0.5 / s; me.car.z += d[4] * 0.5 / s; }
                         me.hit_t = t; me.pushes.push(t); }
+                    if comp && me.catch_t > 0.0 { let f = (dt / me.catch_t).min(1.0); me.car.x += me.catch[0] * f; me.car.z += me.catch[1] * f; me.car.h += me.catch[2] * f; for q in 0..3 { me.catch[q] *= 1.0 - f; } me.catch_t -= dt; }
                     // 6. contact with the car as drawn here
-                    if me.have { let (mut a, mut b) = (me.car, me.shown); let o0 = me.shown; let hit = bump(&mut a, &mut b, 1180.0, tune.iz);
+                    if me.have { let (mut a, mut b) = (me.car, me.shown); let o0 = me.shown; let mg = margin + (me.tr.horizon() as f64 * amargin).min(0.25); let hit = bump_r(&mut a, &mut b, 1180.0, tune.iz, 1.72 - mg, resti);
                         let d = [b.vx - o0.vx, b.vz - o0.vz, b.r - o0.r, b.x - o0.x, b.z - o0.z];
                         if d.iter().any(|v| v.abs() > 1e-6) {
                             me.car = a; if hit > 0.05 { me.pushes.push(t); }
                             if t - me.contact_t.max(me.hit_t) > 0.3 { me.epoch = (me.epoch + 1) & 15; } me.contact_t = t;
-                            let df = d.map(|v| v as f32); me.tr.nudge(df);
+                            let df = d.map(|v| v as f32); me.tr.nudge(df.map(|v| v * nudge_k as f32));
                             if !legacy { let acc = me.hit_acc.get_or_insert(([0.0; 5], 0.0)); for k in 0..5 { acc.0[k] += df[k]; } acc.1 = acc.1.max(hit as f32); }
-                            if !owned { me.shown = b; }
+                            if !owned { let k = nudge_k; let sh = &mut me.shown; sh.x += (b.x - sh.x) * k; sh.z += (b.z - sh.z) * k; sh.vx += (b.vx - sh.vx) * k; sh.vz += (b.vz - sh.vz) * k; sh.r += (b.r - sh.r) * k; }
                         } }
                 }
                 let (mut a, mut b) = (ph[0].car, ph[1].car); let hit = bump(&mut a, &mut b, 1180.0, tune.iz);

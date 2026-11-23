@@ -466,15 +466,18 @@ impl Session {
     /// `by`: which of our cars did it (proto::BY_PLAYER, or the index of one of our AI cars when we are the host). The
     /// host's AI cars (ids from `bot_id`) are pushed the same way, the push going to the host.
     pub fn bump(&mut self, id: u32, by: u8, d: [f32; 5], imp: f32) {
-        if let Some(k) = bot_of(id) { if let Some(b) = self.bots.get_mut(&k) { b.track.nudge(d);
+        let shown = d.map(|v| v * crate::game::race::SHOW as f32);   // shown at SHOW, sent in full (see race::contacts)
+        if let Some(k) = bot_of(id) { if let Some(b) = self.bots.get_mut(&k) { b.track.nudge(shown);
             let a = b.hit_acc.get_or_insert(([0.0; 5], 0.0)); for q in 0..5 { a.0[q] += d[q]; } a.1 = a.1.max(imp); } return; }
-        if let Some(p) = self.peers.get_mut(&id) { p.track.nudge(d);
+        if let Some(p) = self.peers.get_mut(&id) { p.track.nudge(shown);
             match p.hit_acc.iter_mut().find(|x| x.0 == by) { Some(a) => { for q in 0..5 { a.1[q] += d[q]; } a.2 = a.2.max(imp); } None => p.hit_acc.push((by, d, imp)) } }
     }
     fn track(&self, id: u32) -> Option<&smooth::Track> { match bot_of(id) { Some(k) => self.bots.get(&k).map(|b| &b.track), None => self.peers.get(&id).map(|p| &p.track) } }
     fn track_mut(&mut self, id: u32) -> Option<&mut smooth::Track> { match bot_of(id) { Some(k) => self.bots.get_mut(&k).map(|b| &mut b.track), None => self.peers.get_mut(&id).map(|p| &mut p.track) } }
     /// whether a car is, for now, moved only by its own phone (a contact it has already taken in)
     pub fn owned(&self, id: u32) -> bool { self.track(id).map(|t| t.owned()).unwrap_or(false) }
+    /// how far ahead of its newest state a car is drawn (s)
+    pub fn horizon(&self, id: u32) -> f32 { self.track(id).map(|t| t.horizon()).unwrap_or(0.0) }
     /// how close a car is to ours (0 far .. 1 close; close cars are drawn at the present)
     pub fn set_near(&mut self, id: u32, near: f32) { if let Some(t) = self.track_mut(id) { t.near = near; } }
     /// bumps other phones gave our car since the last call (sender, which of their cars, push, impact speed)
