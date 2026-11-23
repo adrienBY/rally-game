@@ -67,6 +67,15 @@ pub fn web_ws_open(k: u32) { crate::guard::run("ws", (), || if k >= crate::net::
 pub fn web_ws_data(k: u32, b: &[u8]) { crate::guard::run("ws", (), || if k >= crate::net::relay::web::SOCK { crate::net::relay::web::on_data(k, b) } else { crate::net::mqtt::web::on_data(k, b) }) }
 #[wasm_bindgen]
 pub fn web_ws_close(k: u32) { crate::guard::run("ws", (), || if k >= crate::net::relay::web::SOCK { crate::net::relay::web::on_close(k) } else { crate::net::mqtt::web::on_close(k) }) }
+// the page's WebRTC links (see net::rtc and web/fw_rtc.js)
+#[wasm_bindgen]
+pub fn web_rtc_open(id: u32) { crate::guard::run("rtc", (), || crate::net::rtc::on_open(id)) }
+#[wasm_bindgen]
+pub fn web_rtc_close(id: u32) { crate::guard::run("rtc", (), || crate::net::rtc::on_close(id)) }
+#[wasm_bindgen]
+pub fn web_rtc_data(id: u32, b: &[u8]) { crate::guard::run("rtc", (), || crate::net::rtc::on_data(id, b)) }
+#[wasm_bindgen]
+pub fn web_rtc_signal(id: u32, kind: u8, text: String) { crate::guard::run("rtc", (), || crate::net::rtc::on_signal(id, kind, text)) }
 /// the driver name from the page's text box (answer to the game's "name" event)
 #[wasm_bindgen]
 pub fn web_name(n: &str) { crate::guard::run("name", (), || crate::gfx::rt_name(n)) }

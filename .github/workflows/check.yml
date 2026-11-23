@@ -1,0 +1,48 @@
+name: Check (branches)
+
+# Work branches: the browser build (WebAssembly) and the Android native libraries compile, the core's tests pass.
+# Nothing is published.
+on:
+  push:
+    branches-ignore: [main]
+  workflow_dispatch:
+
+jobs:
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@0.2.130
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Browser build
+        run: sh web/build_web.sh
+      - name: The page's scripts parse
+        run: node --check web/web_boot.js && node --check web/fw_rtc.js
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Tests
+        working-directory: rust
+        run: cargo test --release --lib
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+      - name: Native libraries
+        working-directory: rust
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 -o /tmp/jniLibs build --release --lib
+          ls -lR /tmp/jniLibs

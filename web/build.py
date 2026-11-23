@@ -43,4 +43,5 @@ open(WEB + 'index.html', 'w').write(web)
 import shutil
 for f in ['three.module.min.js', 'icon-180.png', 'icon-512.png', 'manifest.webmanifest']: shutil.copy(APPA + f, WEB + f)
 shutil.copy(D + 'web_boot.js', WEB + 'web_boot.js')
+shutil.copy(D + 'fw_rtc.js', WEB + 'fw_rtc.js')
 print('built', len(main), 'bytes')

@@ -22,8 +22,12 @@ pub const K_BOT3: u8 = 0xC4; pub const BOT3_LEN: usize = 30;
 /// cars costs one datagram / one relay message per frame instead of one each: [0xC8][count u8] then [len u8][message]...
 /// Only sent to phones whose hello says they read it (CAP_BATCH).
 pub const K_BATCH: u8 = 0xC8;
-/// hello capability bits
-pub const CAP_BATCH: u8 = 1;
+/// hello capability bits: reads K_BATCH; is a browser (no UDP of its own: WebRTC is its only direct path); speaks
+/// WebRTC data channels (net::rtc)
+pub const CAP_BATCH: u8 = 1; pub const CAP_WEB: u8 = 2; pub const CAP_RTC: u8 = 4;
+/// RTC: a WebRTC negotiation message (net::rtc::Signal) in parts: [gen u8][kind u8][part u8][parts u8][bytes]
+pub const K_RTC: u8 = 12;
+pub const RTC_PART: usize = 900;
 /// largest batch (bytes): well inside one datagram and one relay message
 pub const BATCH_MAX: usize = 1100;
 
@@ -78,6 +82,7 @@ impl<'a> R<'a> {
     pub fn f32(&mut self) -> Option<f32> { Some(f32::from_le_bytes(self.take(4)?.try_into().ok()?)) }
     pub fn f64(&mut self) -> Option<f64> { Some(f64::from_le_bytes(self.take(8)?.try_into().ok()?)) }
     pub fn str(&mut self) -> Option<String> { let n = self.u8()? as usize; Some(String::from_utf8_lossy(self.take(n)?).to_string()) }
+    pub fn rest(&mut self) -> &'a [u8] { let s = &self.b[self.i..]; self.i = self.b.len(); s }
 }
 
 pub fn read_env(b: &[u8]) -> Option<(Env, R<'_>)> {
@@ -172,6 +177,10 @@ pub fn read_tiles(r: &mut R) -> Option<Vec<(u8, u16)>> { let n = r.u16()? as usi
 pub fn bot_hit(e: Env, idx: u8, d: [f32; 5], imp: f32) -> Vec<u8> { let mut w = W::env(e); w.u8(idx); for v in d { w.f32(v); } w.f32(imp); w.0 }
 pub fn read_bot_hit(r: &mut R) -> Option<(u8, [f32; 5], f32)> { let idx = r.u8()?; let mut d = [0f32; 5]; for v in d.iter_mut() { *v = r.f32()?; } Some((idx, d, r.f32()?)) }
 pub fn bare(e: Env) -> Vec<u8> { W::env(e).0 }
+/// one part of a negotiation message (split at RTC_PART bytes, each under the relay's 1200-byte limit)
+pub fn rtc_part(e: Env, gen: u8, kind: u8, part: u8, parts: u8, bytes: &[u8]) -> Vec<u8> { let mut w = W::env(e); w.u8(gen); w.u8(kind); w.u8(part); w.u8(parts); w.0.extend_from_slice(bytes); w.0 }
+/// (gen, kind, part, parts, bytes)
+pub fn read_rtc<'a>(r: &mut R<'a>) -> Option<(u8, u8, u8, u8, Vec<u8>)> { let g = r.u8()?; let k = r.u8()?; let p = r.u8()?; let n = r.u8()?; Some((g, k, p, n, r.rest().to_vec())) }
 /// pack messages into as few batches as fit (a lone message goes as it is)
 pub fn batches(msgs: &[Vec<u8>]) -> Vec<Vec<u8>> {
     let mut out: Vec<Vec<u8>> = Vec::new(); let mut cur: Vec<u8> = Vec::new(); let mut n = 0u8; let mut first: Option<&Vec<u8>> = None;

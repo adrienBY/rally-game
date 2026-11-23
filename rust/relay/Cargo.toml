@@ -14,3 +14,7 @@ opt-level = 3
 lto = true
 codegen-units = 1
 strip = true
+
+# as in ../Cargo.toml: str0m's pure-Rust crypto with a ring-made certificate (no aws-lc)
+[patch.crates-io]
+str0m-rust-crypto = { path = "../vendor/str0m-rust-crypto" }
