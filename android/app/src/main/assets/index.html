@@ -1356,6 +1356,19 @@ function volcanoHazards() {
     disc: mk(discG, add(true), 200) };
 }
 if (VOL) volcanoHazards();
+/* tile fall (an online mode): the arena's tiles, one instanced pool the app places every frame (tilefall.rs). Each tile is a
+   bevelled slab: lit top, darker sides, a dark seam round its edge (pixel texture), coloured per tile by the app. No rnd() here:
+   the stage's random sequence must not move. */
+const TILEFALL = (() => {
+  const tex = canvasTex(16, (g, S) => { g.fillStyle = "#2a2a2a"; g.fillRect(0, 0, S, S); g.fillStyle = "#d8d8d8"; g.fillRect(1, 1, S - 2, S - 2);
+    g.fillStyle = "#f4f4f4"; g.fillRect(2, 2, S - 4, 2); g.fillRect(2, 2, 2, S - 4); g.fillStyle = "#a8a8a8"; g.fillRect(2, S - 4, S - 4, 2); g.fillRect(S - 4, 2, 2, S - 4);
+    for (let i = 0; i < 9; i++) { const x = 4 + ((Math.sin(i * 12.9898) * 43758.5453 % 1 + 1) % 1) * 8 | 0, y = 4 + ((Math.sin(i * 78.233) * 43758.5453 % 1 + 1) % 1) * 8 | 0; g.fillStyle = "#c4c4c4"; g.fillRect(x, y, 1, 1); } });
+  const geo = new THREE.BoxGeometry(1, 1, 1).toNonIndexed(); geo.computeVertexNormals(); { const n = geo.attributes.normal, c = [];
+    for (let i = 0; i < n.count; i++) { const k = n.getY(i) > 0.5 ? 1 : n.getY(i) < -0.5 ? 0.3 : 0.62; c.push(k, k, k); } geo.setAttribute("color", new THREE.Float32BufferAttribute(c, 3)); }
+  const im = new THREE.InstancedMesh(geo, new THREE.MeshLambertMaterial({ color: 0xffffff, map: tex, vertexColors: true }), 144);
+  tmpO.position.set(0, -999, 0); tmpO.rotation.set(0, 0, 0); tmpO.scale.setScalar(0.001); tmpO.updateMatrix();
+  for (let i = 0; i < 144; i++) { im.setMatrixAt(i, tmpO.matrix); im.setColorAt(i, new THREE.Color(1, 1, 1)); }
+  im.count = 0; im.frustumCulled = false; im.userData.dyn = true; scene.add(im); return im; })();
 /* ================= rally furniture: start gantry, chevrons, straw bales ================= */
 if (PRI) prismFurniture(); else {
   const postM = new THREE.MeshLambertMaterial({ color: 0x2a2a2a });
@@ -1504,7 +1517,18 @@ const LIVERIES = [
   { pat: "split", base: "#1aa39a", a: "#141414", b: "#ece8dc", c: "#141414" },
   { pat: "fade", base: "#1d2c5c", a: "#c2347a", b: "#ece8dc", c: "#1d2c5c" },
   { pat: "gulf", base: "#8ec5e6", a: "#e2662a", b: "#141414", c: "#141414" },
+  { pat: "zebra", base: "#ece8dc", a: "#141414", b: "#141414", c: "#c23a2c" },
+  { pat: "sunset", base: "#2a1a4a", a: "#e2662a", b: "#f2c230", c: "#c2347a" },
+  { pat: "chevron", base: "#20242c", a: "#f2c230", b: "#ece8dc", c: "#20242c" },
+  { pat: "dots", base: "#c23a2c", a: "#ece8dc", b: "#141414", c: "#ece8dc" },
+  { pat: "carbon", base: "#1c1d20", a: "#2c2e33", b: "#c23a2c", c: "#3a3d44" },
+  { pat: "neon", base: "#101014", a: "#3fd0d8", b: "#e23aa8", c: "#101014" },
+  { pat: "pixel", base: "#2e7d4f", a: "#8fd16a", b: "#f2c230", c: "#1d4f32" },
+  { pat: "tricolore", base: "#ece8dc", a: "#1d3a8c", b: "#c23a2c", c: "#ece8dc" },
 ];
+// duos: one livery per team (never picked in the garage), the same on both cars of a team
+const TEAM_LIVERIES = [["#c23a2c", "#f2c230"], ["#1d5fc4", "#ece8dc"], ["#2e9a4f", "#141414"], ["#f2c230", "#141414"], ["#7a3ac2", "#3fd0d8"], ["#e2662a", "#141414"]]
+  .map(([a, b]) => ({ pat: "team", base: "#141414", a, b, c: "#ece8dc" }));
 const car = { root: new THREE.Group(), body: null, models: [], wheels: [], shadow: null, model: 0 };
 {
   // the first car's livery used the shared seeded generator: burn the same draws so the rest of the stage (trees, rocks...) is
@@ -1620,6 +1644,21 @@ const car = { root: new THREE.Group(), body: null, models: [], wheels: [], shado
             if (t * 1.1 - 0.05 > [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5][(by & 3) * 4 + (bx & 3)] / 16) { g.fillStyle = L.a; g.fillRect(bx * PX, by * PX, PX, PX); } }
           for (let k = 0; k < 3; k++) { const z0 = 0.35 - k * 0.32; poly([[z0, 0.5], [z0 - 0.12, 0.5], [z0 - 0.26, 0.64], [z0 - 0.12, 0.78], [z0, 0.78], [z0 - 0.14, 0.64]], L.b); } hband(0.98, 1.75, L.base); }
         else if (L.pat === "gulf") { hband(0.52, 0.78, L.a); hband(0.5, 0.52, L.b); hband(0.78, 0.8, L.b); }
+        else if (L.pat === "zebra") { for (let k = 0; k < 14; k++) { const z = 2.3 - k * 0.34, w = 0.1 + (k % 3) * 0.03; poly([[z, 0.15], [z - w, 0.15], [z - w - 0.25, 1.0], [z - 0.25, 1.0]], L.a); } hband(0.98, 1.75, L.a); }
+        else if (L.pat === "sunset") { const B4 = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+          for (let z = -2.3; z < 2.3; z += 0.034) for (let y = 0.15; y < 1.0; y += 0.04) { const t = (y - 0.15) / 0.85, bx = Math.round(X(z) / PX), by = Math.round(Y(y) / PX), d = B4[(by & 3) * 4 + (bx & 3)] / 16;
+            g.fillStyle = t < 0.33 ? (t * 3 > d ? L.c : L.a) : t < 0.66 ? ((t - 0.33) * 3 > d ? L.b : L.c) : ((t - 0.66) * 3 > d ? L.base : L.b); g.fillRect(bx * PX, by * PX, PX, PX); }
+          hband(0.98, 1.75, L.base); }
+        else if (L.pat === "chevron") { for (let k = 0; k < 4; k++) { const z = 1.7 - k * 0.5; poly([[z, 0.62], [z - 0.3, 0.42], [z - 0.45, 0.42], [z - 0.15, 0.62], [z - 0.45, 0.82], [z - 0.3, 0.82]], k % 2 ? L.b : L.a); } hband(0.98, 1.75, L.base); }
+        else if (L.pat === "dots") { for (let z = -2.2; z < 2.3; z += 0.42) for (let y = 0.4; y < 0.95; y += 0.26) { const off = Math.round((y - 0.4) / 0.26) % 2 ? 0.21 : 0; const cx = X(z + off), cy = Y(y);
+            g.fillStyle = L.a; g.fillRect(Math.round((cx - 12) / PX) * PX, Math.round((cy - 12) / PX) * PX, 24, 24); } hband(0.98, 1.75, L.b); }
+        else if (L.pat === "carbon") { for (let bx = 0; bx < AW; bx += 2 * PX) for (let by = row; by < row + SH; by += 2 * PX) if (((bx / (2 * PX)) + (by / (2 * PX))) % 2 === 0) { g.fillStyle = L.a; g.fillRect(bx, by, 2 * PX, PX); }
+          hband(0.5, 0.56, L.b); }
+        else if (L.pat === "neon") { band(2.3, -2.3, 0.45, 0.62, 0.04, L.a); band(2.3, -2.3, 0.52, 0.69, 0.04, L.b); band(2.3, -2.3, 0.59, 0.76, 0.02, L.a); hband(0.98, 1.75, L.base); }
+        else if (L.pat === "pixel") { for (let k = 0; k < 90; k++) { const z = crr(-2.3, 2.3), y = crr(0.15, 1.0); g.fillStyle = [L.a, L.b, L.c][k % 3]; g.fillRect(Math.round(X(z) / (4 * PX)) * 4 * PX, Math.round(Y(y) / (4 * PX)) * 4 * PX, 4 * PX, 4 * PX); } hband(0.98, 1.75, L.c); }
+        else if (L.pat === "tricolore") { poly([[2.3, 0.15], [0.75, 0.15], [0.75, 1.75], [2.3, 1.75]], L.a); poly([[-0.75, 0.15], [-2.3, 0.15], [-2.3, 1.75], [-0.75, 1.75]], L.b); }
+        else if (L.pat === "team") { poly([[2.3, 0.15], [0.9, 0.15], [-0.2, 1.0], [2.3, 1.0]], L.a); band(0.9, -0.2, 0.15, 1.0, 0.0001, L.b); poly([[0.9, 0.15], [1.08, 0.15], [-0.02, 1.0], [-0.2, 1.0]], L.b);
+          poly([[-0.9, 0.15], [-2.3, 0.15], [-2.3, 1.0], [-1.6, 1.0]], L.a); hband(0.98, 1.75, L.a); hband(0.4, 0.44, L.b); }
         g.fillStyle = "#111"; g.fillRect(0, Y(0.37), AW, Y(0.15) - Y(0.37));                 // black sills
         g.fillStyle = L.b; g.fillRect(0, Y(0.385), AW, 1);
         g.fillStyle = "rgba(24,24,24,0.6)"; for (const z of [ZW - 0.04, S.zB ?? ZRE + 0.08]) g.fillRect(X(z) | 0, Y(0.97), 1, Y(0.36) - Y(0.97)); g.fillRect(X(lerp(ZW, ZRE, 0.7)) | 0, Y(0.86) | 0, 6, 1);
@@ -1649,6 +1688,13 @@ const car = { root: new THREE.Group(), body: null, models: [], wheels: [], shado
       if (L.pat === "split") { top(-2.3, 0.4, -1.1, 1.1, L.a); top(0.4, 0.46, -1.1, 1.1, L.b); }
       if (L.pat === "fade") { top(ZW - 0.1, 2.3, -1.1, 1.1, L.a); }
       if (L.pat === "gulf") { top(-2.3, 2.3, -0.2, 0.2, L.a); top(-2.3, 2.3, -0.22, -0.2, L.b); top(-2.3, 2.3, 0.2, 0.22, L.b); }
+      if (L.pat === "zebra") { for (let k = 0; k < 14; k++) top(2.3 - k * 0.34 - 0.12, 2.3 - k * 0.34, -1.1, 1.1, L.a); }
+      if (L.pat === "sunset" || L.pat === "neon" || L.pat === "carbon") { top(-2.3, 2.3, -0.12, 0.12, L.a); top(-2.3, 2.3, -0.16, -0.12, L.b); top(-2.3, 2.3, 0.12, 0.16, L.b); }
+      if (L.pat === "chevron") { for (let k = 0; k < 4; k++) top(1.7 - k * 0.5 - 0.15, 1.7 - k * 0.5, -0.5, 0.5, k % 2 ? L.b : L.a); }
+      if (L.pat === "dots") { for (let z = -2.2; z < 2.3; z += 0.42) for (const x of [-0.6, 0, 0.6]) top(z, z + 0.16, x - 0.08, x + 0.08, L.a); }
+      if (L.pat === "pixel") { for (let k = 0; k < 40; k++) { const z = crr(-2.3, 2.3), x = crr(-1.1, 1.1); g.fillStyle = [L.a, L.b, L.c][k % 3]; g.fillRect(Math.round(TX(z) / (4 * PX)) * 4 * PX, Math.round(TY(x) / (4 * PX)) * 4 * PX, 4 * PX, 4 * PX); } }
+      if (L.pat === "tricolore") { top(0.75, 2.3, -1.1, 1.1, L.a); top(-2.3, -0.75, -1.1, 1.1, L.b); }
+      if (L.pat === "team") { top(-2.3, 2.3, -1.1, 1.1, L.a); top(-2.3, 2.3, -0.18, 0.18, L.b); top(-2.3, 2.3, -0.22, -0.18, L.c); top(-2.3, 2.3, 0.18, 0.22, L.c); }
       g.fillStyle = "#111"; g.fillRect(TX(ZH - 0.2), 2 * SH, 1, SH);
       const FX = (x, rear) => (rear ? 0.5 + (0.55 - x / 2.2) * 0.5 : (x / 2.2 + 0.5) * 0.5) * AW, FY = (y) => 3 * SH + (1 - (y - Y0) / YH) * SH;
       g.fillStyle = W_; g.fillRect(0, 3 * SH, AW, SH);
@@ -1667,15 +1713,20 @@ const car = { root: new THREE.Group(), body: null, models: [], wheels: [], shado
       if (L.pat === "split") { fr(-1.1, 1.1, 0.2, 1.75, L.a, true); }
       if (L.pat === "fade") { fr(-1.1, 1.1, 0.2, 1.75, L.a, false); }
       if (L.pat === "gulf") for (const r of [false, true]) { fr(-0.2, 0.2, 0.3, 1.3, L.a, r); }
+      if (L.pat === "zebra") for (const r of [false, true]) for (let k = 0; k < 5; k++) fr(-1.1 + k * 0.45, -0.95 + k * 0.45, 0.2, 1.3, L.a, r);
+      if (L.pat === "sunset" || L.pat === "neon" || L.pat === "carbon") for (const r of [false, true]) { fr(-0.12, 0.12, 0.3, 1.3, L.a, r); }
+      if (L.pat === "chevron" || L.pat === "dots") for (const r of [false, true]) { fr(-0.5, 0.5, 0.5, 0.65, L.a, r); }
+      if (L.pat === "tricolore") { fr(-1.1, -0.37, 0.2, 1.75, L.a, false); fr(0.37, 1.1, 0.2, 1.75, L.b, false); fr(-1.1, -0.37, 0.2, 1.75, L.a, true); fr(0.37, 1.1, 0.2, 1.75, L.b, true); }
+      if (L.pat === "team") for (const r of [false, true]) { fr(-1.1, 1.1, 0.2, 1.75, L.a, r); fr(-0.2, 0.2, 0.2, 1.75, L.b, r); }
       pixelate(g, gs, PX); retroShade(gs, AW / PX, 4 * SH / PX, SH / PX);
     }, false, 4 * SH / PX);
     atlas.minFilter = atlas.magFilter = THREE.NearestFilter; atlas.generateMipmaps = false; return atlas; };
     // the car's own livery first, then every pickable one: the extras ride on invisible carrier meshes so the app gets their
     // textures, and swaps the paint's texture for the one picked in the garage
-    const atlases = [L, ...LIVERIES].map(makeAtlas);
+    const atlases = [L, ...LIVERIES, ...TEAM_LIVERIES].map(makeAtlas);
     const paint = phong({ map: atlases[0] }); paint.userData.paint = true;
     { const cg = new THREE.BufferGeometry(); cg.setAttribute("position", new THREE.Float32BufferAttribute([0, 0.5, 0, 0, 0.5, 0, 0, 0.5, 0], 3)); cg.setAttribute("normal", new THREE.Float32BufferAttribute([0, 1, 0, 0, 1, 0, 0, 1, 0], 3));
-      cg.setAttribute("uv", new THREE.Float32BufferAttribute([0, 0, 0, 0, 0, 0], 2)); B.userData.liveries = atlases.slice(1).map(t => { const m = new THREE.Mesh(cg, phong({ map: t })); B.add(m); return m; }); }
+      cg.setAttribute("uv", new THREE.Float32BufferAttribute([0, 0, 0, 0, 0, 0], 2)); B.userData.liveries = atlases.slice(1).map(t => { const m = new THREE.Mesh(cg, phong({ map: t })); m.userData.livCarrier = true; B.add(m); return m; }); }
     const AH = 4 * SH, V = (row) => 1 - row / AH;
     const uvSide = (p) => { const mir = p[0] > 0, u = (mir ? (Z0 + ZL - p[2]) : (p[2] - Z0)) / ZL; return [u, V((mir ? SH : 0) + (1 - (p[1] - Y0) / YH) * SH)]; };
     const uvTop = (p) => [(p[2] - Z0) / ZL, V(2 * SH + (p[0] + 1.1) / 2.2 * SH)];
@@ -2762,9 +2813,13 @@ const RG = (() => {
   // the four wheels share their models: one instanced part per wheel piece, four instances per rival
   const inWheel = new Set(), slots = wheels.map(w => { const l = []; w.pivot.traverse(o => { if (o.isMesh) { l.push(o); inWheel.add(o); } }); return l; });
   for (let q = 0; q < slots[0].length; q++) { const e = addPart(null, slots[0][q].geometry, slots[0][q].material, 4); e.wsrc = slots.map(l => l[q]); }
-  for (const m of pl) { if (!m.isMesh || inWheel.has(m)) continue;
-    if (!Array.isArray(m.material)) { addPart(m, m.geometry, m.material); continue; }
-    for (const gr of m.geometry.groups) { const g2 = m.geometry.clone(); g2.clearGroups(); g2.setDrawRange(gr.start, gr.count); addPart(m, g2, m.material[gr.materialIndex]); } }
+  const livOf = (mat, src) => { if (!(mat.userData && mat.userData.paint)) return [];
+    const B = car.models[modelOf(src)]; return (B && B.userData.liveries || []).map((lm, li) => [li + 1, lm.material]); };
+  const addPaint = (src, geo, mat) => { const p = addPart(src, geo, mat); p.paint = !!(mat.userData && mat.userData.paint);
+    for (const [li, lmat] of livOf(mat, src)) { const q = addPart(src, geo, lmat); q.tint = false; q.liv = li; q.paint = true; for (let r = 0; r < N; r++) q.im.setColorAt(r, white); } };
+  for (const m of pl) { if (!m.isMesh || inWheel.has(m) || (m.userData && m.userData.livCarrier)) continue;
+    if (!Array.isArray(m.material)) { addPaint(m, m.geometry, m.material); continue; }
+    for (const gr of m.geometry.groups) { const g2 = m.geometry.clone(); g2.clearGroups(); g2.setDrawRange(gr.start, gr.count); addPaint(m, g2, m.material[gr.materialIndex]); } }
   const sh = new THREE.InstancedMesh(car.shadow.geometry, car.shadow.material.clone(), N); sh.frustumCulled = false; sh.visible = false; sh.renderOrder = car.shadow.renderOrder; scene.add(sh);
   return { puppet, wheels, parts, sh, show(on) { for (const p of parts) p.im.visible = on; sh.visible = on; } };
 })();
@@ -2776,7 +2831,7 @@ function rivalGfx() {
     for (let i = 0; i < 4; i++) { const w = RG.wheels[i]; w.spin.rotation.x = c.w[i].ang; if (w.front) w.pivot.rotation.y = s.steer; w.pivot.position.y = TIRE_R - clamp(c.w[i].d, SUSP.REST - SUSP.STOP - 0.04, SUSP.REST); }
     // browser build: rival k drives body (k + 1) of the family; other bodies' instances collapse to nothing
     const mdl = (k + 1) % car.models.length;
-    P.updateMatrixWorld(true); for (const p of RG.parts) { if (p.wsrc) for (let w = 0; w < 4; w++) p.im.setMatrixAt(k * 4 + w, p.wsrc[w].matrixWorld); else p.im.setMatrixAt(k, p.model === mdl ? p.src.matrixWorld : ZERO_M); }
+    P.updateMatrixWorld(true); for (const p of RG.parts) { if (p.wsrc) for (let w = 0; w < 4; w++) p.im.setMatrixAt(k * 4 + w, p.wsrc[w].matrixWorld); else p.im.setMatrixAt(k, p.model === mdl && !p.liv ? p.src.matrixWorld : ZERO_M); }
     const gH = height(s.x, s.z); tmpO.position.set(s.x, gH + 0.05, s.z); tmpO.rotation.set(0, s.h, 0); tmpO.scale.setScalar(1 + clamp(s.y - gH - 0.08, 0, 4) * 0.12); tmpO.updateMatrix(); RG.sh.setMatrixAt(k, tmpO.matrix);
     // where to draw the name tag
     v3.set(s.x, s.y + 2.1, s.z).project(camera); const d = Math.hypot(s.x - camera.position.x, s.z - camera.position.z);
@@ -3222,7 +3277,7 @@ function rtPacket() {
   const OBJN = []; NGL_OBJ.forEach((r, id) => { const l = local(r.o); if (l) OBJN.push([id, l[0], ...l[1]]); });
   // the rivals: every instanced part follows one node of the car puppet (wheel parts: four instances, one per wheel)
   const ol = [], pl = []; car.root.traverse(o => ol.push(o)); RG.puppet.traverse(o => pl.push(o)); const orig = new Map(); pl.forEach((o, i) => orig.set(o, ol[i]));
-  const rg = { parts: RG.parts.map(p => ({ obj: ids(p.im)[0], src: (p.wsrc || [p.src]).map(m => local(orig.get(m))), model: p.model, tint: p.tint ? 1 : 0 })), shadow: ids(RG.sh)[0] };
+  const rg = { parts: RG.parts.map(p => ({ obj: ids(p.im)[0], src: (p.wsrc || [p.src]).map(m => local(orig.get(m))), model: p.model, tint: p.tint ? 1 : 0, liv: p.liv || 0, paint: p.paint ? 1 : 0 })), shadow: ids(RG.sh)[0] };
   const flagsOf = (o) => o ? 1 : 0;
   const pk = { v: 1, map: MAPN, mapId: SNOW ? 1 : CAN ? 2 : LAK ? 3 : ICE ? 4 : TOU ? 5 : RIV ? 6 : PRI ? 7 : VOL ? 8 : 0, NP, GXH, GZH,
     sun: SUN.toArray(), fogD: scene.fog.density, far: camera.far, near: camera.near,
@@ -3242,6 +3297,7 @@ function rtPacket() {
     shade: Array.from({ length: NP * 13 }, (_, q) => { const i = (q / 13) | 0, l = q % 13 - 6, p = PATH[i], tn = TAN[i]; return Math.round(sunShadowAt(p[0] - tn[1] * l, p[1] + tn[0] * l) * 99); }),
     shadeTint: SHADOW_TINT,
     volc: VOL ? { fire: ids(VOLC.ims.fire)[0], solid: ids(VOLC.ims.solid)[0], glow: ids(VOLC.ims.glow)[0], ring: ids(VOLC.ims.ring)[0], disc: ids(VOLC.ims.disc)[0], crater: VOLC.crater, rivers: VOLC.rivers, bridges: VOLC.bridges || [] } : null,
+    tilefall: ids(TILEFALL)[0],
     wave: PRI ? { objs: scene.children.filter(o => o.userData.wave).flatMap(o => ids(o)), secs: WAVES } : null,
     tiles: scene.children.filter(o => o.userData.grid).map(o => [ids(o)[0], ...o.userData.grid, ...o.geometry.boundingSphere.center.toArray()]),   // stage ground grids: the app draws far ones coarser
     saves: {} };

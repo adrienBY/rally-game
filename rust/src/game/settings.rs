@@ -23,7 +23,7 @@ const TABS: [(&str, &[Item]); 5] = [
     ("SYSTEM", &[Item { key: "saver", label: "BATTERY SAVER 30 FPS", kind: Kind::Toggle }, Item { key: "mrace", label: "RACE BEHIND THE MENU", kind: Kind::Toggle }, Item { key: "debug", label: "TEL AND REC BUTTONS", kind: Kind::Toggle }]),
 ];
 const KB: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-const NAME_MAX: usize = 10;
+pub const NAME_MAX: usize = 12;
 
 #[derive(Default)]
 pub struct Settings {
@@ -57,9 +57,16 @@ impl Game {
     pub fn close_settings(&mut self) { if self.set.open && self.wipe_close(super::menu::Go::CloseSettings) { return; } self.close_settings_now(); }
     pub fn close_settings_now(&mut self) { self.set.open = false; self.set.kb = None; self.set.drag = None; self.set.kb_only = false; self.touches.clear(); }
     /// the name keyboard on its own (online screen): the settings screen opens on PLAYER with the keyboard up
-    pub fn edit_name(&mut self) {
-        self.open_settings(); let t = TABS.iter().position(|t| t.0 == "RACE").unwrap_or(0);
-        self.set.tab = t; self.set.tab_y = t as f64; self.set.content_t = 1.0; self.set.kb = Some(self.ps.name.clone()); self.set.kb_only = true;
+    /// the driver name, typed on the phone's own keyboard (the app or page shows a text box and answers with set_name)
+    pub fn edit_name(&mut self) { self.ask_name(false); }
+    /// `first`: the first run, the box can't be dismissed without a name
+    pub fn ask_name(&mut self, first: bool) { let n: String = self.ps.name.chars().filter(|c| *c != '\n').collect(); self.events.push(format!("name {} {}", if first { 1 } else { 0 }, n)); }
+    /// a name came back from the keyboard: letters, digits, spaces and a few marks the pixel font has, up to NAME_MAX
+    pub fn set_name(&mut self, raw: &str) {
+        let n: String = raw.to_uppercase().chars().filter(|c| c.is_ascii_alphanumeric() || " .-'!".contains(*c)).take(NAME_MAX).collect(); let n = n.trim().to_string();
+        if n.is_empty() { return; }
+        self.ps.name = n.clone(); self.ps.saves.set("fogwood-name", n); self.ps.saves.set("fogwood-name-set", "1".into()); self.ps.saves.flush(); self.buzz("shift", 0.6);
+        let name = self.ps.name.clone(); crate::net::with(|s| s.name = name);
     }
 
     fn set_value(&mut self, key: &'static str, v: i32) {

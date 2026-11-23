@@ -163,7 +163,7 @@ impl Car {
         let gx = (world.height(self.x + 0.6, self.z) - world.height(self.x - 0.6, self.z)) / 1.2;
         let gz = (world.height(self.x, self.z + 0.6) - world.height(self.x, self.z - 0.6)) / 1.2;
         // prism: the deck edge is a 400 m cliff - its 'slope' must not fling a car sideways as a wheel drops over it
-        let (gx, gz) = if world.map == Map::Prism || (world.map == Map::Ember && world.in_bridge_span(self.x, self.z)) { (clamp(gx, -0.5, 0.5), clamp(gz, -0.5, 0.5)) } else { (gx, gz) };   // (ember: the drop beside a bridge too)
+        let (gx, gz) = if world.map == Map::Prism || world.tiles() || (world.map == Map::Ember && world.in_bridge_span(self.x, self.z)) { (clamp(gx, -0.5, 0.5), clamp(gz, -0.5, 0.5)) } else { (gx, gz) };   // (ember: the drop beside a bridge too)
         let ctl = Ctl { throttle: thr, brake: brk, hb: input.hb, steer: input.steer };
         let n = clamp(js_round(dt * 360.0), 1.0, 24.0) as usize;
         let sdt = dt / n as f64;
@@ -187,6 +187,9 @@ impl Car {
                 let lip = world.height(px - tz * sg * (edge - 0.05), pz + tx * sg * (edge - 0.05)); if self.y < lip + 0.3 { self.falling = true; }
             }
         } }
+        // tile fall: likewise, once the middle of the car has dropped below the arena's top over a hole, it falls clean through
+        let tl = world.tiles();
+        if tl && !self.falling { if let Some(top) = world.arena_top() { if self.y < top - 0.9 || (self.y < top - 0.4 && world.height(self.x, self.z) < -300.0) { self.falling = true; } } }   // (a car hung on an edge by two wheels drops too)
         let gone = self.falling;
         let sh = sin(self.h); let ch = cos(self.h); let lxw = ch; let lzw = -sh;
         let u = self.vx * sh + self.vz * ch; let vl = self.vx * lxw + self.vz * lzw;
@@ -195,20 +198,20 @@ impl Car {
         let (mut fsum, mut contacts, mut road_n) = (0.0f64, 0.0f64, 0);
         for w in self.wh.iter_mut() {
             let wx = self.x + ch * w.lx + sh * w.lz; let wz = self.z - sh * w.lx + ch * w.lz; w.wx = wx; w.wz = wz;
-            let wpd = world.path_dist(wx, wz); w.road = wpd < world.road() + 0.25; w.bank = snow && !w.road && wpd < ROAD + 1.8; if w.road { road_n += 1; }
+            let wpd = world.path_dist(wx, wz); w.road = tl || wpd < world.road() + 0.25; w.bank = snow && !w.road && wpd < ROAD + 1.8; if w.road { road_n += 1; }
             let ground = if held { world.wave.get().map(|wv| { let (_, l, sw) = world.road_frame(wv, wx, wz); wv.deck(sw, l) + wv.at(sw, world.wave_time()) }).unwrap_or_else(|| world.height(wx, wz)) } else { world.height(wx, wz) };
             let hg = ground + (vnoise(wx * 0.45 + 3.1, wz * 0.45) - 0.5) * (if w.road { 0.05 } else { 0.16 });
             // prism: a wheel coming back in from over the void well below the deck's surface (more than 0.7 m: the body is under it) finds no
             // ground there - the deck is a thin ribbon, not a block to be shoved out of; one only a little below catches the edge (steering
             // back on). A wheel that was on the deck always keeps it, even if the deck rose a little past it (a spawn, a wave).
             let wy = self.y + w.lz * sp + w.lx * sr;
-            let hg = if gone || (prism && w.hg < -300.0 && wy < hg - 0.7) { crate::world::PRISM_VOID } else { hg };
+            let hg = if gone || ((prism || tl) && w.hg < -300.0 && wy < hg - 0.7) { crate::world::PRISM_VOID } else { hg };
             // ember: likewise a wheel coming back up from beside a bridge (the ground under it jumped up by metres) only finds the deck
             // if the tyre is near its top; under it, it is still over the canyon
             let jump = ember && hg - w.hg > 1.2; let hg = if jump && wy < hg - 0.7 { w.hg } else { hg };
             let d = wy - hg; let comp = REST - d;
             // prism: the ground under a wheel can appear or vanish at the edge - damp from where the tyre is now, not from the void
-            let rate = (comp - if prism { if w.hg < -300.0 { comp } else { w.comp.max(comp.min(0.0) - 0.05) } } else if jump { comp } else { w.comp }) / dt;   // (a wheel just back from the void: no damper kick)
+            let rate = (comp - if prism || tl { if w.hg < -300.0 { comp } else { w.comp.max(comp.min(0.0) - 0.05) } } else if jump { comp } else { w.comp }) / dt;   // (a wheel just back from the void: no damper kick)
             w.comp = comp; w.d = d; w.hg = hg;
             let mut f = 0.0;
             if comp > 0.0 { f = t.k * comp + t.c * rate; if comp > STOP { f += t.k * 10.0 * (comp - STOP) + t.c * 2.0 * rate.max(0.0); } }
@@ -322,6 +325,7 @@ impl Car {
 
     fn collide(&mut self, world: &World, obs: &Obstacles, t: &Tune) {
         self.impact = 0.0; self.hay = 0.0;
+        if world.tiles() { return; }   // tile fall: the stage's trees and rocks are far below the arena
         let sh = sin(self.h); let ch = cos(self.h); let m = M; let iz = t.iz;
         for off in [1.35, 0.0, -1.35] {
             let cr = 0.9; let cx = self.x + sh * off; let cz = self.z + ch * off; let bi = (cx / OC).floor(); let bj = (cz / OC).floor();

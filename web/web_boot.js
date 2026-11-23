@@ -67,7 +67,25 @@ const fallback = () => { const s = document.createElement("script"); s.type = "m
   cv.addEventListener("pointerdown", (e) => { if (e.pointerType !== "mouse") return; e.preventDefault(); start(); try { cv.setPointerCapture(e.pointerId); } catch (_) {} send(0, MID, e.clientX, e.clientY); });
   cv.addEventListener("pointermove", (e) => { if (e.pointerType === "mouse" && e.buttons) send(1, MID, e.clientX, e.clientY); });
   for (const ev of ["pointerup", "pointercancel"]) cv.addEventListener(ev, (e) => { if (e.pointerType === "mouse") send(2, MID, e.clientX, e.clientY); });
-  addEventListener("keydown", (e) => { if (e.key === "Escape" || e.key === "Backspace") fw.web_back(); });
+  addEventListener("keydown", (e) => { if (e.target && e.target.tagName === "INPUT") return; if (e.key === "Escape" || e.key === "Backspace") fw.web_back(); });
+  // the driver name: a text box over the game (the phone's own keyboard comes up); first run: no way round it
+  let nameBox = null;
+  const askName = (first, cur) => {
+    if (nameBox) return;
+    const d = document.createElement("div"); nameBox = d;
+    d.style.cssText = "position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.55);font-family:monospace";
+    d.innerHTML = '<form style="background:#111;border:2px solid #f2b13a;padding:18px 20px;width:min(86vw,340px);color:#f2b13a;letter-spacing:1px">' +
+      '<div style="font-size:16px;margin-bottom:6px">' + (first ? "CHOOSE YOUR DRIVER NAME" : "DRIVER NAME") + '</div>' +
+      '<div style="font-size:12px;color:#bbb;margin-bottom:12px">OTHER PLAYERS SEE IT IN ONLINE RACES</div>' +
+      '<input maxlength="12" autocomplete="off" autocapitalize="characters" spellcheck="false" style="width:100%;box-sizing:border-box;font:18px monospace;padding:8px;background:#000;color:#fff;border:1px solid #666;text-transform:uppercase">' +
+      '<div style="display:flex;gap:10px;justify-content:flex-end;margin-top:14px">' + (first ? "" : '<button type="button" data-x style="font:14px monospace;padding:6px 12px">CANCEL</button>') +
+      '<button type="submit" style="font:14px monospace;padding:6px 14px;background:#f2b13a;border:0">OK</button></div></form>';
+    document.body.appendChild(d);
+    const inp = d.querySelector("input"), close = () => { d.remove(); nameBox = null; };
+    inp.value = first ? "" : cur; setTimeout(() => inp.focus(), 30);
+    d.querySelector("form").onsubmit = (e) => { e.preventDefault(); const n = inp.value.trim(); if (!/[a-z0-9]/i.test(n)) return; fw.web_name(n); close(); };
+    const x = d.querySelector("[data-x]"); if (x) x.onclick = close;
+  };
   // build the first stage
   fallback();
   // the frame loop (the engine asks for 30 fps on slow devices)
@@ -78,6 +96,7 @@ const fallback = () => { const s = document.createElement("script"); s.type = "m
     if (ev) for (const l of ev.split("\n")) {
       if (l === "fps 30") gap = 29; else if (l === "fps 60") gap = 12.5;
       else if (l.startsWith("h ")) { const p = l.split(" "); if (p.length === 3) vib(p[1], +p[2] || 0.5); }
+      else if (l.startsWith("name ")) { const f = l[5] === "1", c = l.slice(7); setTimeout(() => askName(f, c), 0); }
       else if (l.startsWith("map ")) { const n = l.slice(4).replace(/[^a-z]/gi, ""); setTimeout(() => window.__rtBoot && window.__rtBoot(n), 0); } } };
   requestAnimationFrame(frame);
 })();

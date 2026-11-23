@@ -10,6 +10,8 @@ pub const K_HIT: u8 = 9;
 /// a bump a guest gave one of the host's AI cars: the AI car's index, then the push as in K_HIT
 pub const K_BOTHIT: u8 = 10;
 pub const BY_PLAYER: u8 = 0xFF;
+/// tile fall: the host's list of every arena tile marked to drop - (tile, when: 1/20 s after the start) each - sent again and again
+pub const K_TILES: u8 = 11;
 /// compact car state: 4-byte header (kind, sender's short id, sequence) and 23 bytes of quantised state
 pub const K_CAR2: u8 = 0xC2; pub const CAR2_LEN: usize = 27;
 /// CAR2 plus forward acceleration and vertical speed (so receivers can predict braking and jumps): 29 bytes
@@ -31,6 +33,8 @@ pub struct CarSnap {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Hello { pub host: bool, pub racing: bool, pub name: String, pub map: String, pub cands: Vec<([u8; 4], u16)>, pub car: u8,
+    /// the livery on that car (0: its own); newer builds
+    pub paint: u8,
     /// which of the brokers (bit k: BROKERS[k]) this phone is connected to; 0xFF: unknown (older builds)
     pub brokers: u8 }
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -38,7 +42,10 @@ pub struct Start { pub map: String, pub laps: u8, pub go_at: f64, pub slots: Vec
     /// AI cars, driven by the host's phone: (rival, grid slot); their index in this list is their id on the wire
     pub bots: Vec<(u8, u8)>,
     /// the AI cars run on the relay server (net::SERVER_ID), not on the host's phone
-    pub srv: bool }
+    pub srv: bool,
+    /// MODE_RACE, MODE_DUOS or MODE_TILES; duos: each player's team (slots order), then each AI car's
+    pub mode: u8, pub teams: Vec<u8>, pub bot_teams: Vec<u8> }
+pub const MODE_RACE: u8 = 0; pub const MODE_DUOS: u8 = 1; pub const MODE_TILES: u8 = 2;
 
 #[derive(Default)]
 pub struct W(pub Vec<u8>);
@@ -70,25 +77,28 @@ pub fn read_env(b: &[u8]) -> Option<(Env, R<'_>)> {
 
 pub fn hello(e: Env, h: &Hello) -> Vec<u8> {
     let mut w = W::env(e); w.u8(h.host as u8 | (h.racing as u8) << 1); w.str(&h.name); w.str(&h.map); w.u8(h.cands.len().min(4) as u8);
-    for (ip, port) in h.cands.iter().take(4) { w.0.extend_from_slice(ip); w.u16(*port); } w.u8(h.car); w.u8(h.brokers); w.0
+    for (ip, port) in h.cands.iter().take(4) { w.0.extend_from_slice(ip); w.u16(*port); } w.u8(h.car); w.u8(h.brokers); w.u8(h.paint); w.0
 }
 pub fn read_hello(r: &mut R) -> Option<Hello> {
     let f = r.u8()?; let name = r.str()?; let map = r.str()?; let n = r.u8()? as usize; let mut cands = Vec::new();
     for _ in 0..n.min(4) { let ip = r.take(4)?; let port = r.u16()?; cands.push(([ip[0], ip[1], ip[2], ip[3]], port)); }
     // the car came later: older builds stop before it (car 0)
-    let car = r.u8().unwrap_or(0); let brokers = r.u8().unwrap_or(0xFF);
-    Some(Hello { host: f & 1 != 0, racing: f & 2 != 0, name, map, cands, car, brokers })
+    let car = r.u8().unwrap_or(0); let brokers = r.u8().unwrap_or(0xFF); let paint = r.u8().unwrap_or(0);
+    Some(Hello { host: f & 1 != 0, racing: f & 2 != 0, name, map, cands, car, brokers, paint })
 }
 pub fn start(e: Env, s: &Start) -> Vec<u8> {
     let mut w = W::env(e); w.str(&s.map); w.u8(s.laps); w.f64(s.go_at); w.u8(s.slots.len().min(12) as u8); for (id, k) in s.slots.iter().take(12) { w.u32(*id); w.u8(*k); }
-    w.u8(s.bots.len().min(11) as u8); for (r, k) in s.bots.iter().take(11) { w.u8(*r); w.u8(*k); } w.u8(s.srv as u8); w.0
+    w.u8(s.bots.len().min(11) as u8); for (r, k) in s.bots.iter().take(11) { w.u8(*r); w.u8(*k); } w.u8(s.srv as u8); w.u8(s.mode); w.u8(s.teams.len().min(12) as u8); for t in s.teams.iter().take(12) { w.u8(*t); } w.u8(s.bot_teams.len().min(11) as u8); for t in s.bot_teams.iter().take(11) { w.u8(*t); } w.0
 }
 pub fn read_start(r: &mut R) -> Option<Start> {
     let map = r.str()?; let laps = r.u8()?; let go_at = r.f64()?; let n = r.u8()? as usize; let mut slots = Vec::new(); for _ in 0..n { slots.push((r.u32()?, r.u8()?)); }
     // AI cars came later: older hosts stop before them
     let mut bots = Vec::new(); if let Some(nb) = r.u8() { for _ in 0..nb { match (r.u8(), r.u8()) { (Some(a), Some(b)) => bots.push((a, b)), _ => break } } }
     let srv = r.u8() == Some(1);   // newer still: where the AI cars run
-    Some(Start { map, laps, go_at, slots, bots, srv })
+    let mode = r.u8().unwrap_or(MODE_RACE); let mut teams = Vec::new(); let mut bot_teams = Vec::new();
+    if let Some(n) = r.u8() { for _ in 0..n { if let Some(t) = r.u8() { teams.push(t); } } }
+    if let Some(n) = r.u8() { for _ in 0..n { if let Some(t) = r.u8() { bot_teams.push(t); } } }
+    Some(Start { map, laps, go_at, slots, bots, srv, mode, teams, bot_teams })
 }
 pub fn car(e: Env, c: &CarSnap) -> Vec<u8> {
     let mut w = W::env(e); w.f64(c.t);
@@ -147,6 +157,8 @@ pub fn time_pair(e: Env, a: f64, b: f64) -> Vec<u8> { let mut w = W::env(e); w.f
 pub fn hit(e: Env, d: [f32; 5], imp: f32, by: u8) -> Vec<u8> { let mut w = W::env(e); for v in d { w.f32(v); } w.f32(imp); w.u8(by); w.0 }
 /// (push, impact, which of the sender's cars did it)
 pub fn read_hit(r: &mut R) -> Option<([f32; 5], f32, u8)> { let mut d = [0f32; 5]; for v in d.iter_mut() { *v = r.f32()?; } let imp = r.f32()?; Some((d, imp, r.u8().unwrap_or(BY_PLAYER))) }
+pub fn tiles(e: Env, v: &[(u8, u16)]) -> Vec<u8> { let mut w = W::env(e); w.u16(v.len().min(400) as u16); for (k, t) in v.iter().take(400) { w.u8(*k); w.u16(*t); } w.0 }
+pub fn read_tiles(r: &mut R) -> Option<Vec<(u8, u16)>> { let n = r.u16()? as usize; let mut v = Vec::with_capacity(n); for _ in 0..n { let k = r.u8()?; v.push((k, r.u16()?)); } Some(v) }
 pub fn bot_hit(e: Env, idx: u8, d: [f32; 5], imp: f32) -> Vec<u8> { let mut w = W::env(e); w.u8(idx); for v in d { w.f32(v); } w.f32(imp); w.0 }
 pub fn read_bot_hit(r: &mut R) -> Option<(u8, [f32; 5], f32)> { let idx = r.u8()?; let mut d = [0f32; 5]; for v in d.iter_mut() { *v = r.f32()?; } Some((idx, d, r.f32()?)) }
 pub fn bare(e: Env) -> Vec<u8> { W::env(e).0 }
@@ -157,9 +169,9 @@ mod tests {
     #[test]
     fn roundtrips() {
         let e = Env { kind: K_HELLO, room: 123456, from: 0xdeadbeef, to: 0, seq: 9 };
-        let h = Hello { host: true, racing: false, name: "ADRIEN".into(), map: "lakes".into(), cands: vec![([192, 168, 1, 20], 40000), ([203, 0, 113, 9], 51234)], car: 3, brokers: 5 };
+        let h = Hello { host: true, racing: false, name: "ADRIEN".into(), map: "lakes".into(), cands: vec![([192, 168, 1, 20], 40000), ([203, 0, 113, 9], 51234)], car: 3, brokers: 5, paint: 7 };
         let b = hello(e, &h); let (e2, mut r) = read_env(&b).unwrap(); assert_eq!(e2, e); assert_eq!(read_hello(&mut r).unwrap(), h);
-        let s = Start { map: "snow".into(), laps: 3, go_at: 1234.5, slots: vec![(1, 0), (2, 1)], bots: vec![(0, 2), (3, 3)], srv: true };
+        let s = Start { map: "snow".into(), laps: 3, go_at: 1234.5, slots: vec![(1, 0), (2, 1)], bots: vec![(0, 2), (3, 3)], srv: true, mode: MODE_DUOS, teams: vec![0, 0], bot_teams: vec![1, 1] };
         let b = start(Env { kind: K_START, ..e }, &s); let (_, mut r) = read_env(&b).unwrap(); assert_eq!(read_start(&mut r).unwrap(), s);
         // an older host's start (no AI cars) still reads
         let old = { let mut b = start(Env { kind: K_START, ..e }, &Start { bots: vec![], ..s.clone() }); b.pop(); b }; let (_, mut r) = read_env(&old).unwrap(); assert!(read_start(&mut r).unwrap().bots.is_empty());

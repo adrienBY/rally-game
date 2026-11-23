@@ -12,7 +12,8 @@ pub struct River { pub pts: Vec<(f64, f64)>, pub hw: Vec<f64>, pub kc: usize, pu
 /// Ember Peak: the fireball pools (core, glow, warning ring, blast), the crater they come from, the lava rivers
 /// fireball pools: fire, solid, glow, ring, disc
 pub struct Volc { pub ims: [usize; 5], pub crater: [f64; 3], pub rivers: Vec<River>, /** the road spans (first, last road index) carried by bridges */ pub bridges: Vec<(usize, usize)> }
-pub struct RgPart { pub obj: usize, pub src: Vec<(usize, M)>, pub model: Option<usize>, pub tint: bool }
+/// `paint`: a body's paint; `liv`: drawn with that livery (0: the body's own, tinted for the AI cars)
+pub struct RgPart { pub obj: usize, pub src: Vec<(usize, M)>, pub model: Option<usize>, pub tint: bool, pub liv: usize, pub paint: bool }
 
 pub struct Rt {
     /// the packet as the page sent it (the host uploads it to the relay server for its AI cars)
@@ -41,6 +42,8 @@ pub struct Rt {
     /// prism: the deck objects that heave, and the wave sections [from, to, amplitude, wavelength, period]
     pub wave_objs: Vec<usize>, pub wave_secs: Vec<[f64; 5]>,
     pub volc: Option<Volc>,
+    /// tile fall: the instanced tile pool
+    pub tilefall: Option<usize>,
 }
 
 fn f(v: &Value) -> f64 { v.as_f64().unwrap_or(0.0) }
@@ -61,7 +64,7 @@ pub fn parse(pkt: &[u8]) -> Result<Rt, String> {
     let rg_parts = j["rg"]["parts"].as_array().cloned().unwrap_or_default().iter().filter_map(|p| {
         let obj = id(&p["obj"])?;
         let src = p["src"].as_array()?.iter().filter_map(|s| { let a = s.as_array()?; Some((a.first()?.as_u64()? as usize, from_slice(&arr(a.get(1)?)))) }).collect();
-        Some(RgPart { obj, src, model: p["model"].as_i64().filter(|m| *m >= 0).map(|m| m as usize), tint: p["tint"].as_i64() == Some(1) }) }).collect();
+        Some(RgPart { obj, src, model: p["model"].as_i64().filter(|m| *m >= 0).map(|m| m as usize), tint: p["tint"].as_i64() == Some(1), liv: p["liv"].as_u64().unwrap_or(0) as usize, paint: p["paint"].as_i64() == Some(1) }) }).collect();
     let cull = j["cull"].as_array().cloned().unwrap_or_default().iter().map(|c| { let a = c.as_array().cloned().unwrap_or_default();
         Cull { ids: a.first().and_then(|x| x.as_array()).map(|l| l.iter().filter_map(id).collect()).unwrap_or_default(),
             c: [a.get(1).map(f).unwrap_or(0.0), a.get(2).map(f).unwrap_or(0.0), a.get(3).map(f).unwrap_or(0.0)], r: a.get(4).map(f).unwrap_or(0.0), d: a.get(5).map(f).unwrap_or(0.0) } }).collect();
@@ -83,7 +86,7 @@ pub fn parse(pkt: &[u8]) -> Result<Rt, String> {
         tun: j["tun"].as_array().cloned().unwrap_or_default().iter().map(|t| { let a = arr(t); [a[0] as i64, a[1] as i64, a[2] as i64, a[3] as i64] }).collect(),
         vil: j["vil"].as_array().map(|a| (a[0].as_i64().unwrap_or(0), a[1].as_i64().unwrap_or(0))),
         obstacles: j["obstacles"].as_array().cloned().unwrap_or_default().iter().map(|o| { let a = arr(o); [a[0], a[1], a[2], a.get(3).copied().unwrap_or(0.0)] }).collect(),
-        split, nodes, objn, rg_parts, rg_shadow: id(&j["rg"]["shadow"]),
+        split, nodes, objn, rg_parts, rg_shadow: id(&j["rg"]["shadow"]), tilefall: id(&j["tilefall"]),
         shadow_obj: id(&j["car"]["shadow"]), car_models: j["car"]["models"].as_array().cloned().unwrap_or_default().iter().map(|l| l.as_array().map(|a| a.iter().filter_map(id).collect()).unwrap_or_default()).collect(), glit: j["glit"].as_array().map(|a| a.iter().filter_map(id).collect()).unwrap_or_default(), cull,
         liveries: j["car"]["liveries"].as_array().cloned().unwrap_or_default().iter().map(|l| { let ids = |k: &str| l[k].as_array().map(|a| a.iter().filter_map(id).collect()).unwrap_or_default(); (ids("paint"), ids("alt")) }).collect(),
         boats, boat_ims, snow, dust,

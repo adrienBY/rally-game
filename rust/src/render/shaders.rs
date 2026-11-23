@@ -70,6 +70,19 @@ uniform vec3 uColor; uniform float uOpacity; uniform sampler2D uMap; uniform flo
 uniform vec3 uHemiSky; uniform vec3 uHemiGround; uniform vec3 uHemiDir; uniform vec3 uDirColor; uniform vec3 uDirDir;
 uniform vec3 uFogColor; uniform float uFogDensity; uniform vec3 uCamPos; uniform vec3 uSpec; uniform float uShin; uniform vec3 uEmissive; uniform float uDim;
 uniform vec3 uSkySun; uniform vec3 uSkyGlow; uniform float uSkyHalo;
+// headlights (Ember Peak): up to 4 cars, each a lamp at its nose (uLampP) aimed along uLampD (its length is the lamp's strength)
+uniform int uLampN; uniform vec3 uLampP[4]; uniform vec3 uLampD[4]; uniform vec3 uLampC;
+float bayer4(vec2 p) { ivec2 q = ivec2(mod(p, 4.0)); int i = q.x + q.y * 4;
+  const float m[16] = float[16](0., 8., 2., 10., 12., 4., 14., 6., 3., 11., 1., 9., 15., 7., 13., 5.); return (m[i] + 0.5) / 16.0; }
+// how much of lamp i reaches world point p (a flattened cone, wide and low, that fades out by ~40 m); l = the unit ray from the lamp
+float lampAt(int i, vec3 p, out vec3 l) {
+  vec3 L = p - uLampP[i]; float d = length(L); l = L / max(d, 1e-3); float k = length(uLampD[i]); vec3 D = uLampD[i] / k;
+  float fw = dot(l, D); if (fw < 0.05) return 0.0;
+  vec3 q = l - D * fw; float qy = q.y; float qh = length(q.xz);
+  float e = length(vec2(qh / 0.62, qy / 0.3)) / fw;
+  float cone = 1.0 - smoothstep(0.5, 1.0, e) + 0.18 * (1.0 - smoothstep(1.0, 1.8, e));
+  return k * cone / (1.0 + d * d * 0.0045) * (1.0 - smoothstep(26.0, 42.0, d)) * smoothstep(0.4, 1.6, d);
+}
 in vec3 vN; in vec2 vUv; in vec3 vColor; in float vFogDepth; in vec3 vWorld;
 out vec4 fragColor;
 void main() {
@@ -92,6 +105,12 @@ void main() {
   vec3 irr = clamp(dot(N, uDirDir), 0.0, 1.0) * uDirColor;
   vec3 hemi = mix(uHemiGround, uHemiSky, 0.5 * dot(N, uHemiDir) + 0.5);
   outC = (irr + hemi) * dc.rgb * RECIPROCAL_PI * uDim + uEmissive;
+  if (uLampN > 0) {   // headlight pools, banded and Bayer-dithered so they read as pixel art
+    float acc = 0.0; vec3 l;
+    for (int i = 0; i < 4; i++) { if (i >= uLampN) break; float a = lampAt(i, vWorld, l); if (a > 0.0) acc += a * (0.3 + 0.7 * clamp(dot(N, -l), 0.0, 1.0)); }
+    float lv = floor(min(acc, 1.15) * 4.0 + bayer4(gl_FragCoord.xy)) / 4.0;
+    outC += dc.rgb * uLampC * lv;
+  }
 #if LIT == 2
   vec3 V = normalize(uCamPos - vWorld); vec3 H = normalize(uDirDir + V);
   float dNH = clamp(dot(N, H), 0.0, 1.0), dVH = clamp(dot(V, H), 0.0, 1.0);
@@ -115,6 +134,13 @@ void main() {
   // the haze takes the sky's own colour in that direction: towards the sun it glows like the sunset, so far hills melt into it
   vec3 fc = uFogColor + uSkyGlow * (pow(sunA, 6.0) + uSkyHalo * pow(sunA, 2.0) * (1.0 - smoothstep(0.0, 0.5, vd.y)));
   float f = 1.0 - exp(-uFogDensity * uFogDensity * vFogDepth * vFogDepth); outC = mix(outC, fc, f);
+  if (uLampN > 0 && uFogDensity > 0.0) {   // the beams lit up in the haze: a short dithered march along the view ray
+    vec3 rd = vWorld - uCamPos; float tl = length(rd); rd /= max(tl, 1e-3); float tm = min(tl, 44.0);
+    float b = bayer4(gl_FragCoord.xy), sc = 0.0; vec3 l;
+    for (int s = 0; s < 6; s++) { vec3 p = uCamPos + rd * ((float(s) + b) / 6.0 * tm); for (int i = 0; i < 4; i++) { if (i >= uLampN) break; sc += lampAt(i, p, l); } }
+    sc *= tm / 6.0 * 0.014; float sv = floor(min(sc, 0.8) * 5.0 + bayer4(gl_FragCoord.xy + vec2(2.0, 1.0))) / 5.0;
+    outC += uLampC * sv * 0.55;
+  }
 #endif
   fragColor = vec4(outC, a);
 }

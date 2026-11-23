@@ -51,7 +51,9 @@ struct GpuScene {
 }
 #[derive(Clone, Copy, Default)]
 pub struct FrameState { pub lw: i32, pub lh: i32, pub view: M4, pub proj: M4, pub cam: [f32; 3], pub time: f32, pub wind: f32, pub sun: [f32; 2],
-    pub sun_vis: f32, pub flash: f32, pub speed: f32, pub dust_scale: f32, pub expo: f32, pub dim: f32, pub split_s: [f32; 3], pub split_h: [f32; 3], pub texel: [f32; 2], pub valid: bool }
+    pub sun_vis: f32, pub flash: f32, pub speed: f32, pub dust_scale: f32, pub expo: f32, pub dim: f32, pub split_s: [f32; 3], pub split_h: [f32; 3], pub texel: [f32; 2], pub valid: bool,
+    /// headlights: how many lamps (0 = none), their positions and aims (the aim's length is the strength), their colour
+    pub lamp_n: i32, pub lamp_p: [f32; 12], pub lamp_d: [f32; 12], pub lamp_c: [f32; 3] }
 
 struct Program { prog: glow::Program, loc: Vec<Option<glow::UniformLocation>> }
 impl Program {
@@ -91,9 +93,9 @@ pub struct Renderer {
     tq_free: Vec<(glow::Query, glow::Query)>, tq_pending: std::collections::VecDeque<(glow::Query, glow::Query, u64)>, tq_cur: Option<(glow::Query, glow::Query)>, tq_made: usize, tq_post: bool,
 }
 
-const UNIFORMS: [&str; 53] = ["uModel", "uView", "uProj", "uNormalM", "uMapM", "uTime", "uWind", "uColor", "uOpacity", "uMap", "uAlphaTest", "uHemiSky",
+const UNIFORMS: [&str; 57] = ["uModel", "uView", "uProj", "uNormalM", "uMapM", "uTime", "uWind", "uColor", "uOpacity", "uMap", "uAlphaTest", "uHemiSky",
     "uHemiGround", "uHemiDir", "uDirColor", "uDirDir", "uFogColor", "uFogDensity", "uCamPos", "uSpec", "uShin", "uEmissive", "uSun", "uFog", "uTop", "uGlow",
-    "uHalo", "uSize", "uScale", "uDens", "uCol", "tScene", "uSunVis", "uFlash", "uSpeed", "uExpo", "uDim", "uSplitS", "uSplitH", "uTexel", "tHud", "uHudOn", "uSkySun", "uSkyGlow", "uSkyHalo", "tMask", "tRay", "uRayOn", "uSrc", "uZoom", "tDust", "tSharp", "uDensScale"];
+    "uHalo", "uSize", "uScale", "uDens", "uCol", "tScene", "uSunVis", "uFlash", "uSpeed", "uExpo", "uDim", "uSplitS", "uSplitH", "uTexel", "tHud", "uHudOn", "uSkySun", "uSkyGlow", "uSkyHalo", "tMask", "tRay", "uRayOn", "uSrc", "uZoom", "tDust", "tSharp", "uDensScale", "uLampN", "uLampP", "uLampD", "uLampC"];
 
 unsafe fn compile(gl: &Gl, vs: &str, fs: &str) -> Result<Program, String> {
     let p = gl.create_program()?;
@@ -588,6 +590,7 @@ impl Renderer {
                     gl.uniform_3_f32_slice(u(U!("uDirColor")), &s.dir.0); gl.uniform_3_f32_slice(u(U!("uDirDir")), &s.dir.1);
                     gl.uniform_3_f32_slice(u(U!("uFogColor")), &s.fog_c); gl.uniform_3_f32_slice(u(U!("uCamPos")), &fr.cam); gl.uniform_1_i32(u(U!("uMap")), 0);
                     gl.uniform_3_f32_slice(u(U!("uSkySun")), &s.sky.0); gl.uniform_3_f32_slice(u(U!("uSkyGlow")), &s.sky.1); gl.uniform_1_f32(u(U!("uSkyHalo")), s.sky.2);
+                    gl.uniform_1_i32(u(U!("uLampN")), fr.lamp_n); if fr.lamp_n > 0 { gl.uniform_3_f32_slice(u(U!("uLampP")), &fr.lamp_p); gl.uniform_3_f32_slice(u(U!("uLampD")), &fr.lamp_d); gl.uniform_3_f32_slice(u(U!("uLampC")), &fr.lamp_c); }
                 } else if m.kind == MatKind::Points { gl.uniform_3_f32_slice(u(U!("uFogColor")), &s.fog_c); }
                 else if m.kind == MatKind::Dust { gl.uniform_1_f32(u(U!("uScale")), fr.dust_scale); gl.uniform_2_f32(u(U!("uSun")), fr.sun[0], fr.sun[1]);
                     // puffs are lit like the rest of the scene (sky/ground hemisphere and the sun)

@@ -9,9 +9,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 struct Inbox { scene: Option<Vec<u8>>, rt: Option<Vec<u8>>, frames: Vec<Vec<u8>>, had_scene: bool, size: (i32, i32), status: String,
-    touches: Vec<(i32, i32, f32, f32)>, back: bool, insets: [f32; 4], save_path: String, thermal: (i32, f32), device: String, bench: bool }
+    touches: Vec<(i32, i32, f32, f32)>, back: bool, insets: [f32; 4], save_path: String, thermal: (i32, f32), device: String, bench: bool, name: Option<String> }
 static INBOX: Mutex<Inbox> = Mutex::new(Inbox { scene: None, rt: None, frames: Vec::new(), had_scene: false, size: (1, 1), status: String::new(),
-    touches: Vec::new(), back: false, insets: [0.0; 4], save_path: String::new(), thermal: (-1, 0.0), device: String::new(), bench: false });
+    touches: Vec::new(), back: false, insets: [0.0; 4], save_path: String::new(), thermal: (-1, 0.0), device: String::new(), bench: false, name: None });
 static DRIVING: AtomicBool = AtomicBool::new(false);
 thread_local! {
     static B: RefCell<Option<Bench>> = const { RefCell::new(None) };
@@ -77,6 +77,8 @@ pub fn rt_init(save_path: &str) -> String {
 /// pointer events in screen pixels: 0 down, 1 move, 2 up / cancel
 pub fn rt_touch(action: i32, id: i32, x: f32, y: f32) { inbox().touches.push((action, id, x, y)); }
 /// Android back: true when the game uses it (driving -> menu); false lets the app close
+/// the driver name typed on the phone's own keyboard (answer to the game's "name" event)
+pub fn rt_name(s: &str) { inbox().name = Some(s.to_string()); }
 pub fn rt_back() -> bool { if DRIVING.load(Ordering::Relaxed) { inbox().back = true; true } else { false } }
 /// display cutout / system bar insets in screen pixels (top, right, bottom, left)
 pub fn rt_insets(t: f32, r: f32, b: f32, l: f32) { inbox().insets = [t, r, b, l]; }
@@ -177,6 +179,7 @@ pub fn rt_frame(dt: f64) -> String {
                     g.resize(size.0 as f64, size.1 as f64, [insets[0] as f64, insets[1] as f64, insets[2] as f64, insets[3] as f64]); }
                 for (a, id, x, y) in touches { g.touch(a, id, x as f64, y as f64); }
                 if back { g.back(); }
+                if let Some(n) = inbox().name.take() { g.set_name(&n); }
                 let t_tick = web_time::Instant::now();
                 g.tick(r, dt.clamp(0.0, 0.05));
                 let tick_ms = t_tick.elapsed().as_secs_f32() * 1000.0;

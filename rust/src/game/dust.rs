@@ -459,7 +459,7 @@ mod tests {
     }
     #[test]
     fn grit_falls_dust_spreads() {
-        let n = 64; let w = crate::world::World { map: crate::world::Map::Forest, wave: Default::default(), wave_t: Default::default(), bridge: Default::default(), gxh: 32, gzh: 32, gnx: n, gnz: n, pd: vec![0.0; n * n], pi: vec![0; n * n], h: vec![0.0; n * n] };
+        let n = 64; let w = crate::world::World { map: crate::world::Map::Forest, wave: Default::default(), wave_t: Default::default(), bridge: Default::default(), arena: Default::default(), arena_on: Default::default(), gxh: 32, gzh: 32, gnx: n, gnz: n, pd: vec![0.0; n * n], pi: vec![0; n * n], h: vec![0.0; n * n] };
         let mut d = Dust::new(16, 7);
         d.emit(GRIT, [0.0, 0.5, 0.0], [5.0, 3.0, 0.0], 0.1, 2.0, 1.0, 0.5, 0.0, 0.0);
         d.emit(DUST, [0.0, 0.5, 0.0], [0.0, 1.0, 0.0], 0.5, 2.0, 0.4, 1.0, 0.0, 0.0);
@@ -479,7 +479,7 @@ mod tests {
     }
     #[test]
     fn a_passing_car_leaves_swirl_behind() {
-        let n = 64; let w = crate::world::World { map: crate::world::Map::Forest, wave: Default::default(), wave_t: Default::default(), bridge: Default::default(), gxh: 32, gzh: 32, gnx: n, gnz: n, pd: vec![0.0; n * n], pi: vec![0; n * n], h: vec![0.0; n * n] };
+        let n = 64; let w = crate::world::World { map: crate::world::Map::Forest, wave: Default::default(), wave_t: Default::default(), bridge: Default::default(), arena: Default::default(), arena_on: Default::default(), gxh: 32, gzh: 32, gnx: n, gnz: n, pd: vec![0.0; n * n], pi: vec![0; n * n], h: vec![0.0; n * n] };
         // a car drives past at 25 m/s for 0.6 s and is gone; a second later dust put next to its path is still being turned
         let run = |car: bool| { let mut d = Dust::new(8, 11);
             for k in 0..36 { let z = -10.0 + 25.0 * k as f32 / 60.0;

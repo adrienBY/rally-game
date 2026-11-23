@@ -16,6 +16,8 @@ pub fn hud(gm: &mut Game) {
     let mut ui: Vec<(&'static str, Rect)> = Vec::new();
     let km_total = gm.stage_km();
     let res = if gm.race.on && gm.race.phase == Phase::Done && gm.race.done_t > 1.2 { race::results(gm) } else { Vec::new() };
+    let tr = if !res.is_empty() && gm.race.duos { race::team_results(gm) } else { Vec::new() };
+    let tfr = if !res.is_empty() && gm.tf.on { super::tilefall::results(gm) } else { Vec::new() };
     for k in super::online::KEYS { gm.ui.remove(k); } for k in super::menu::KEYS { gm.ui.remove(k); } gm.ui.remove("garage");
     if gm.ps.online_ui != super::online::OnlineUi::Closed || gm.gar.open { for k in ["mapF", "mapS", "mapC", "mapL", "mapT", "mapR", "mapP", "mapE", "mode"] { gm.ui.remove(k); } }
     let g = &mut gm.hud; g.clear();
@@ -63,19 +65,23 @@ pub fn hud(gm: &mut Game) {
     for (n, (k, v)) in lines.iter().enumerate() { let y = pt + (4.0 + n as f64 * 9.0) * u; g.tx(k, pl + 4.0 * u, y, u, rgba(233, 236, 226, 0.65));
         g.tx(v, pl + pw - 4.0 * u - text_w(v, u), y, u, if race_on { if n == 0 { AMBER } else { INK } } else if n == 1 { AMBER } else { INK }); }
     let css = |r: Option<usize>| match r { None => hex(0xece8dc), Some(i) => rgb_of(RIVALS[i].col) };
+    let duos = gm.race.duos;
+    // a car's swatch: its duo's colour in duos, else its own
+    let ccol = |c: &race::RCar| match c.team.filter(|_| duos) { Some(t) => { let k = race::TEAM_COLS[(t as usize).min(5)]; rgba((k[0] * 255.0) as u8, (k[1] * 255.0) as u8, (k[2] * 255.0) as u8, 1.0) } None => css(c.r) };
     if race_on {
         let mut y = pt + ph + 3.0 * u; let rw = 66.0 * u; let pp = gm.race.cars[gm.race.player].prog; let pv = gm.race.cars[gm.race.player].v;
         let order: Vec<usize> = if gm.race.order.is_empty() { (0..gm.race.cars.len()).collect() } else { gm.race.order.clone() };
         for (n, &k) in order.iter().enumerate() { let c = &gm.race.cars[k]; let me = c.is_player();
             g.panel(pl, y, rw, 9.0 * u, u, if me { rgba(243, 207, 98, 0.3) } else { rgba(8, 12, 8, 0.5) }, if me { Some(AMBER) } else { None });
-            g.rect_c(pl + 3.0 * u, y + 2.0 * u, 3.0 * u, 5.0 * u, css(c.r));
+            g.rect_c(pl + 3.0 * u, y + 2.0 * u, 3.0 * u, 5.0 * u, ccol(c));
             g.tx(&format!("{} {}", n + 1, if me { "YOU".to_string() } else { c.tag() }), pl + 8.0 * u, y + u, u, if me { AMBER } else if c.left && !c.finished { rgba(233, 236, 226, 0.45) } else { INK });
-            if c.left && !c.finished { let lab = "OUT"; g.text(lab, pl + rw - 3.0 * u - text_w(lab, u), y + u, u, rgba(233, 236, 226, 0.6), None); }
+            if gm.tf.on { if !gm.tf.alive(k) { let lab = "OUT"; g.text(lab, pl + rw - 3.0 * u - text_w(lab, u), y + u, u, RED, None); } }
+            else if c.left && !c.finished { let lab = "OUT"; g.text(lab, pl + rw - 3.0 * u - text_w(lab, u), y + u, u, rgba(233, 236, 226, 0.6), None); }
             else if !me && gm.race.phase != Phase::Grid { let gs = (c.prog - pp) / ((c.v + pv) / 2.0).max(12.0);
                 if gs.abs() < 99.0 { let lab = format!("{}{:.1}", if gs > 0.0 { "-" } else { "+" }, gs.abs()); g.text(&lab, pl + rw - 3.0 * u - text_w(&lab, u), y + u, u, rgba(233, 236, 226, 0.7), None); } }
             y += 10.0 * u; }
         for c in &gm.race.cars { if c.is_player() || !c.tag_on { continue; } let tag = c.tag(); let tag = tag.as_str(); let w = text_w(tag, u) + 4.0 * u; let x = js_round(c.tag_x - w / 2.0); let ty = js_round(c.tag_y - 9.0 * u);
-            g.panel(x, ty, w, 9.0 * u, u, rgba(8, 12, 8, 0.55), None); g.rect_c(x, ty + 8.0 * u, w, u, css(c.r)); g.text(tag, x + 2.0 * u, ty + u, u, INK, None); }
+            g.panel(x, ty, w, 9.0 * u, u, rgba(8, 12, 8, 0.55), None); g.rect_c(x, ty + 8.0 * u, w, u, ccol(c)); g.text(tag, x + 2.0 * u, ty + u, u, INK, None); }
     }
     // speedo
     let r = 26.0 * u; let (cx, cy) = (js_round(lw / 2.0), js_round(lh - pb - 3.0 * u)); let rpm_s = gm.rpm_shown;
@@ -115,7 +121,39 @@ pub fn hud(gm: &mut Game) {
     else if gm.wrong_t > 1.0 { m = if ((now / 300.0) as i64) % 2 == 1 { "WRONG WAY".into() } else { String::new() }; mc = RED; }
     else if gm.msg_t > 0.0 { m = gm.msg.clone(); mc = AMBER; }
     if !m.is_empty() { let sc = 2.0 * u; g.tx(&m, (lw - text_w(&m, sc)) / 2.0, lh * 0.3, sc, mc); }
-    if race_on && gm.race.phase == Phase::Done && gm.race.done_t > 1.2 {
+    if race_on && gm.race.phase == Phase::Done && gm.race.done_t > 1.2 && !tfr.is_empty() {
+        // tile fall: the last car standing, then the others by how long they lasted
+        let rw = (lw - 16.0 * u).min(196.0 * u); let rh = (tfr.len() as f64 * 10.0 + 46.0) * u; let (rx, ry) = (js_round((lw - rw) / 2.0), js_round((lh - rh) / 2.0));
+        g.panel(rx, ry, rw, rh, u, rgba(8, 12, 8, 0.86), Some(AMBER)); g.tx("TILE FALL", rx + (rw - text_w("TILE FALL", u)) / 2.0, ry + 4.0 * u, u, AMBER);
+        g.text("LASTED", rx + rw - 6.0 * u - text_w("LASTED", u), ry + 14.0 * u, u, rgba(233, 236, 226, 0.55), None);
+        for (n, (k, out)) in tfr.iter().enumerate() { let c = &gm.race.cars[*k]; let y = ry + (24.0 + n as f64 * 10.0) * u; let me = c.is_player();
+            if me { g.rect_c(rx + 2.0 * u, y - u, rw - 4.0 * u, 9.0 * u, rgba(243, 207, 98, 0.18)); }
+            g.rect_c(rx + 6.0 * u, y, 3.0 * u, 6.0 * u, ccol(c));
+            let name = if me { "YOU".to_string() } else { c.full_name() };
+            g.tx(&format!("{}  {}", n + 1, name), rx + 12.0 * u, y, u, if me { AMBER } else { INK });
+            let tm = match out { None => "LAST STANDING".to_string(), Some(t) => fmt(Some(*t)) }; g.text(&tm, rx + rw - 6.0 * u - text_w(&tm, u), y, u, if out.is_none() { AMBER } else { INK }, None); }
+        let tc = "TAP TO CONTINUE"; if ((now / 500.0) as i64) % 2 == 0 { g.text(tc, rx + (rw - text_w(tc, u)) / 2.0, ry + rh - 10.0 * u, u, INK, None); }
+    } else if race_on && gm.race.phase == Phase::Done && gm.race.done_t > 1.2 && gm.race.duos {
+        // duos: each team ranked by its members' average time, the members listed under it
+        let rows: usize = tr.iter().map(|t| 1 + t.1.len()).sum();
+        let rw = (lw - 16.0 * u).min(196.0 * u); let rh = (rows.max(1) as f64 * 9.0 + 46.0) * u; let (rx, ry) = (js_round((lw - rw) / 2.0), js_round((lh - rh) / 2.0));
+        g.panel(rx, ry, rw, rh, u, rgba(8, 12, 8, 0.86), Some(AMBER)); g.tx("DUOS RESULT", rx + (rw - text_w("DUOS RESULT", u)) / 2.0, ry + 4.0 * u, u, AMBER);
+        g.text("AVERAGE", rx + rw - 6.0 * u - text_w("AVERAGE", u), ry + 14.0 * u, u, rgba(233, 236, 226, 0.55), None);
+        let w0 = tr.first().map(|t| t.2).unwrap_or(0.0); let mut y = ry + 24.0 * u;
+        for (n, (tm, ks, avg, done)) in tr.iter().enumerate() {
+            let mine = ks.iter().any(|k| gm.race.cars[*k].is_player()); let col = race::TEAM_COLS[(*tm as usize).min(5)];
+            if mine { g.rect_c(rx + 2.0 * u, y - u, rw - 4.0 * u, (9.0 + 9.0 * ks.len() as f64) * u, rgba(243, 207, 98, 0.14)); }
+            g.rect_c(rx + 6.0 * u, y, 3.0 * u, 6.0 * u, rgba((col[0] * 255.0) as u8, (col[1] * 255.0) as u8, (col[2] * 255.0) as u8, 1.0));
+            g.tx(&format!("{}  {} DUO", n + 1, race::TEAM_NAMES[(*tm as usize).min(5)]), rx + 12.0 * u, y, u, if n == 0 { AMBER } else { INK });
+            let t = if n == 0 { fmt(Some(*avg)) } else { format!("+{:.2}", avg - w0) } + if *done { "" } else { "*" }; g.text(&t, rx + rw - 6.0 * u - text_w(&t, u), y, u, INK, None);
+            y += 9.0 * u;
+            for k in ks { let c = &gm.race.cars[*k]; let me = c.is_player(); let name = if me { "YOU".to_string() } else { c.full_name() };
+                g.text(&name, rx + 22.0 * u, y, u, if me { AMBER } else { rgba(233, 236, 226, 0.7) }, None);
+                let tt = res.iter().find(|r| r.0 == *k).map(|r| if c.left && !r.2 { "OUT".to_string() } else { fmt(Some(r.1)) + if r.2 { "" } else { "*" } }).unwrap_or_default();
+                g.text(&tt, rx + rw - 6.0 * u - text_w(&tt, u), y, u, rgba(233, 236, 226, 0.7), None); y += 9.0 * u; }
+        }
+        let tc = "TAP TO CONTINUE"; if ((now / 500.0) as i64) % 2 == 0 { g.text(tc, rx + (rw - text_w(tc, u)) / 2.0, ry + rh - 10.0 * u, u, INK, None); }
+    } else if race_on && gm.race.phase == Phase::Done && gm.race.done_t > 1.2 {
         let w0 = res[0].1; let rw = (lw - 16.0 * u).min(196.0 * u); let rh = (res.len() as f64 * 10.0 + 46.0) * u; let (rx, ry) = (js_round((lw - rw) / 2.0), js_round((lh - rh) / 2.0));
         g.panel(rx, ry, rw, rh, u, rgba(8, 12, 8, 0.86), Some(AMBER)); g.tx("RACE RESULT", rx + (rw - text_w("RACE RESULT", u)) / 2.0, ry + 4.0 * u, u, AMBER);
         g.text("BEST LAP", rx + rw - 6.0 * u - text_w("BEST LAP", u), ry + 14.0 * u, u, rgba(233, 236, 226, 0.55), None);

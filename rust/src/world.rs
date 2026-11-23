@@ -20,12 +20,27 @@ pub const PRISM_VOID: f64 = -400.0;
 /// Lakes: water level
 pub const WL: f64 = -4.5;
 
+/// tile fall: an n x n grid of square tiles of side `s` from corner (x0, z0), their top at `y`; which are still there
+#[derive(Clone, Debug, Default)]
+pub struct Arena { pub x0: f64, pub z0: f64, pub y: f64, pub s: f64, pub n: usize, pub solid: Vec<bool> }
+impl Arena {
+    /// the tile under (x, z), if inside the arena
+    pub fn cell(&self, x: f64, z: f64) -> Option<usize> {
+        let i = ((x - self.x0) / self.s).floor(); let j = ((z - self.z0) / self.s).floor();
+        if i < 0.0 || j < 0.0 || i >= self.n as f64 || j >= self.n as f64 { None } else { Some(j as usize * self.n + i as usize) }
+    }
+    pub fn solid_at(&self, x: f64, z: f64) -> bool { self.cell(x, z).map(|k| self.solid.get(k).copied().unwrap_or(false)).unwrap_or(false) }
+    pub fn centre(&self, k: usize) -> (f64, f64) { (self.x0 + ((k % self.n) as f64 + 0.5) * self.s, self.z0 + ((k / self.n) as f64 + 0.5) * self.s) }
+}
+
 pub struct World {
     pub map: Map,
     /// prism: the deck's live waves (set once the game has the stage) and the clock they run on
     pub wave: std::sync::OnceLock<Wave>, pub wave_t: std::sync::atomic::AtomicU64,
     /// ember peak: the bridges over the lava canyons (set once the game has the stage)
     pub bridge: std::sync::OnceLock<Bridges>,
+    /// tile fall (online mode): the arena floating over the stage, while a round is on (its tiles drop away as cars cross them)
+    pub arena: std::sync::RwLock<Option<Arena>>, pub arena_on: std::sync::atomic::AtomicBool,
     pub gxh: i32, pub gzh: i32, pub gnx: usize, pub gnz: usize,
     pub pd: Vec<f32>, pub pi: Vec<i16>, pub h: Vec<f32>,
 }
@@ -188,7 +203,7 @@ pub fn build(map: Map, path: &[(f64, f64)], roadh: &[f64], gxh: i32, gzh: i32) -
             row[i] = hv as f32;
         } });
     }
-    World { map, wave: Default::default(), wave_t: Default::default(), bridge: Default::default(), gxh, gzh, gnx, gnz, pd, pi, h }
+    World { map, wave: Default::default(), wave_t: Default::default(), bridge: Default::default(), arena: Default::default(), arena_on: Default::default(), gxh, gzh, gnx, gnz, pd, pi, h }
 }
 
 /// Unit tangent of the centreline at `i` (from the points 2 m either side), as the page computes TAN.
@@ -246,10 +261,17 @@ impl World {
     }
     /// ground height. Prism: the deck itself, exact to its drawn edge, and nothing beyond it (no grid slope to trip a wheel at the edge)
     #[inline] pub fn height(&self, x: f64, z: f64) -> f64 {
+        if self.arena_on.load(std::sync::atomic::Ordering::Relaxed) { if let Some(h) = self.arena_height(x, z) { return h; } }
         if self.map == Map::Prism { if let Some(h) = self.prism_height(x, z) { return h; } }
         if self.map == Map::Ember { if let Some((h, _)) = self.bridge_deck(x, z) { return h; } }
         self.bil(&self.h, x, z)
     }
+    /// tile fall: the arena's top over a tile still there, the void over a hole or past the edge (None when no round is on)
+    pub fn arena_height(&self, x: f64, z: f64) -> Option<f64> {
+        let g = self.arena.read().ok()?; let a = g.as_ref()?; Some(if a.solid_at(x, z) { a.y } else { PRISM_VOID })
+    }
+    pub fn arena_top(&self) -> Option<f64> { self.arena.read().ok()?.as_ref().map(|a| a.y) }
+    pub fn tiles(&self) -> bool { self.arena_on.load(std::sync::atomic::Ordering::Relaxed) }
     /// ember peak: on a bridge's road span? Then the deck height there (exact to its edge) and how far off the centre line
     pub fn bridge_deck(&self, x: f64, z: f64) -> Option<(f64, f64)> {
         let b = self.bridge.get()?; let k = self.bridge_k(b, x, z)?; let np = b.path.len(); let (px, pz) = b.path[k]; let (tx, tz) = b.tan[k];

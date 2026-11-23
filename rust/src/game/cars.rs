@@ -27,7 +27,11 @@ pub const CARS: [CarSpec; 5] = [
 ];
 
 /// the liveries every car can wear (garage), in the order the page builds them: 0 is each car's own
-pub const LIVERIES: [&str; 8] = ["ORIGINAL", "BOLT", "CHECKER", "INFERNO", "CAMO", "SPLIT", "FADE", "GULF"];
+/// the garage's liveries (0: the car's own); the page builds them in this order, then the duo team liveries after them
+pub const LIVERIES: [&str; 16] = ["ORIGINAL", "BOLT", "CHECKER", "INFERNO", "CAMO", "SPLIT", "FADE", "GULF", "ZEBRA", "SUNSET", "CHEVRON", "DOTS", "CARBON", "NEON", "PIXEL", "TRICOLORE"];
+/// duos: team k drives livery TEAM_LIVERY0 + k
+pub const TEAM_LIVERY0: usize = LIVERIES.len();
+pub const TEAMS: usize = 6;
 
 /// the stage tune with car k's character
 pub fn tune_for(base: &Tune, k: usize) -> Tune {

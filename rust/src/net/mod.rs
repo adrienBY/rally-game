@@ -49,7 +49,7 @@ pub fn bot_of(id: u32) -> Option<u8> { if id & !0xFF == BOT_ID { Some((id & 0xFF
 pub enum Link { Connecting, Relay, Direct }
 
 pub struct Peer {
-    pub id: u32, pub name: String, pub map: String, pub host: bool, pub racing: bool, pub first_seen: f64, pub last_seen: f64, pub car: u8,
+    pub id: u32, pub name: String, pub map: String, pub host: bool, pub racing: bool, pub first_seen: f64, pub last_seen: f64, pub car: u8, pub paint: u8,
     cands: Vec<SocketAddr>, punch_from: f64, last_probe: f64, pub direct: Option<SocketAddr>, last_udp: f64,
     seen: VecDeque<u32>, pub rtt: f64, last_tx: f64,
     /// this peer's car as shown here, and the sequence number of the newest state from them
@@ -92,12 +92,14 @@ pub struct Session {
     stamp: smooth::ViewClock,
     start_out: Option<(Start, f64)>, pub start_in: Option<Start>, last_start_go: f64,
     pub map: String, pub racing: bool, no_direct: bool,
-    /// the car we drive (shown on the other phones)
-    pub car: u8,
+    /// the car we drive and its livery (shown on the other phones)
+    pub car: u8, pub paint: u8,
     /// bumps other phones gave our car, waiting for the game to apply them (sender, which of their cars, push, impact)
     pub hits_in: Vec<(u32, u8, [f32; 5], f32)>,
     /// this race's AI cars: on a guest, the host's as they arrive; on the host, ours going out; and the bumps guests gave
     /// ours (sender, AI car, push, impact)
+    /// tile fall: the marks the host sends (the game fills it), and the latest list a guest heard (the game takes it)
+    pub tiles_out: Vec<(u8, u16)>, pub tiles_in: Option<Vec<(u8, u16)>>, tiles_tx: f64, tiles_sent: usize,
     pub bots: HashMap<u8, BotIn>, bots_out: Vec<BotOut>, pub race_bots: usize, pub bot_hits_in: Vec<(u32, u8, [f32; 5], f32)>,
     /// when the current race began (our clock)
     race_t0: f64,
@@ -163,7 +165,7 @@ fn open(code: u32, name: &str, map: &str, is_host: bool) {
     let stun_done = stun.is_none();
     let s = Session { code, me, name: name.to_string(), is_host, t0: Instant::now(), seq: 0, brokers, inbox, topic, sock, stun, public: None, local, stun_done,
         peers: HashMap::new(), host_id: if is_host { Some(me) } else { None }, offset: 0.0, offset_target: 0.0, best_rtt: 9.0, last_ping: -9.0, pings: HashMap::new(),
-        last_hello: -9.0, last_start_tx: -9.0, policy: Default::default(), car_seq: 0, view: Default::default(), frame_dt: 0.0, stamp: Default::default(), pong_n: 0, start_out: None, start_in: None, last_start_go: -1.0, map: map.to_string(), racing: false, car: 0, hits_in: Vec::new(), bots: HashMap::new(), bots_out: Vec::new(), race_bots: 0, bot_hits_in: Vec::new(), race_t0: 0.0, no_direct: std::env::var("FW_NODIRECT").is_ok(), traffic: Default::default(), packets: Default::default(),
+        last_hello: -9.0, last_start_tx: -9.0, policy: Default::default(), car_seq: 0, view: Default::default(), frame_dt: 0.0, stamp: Default::default(), pong_n: 0, start_out: None, start_in: None, last_start_go: -1.0, map: map.to_string(), racing: false, car: 0, paint: 0, hits_in: Vec::new(), bots: HashMap::new(), bots_out: Vec::new(), race_bots: 0, bot_hits_in: Vec::new(), tiles_out: Vec::new(), tiles_in: None, tiles_tx: -9.0, tiles_sent: 0, race_t0: 0.0, no_direct: std::env::var("FW_NODIRECT").is_ok(), traffic: Default::default(), packets: Default::default(),
         lag: std::env::var("FW_LAG").ok().and_then(|v| { let q: Vec<f64> = v.split(',').filter_map(|x| x.parse().ok()).collect(); if q.len() == 2 { Some([q[0], q[1]]) } else { None } }).unwrap_or([0.0, 0.0]), held: VecDeque::new(), held_last: 0.0,
         cut: std::env::var("FW_CUT").ok().and_then(|v| { let q: Vec<f64> = v.split(',').filter_map(|x| x.parse().ok()).collect(); if q.len() == 2 { Some([q[0], q[1]]) } else { None } }),
         loss: std::env::var("FW_LOSS").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0),
@@ -184,7 +186,7 @@ impl Session {
     fn env(&mut self, kind: u8, to: u32) -> Env { self.seq = self.seq.wrapping_add(1); Env { kind, room: self.code, from: self.me, to, seq: self.seq } }
     fn hello_msg(&mut self) -> Vec<u8> {
         let mut cands = Vec::new(); for a in [self.local, self.public].into_iter().flatten() { cands.push((a.ip().octets(), a.port())); }
-        let h = Hello { host: self.is_host, racing: self.racing, name: self.name.clone(), map: self.map.clone(), cands, car: self.car, brokers: self.broker_mask() }; let e = self.env(K_HELLO, 0); hello(e, &h)
+        let h = Hello { host: self.is_host, racing: self.racing, name: self.name.clone(), map: self.map.clone(), cands, car: self.car, paint: self.paint, brokers: self.broker_mask() }; let e = self.env(K_HELLO, 0); hello(e, &h)
     }
     fn count(&self, k: usize, bytes: u64) { let mut t = self.traffic.get(); t[k] += bytes; self.traffic.set(t); let mut p = self.packets.get(); p[k] += 1; self.packets.set(p); }
     fn mqtt_bytes(&self, payload: usize) -> u64 { (payload + self.topic.len() + 4) as u64 + TCP_OVERHEAD }
@@ -279,6 +281,10 @@ impl Session {
             let due: Vec<(u8, [f32; 5], f32)> = self.bots.iter_mut().filter(|(_, b)| b.hit_acc.is_some() && now - b.hit_tx >= 0.06)
                 .map(|(k, b)| { b.hit_tx = now; let (d, imp) = b.hit_acc.take().unwrap(); (*k, d, imp) }).collect();
             for (k, d, imp) in due { let e = self.env(K_BOTHIT, h); let b = bot_hit(e, k, d, imp); self.send_to(h, &b); } }
+        // tile fall: the host repeats the whole list of marked tiles (at once when it grew, else every 0.25 s)
+        if self.is_host && self.racing && !self.tiles_out.is_empty() && (self.tiles_out.len() != self.tiles_sent || now - self.tiles_tx > 0.25) {
+            self.tiles_tx = now; self.tiles_sent = self.tiles_out.len(); let ids: Vec<u32> = self.peers.keys().copied().collect(); let list = self.tiles_out.clone();
+            for id in ids { let e = self.env(K_TILES, id); let b = tiles(e, &list); self.send_to(id, &b); } }
         // clock: guests ping the host
         if !self.is_host { if let Some(h) = self.host_id { if now - self.last_ping > if self.pong_n < 6 { 0.3 } else { 5.0 } { self.last_ping = now;
             let e = self.env(K_PING, h); self.pings.insert(e.seq, now); let b = time_pair(e, now, 0.0); self.send_to(h, &b); if self.pings.len() > 32 { self.pings.clear(); } } } }
@@ -298,7 +304,7 @@ impl Session {
             K_PING => { if self.is_host { if let Some(t) = r.f64() { let o = self.env(K_PONG, SERVER_ID); let b = time_pair(Env { seq: e.seq, ..o }, t, now); self.send_to(SERVER_ID, &b); } } }
             K_HIT => { if let Some((d, imp, by)) = read_hit(&mut r) { if self.hits_in.len() < 64 { self.hits_in.push((SERVER_ID, by, d, imp)); } } }
             _ => {} } return; }
-        let p = self.peers.entry(e.from).or_insert_with(|| Peer { id: e.from, name: "?".into(), map: String::new(), host: false, racing: false, first_seen: now, last_seen: now, car: 0,
+        let p = self.peers.entry(e.from).or_insert_with(|| Peer { id: e.from, name: "?".into(), map: String::new(), host: false, racing: false, first_seen: now, last_seen: now, car: 0, paint: 0,
             cands: Vec::new(), punch_from: now, last_probe: -9.0, direct: None, last_udp: -9.0, seen: VecDeque::new(), rtt: -1.0, last_tx: -9.0, track: Default::default(), last_seq: 0, brokers: 0xFF, via_relay: -99.0, hit_acc: Vec::new(), hit_tx: -9.0, mirror_until: -9.0 });
         p.last_seen = now;
         if let Some(a) = from { p.last_udp = now; if e.kind == K_PROBE || e.kind == K_PROBE_ACK { if p.direct != Some(a) { p.direct = Some(a); } } }
@@ -308,7 +314,7 @@ impl Session {
             K_HELLO => { if let Some(h) = read_hello(&mut r) {
                 let cands: Vec<SocketAddr> = h.cands.iter().map(|(ip, port)| SocketAddr::V4(SocketAddrV4::new((*ip).into(), *port))).collect();
                 if cands != p.cands { p.cands = cands; p.punch_from = now; }
-                p.name = h.name; p.map = h.map; p.host = h.host; p.racing = h.racing; p.car = h.car; p.brokers = h.brokers;
+                p.name = h.name; p.map = h.map; p.host = h.host; p.racing = h.racing; p.car = h.car; p.paint = h.paint; p.brokers = h.brokers;
                 if h.host && !self.is_host { self.host_id = Some(e.from); } } }
             K_PROBE => { if let Some(a) = from { let b = bare(Env { kind: K_PROBE_ACK, room: self.code, from: self.me, to: e.from, seq: 0 }); self.udp(&b, a); } }
             K_PING => { if self.is_host { if let Some(t) = r.f64() { let o = self.env(K_PONG, e.from); let b = time_pair(Env { seq: e.seq, ..o }, t, now); self.send_to(e.from, &b); } } }
@@ -318,6 +324,7 @@ impl Session {
                     self.best_rtt += 0.002; if rtt <= self.best_rtt { self.best_rtt = rtt; self.offset_target = ht - (t + rtt / 2.0); if self.pong_n <= 2 { self.offset = self.offset_target; } } } } } }
             K_START => { if !self.is_host { if let Some(s) = read_start(&mut r) { if (s.go_at - self.last_start_go).abs() > 0.01 { self.last_start_go = s.go_at; self.start_in = Some(s); } } } }
             K_HIT => { if let Some((d, imp, by)) = read_hit(&mut r) { if self.hits_in.len() < 64 { self.hits_in.push((e.from, by, d, imp)); } } }
+            K_TILES => { if !self.is_host && Some(e.from) == self.host_id { if let Some(v) = read_tiles(&mut r) { self.tiles_in = Some(v); } } }
             K_BOTHIT => { if self.is_host { if let Some((k, d, imp)) = read_bot_hit(&mut r) { if self.bot_hits_in.len() < 64 { self.bot_hits_in.push((e.from, k, d, imp)); } } } }
             _ => {}
         }
@@ -327,20 +334,23 @@ impl Session {
     /// first). Like a solo race the players start mid-grid: the quicker half of the AI cars ahead of them, the rest behind; the players'
     /// own order is shuffled each race.
     /// Returns the start for the host itself.
-    pub fn start_race(&mut self, map: &str, laps: u8, delay: f64, bots: &[u8], srv: bool) -> Option<Start> {
+    pub fn start_race(&mut self, map: &str, laps: u8, delay: f64, bots: &[u8], srv: bool, mode: u8) -> Option<Start> {
         if !self.is_host { return None; }
         let mut ids: Vec<(f64, u32)> = self.peers.values().map(|p| (p.first_seen, p.id)).collect(); ids.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let mut players = vec![self.me]; players.extend(ids.iter().take(11).map(|x| x.1));
         // the players' order on the grid is drawn fresh each race (the host sends it, so every phone agrees) - whoever made the room
         // no longer always starts in front
         for i in (1..players.len()).rev() { let j = rand_u32() as usize % (i + 1); players.swap(i, j); }
-        let nb = bots.len().min(12 - players.len()); let ahead = (nb + 1) / 2;
+        let nb = bots.len().min(12 - players.len()); let ahead = if mode == MODE_DUOS { 0 } else { (nb + 1) / 2 };
         let bot_slots: Vec<(u8, u8)> = bots.iter().take(nb).enumerate().map(|(k, r)| (*r, if k < ahead { k } else { k + players.len() } as u8)).collect();
+        // duos: in grid order, two by two (the players first, then the AI cars), each pair side by side on its row
+        let (teams, bot_teams) = if mode == MODE_DUOS { ((0..players.len()).map(|k| (k / 2) as u8).collect(), (0..nb).map(|k| ((players.len() + k) / 2).min(5) as u8).collect()) } else { (Vec::new(), Vec::new()) };
         let slots = players.iter().enumerate().map(|(k, id)| (*id, (ahead + k) as u8)).collect();
-        let s = Start { map: map.to_string(), laps, go_at: self.host_now() + delay, slots, bots: bot_slots, srv: srv && !bots.is_empty() }; self.start_out = Some((s.clone(), self.now() + 3.0)); Some(s)
+        let s = Start { map: map.to_string(), laps, go_at: self.host_now() + delay, slots, bots: bot_slots, srv: srv && !bots.is_empty(), mode, teams, bot_teams }; self.start_out = Some((s.clone(), self.now() + 3.0)); Some(s)
     }
     /// a race begins with `n` AI cars (driven by the host's phone): fresh tracks and senders
     pub fn begin_race(&mut self, n: usize, srv: bool) {
+        self.tiles_out.clear(); self.tiles_in = None; self.tiles_sent = 0;
         self.race_bots = n; self.race_t0 = self.now(); self.bots.clear(); self.bot_hits_in.clear(); self.hits_in.clear();
         self.bots_out = (0..n).map(|_| BotOut::default()).collect(); self.server_bots = srv && n > 0; self.srv_heard = -9.0;
         if !self.is_host || self.server_bots { for k in 0..n { self.bots.insert(k as u8, BotIn::default()); } }

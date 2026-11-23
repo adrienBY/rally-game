@@ -153,6 +153,7 @@ class MainActivity : Activity() {
         for (line in ev.lineSequence()) {
             if (line == "fps 30") vsync.gap = gapFor(30) else if (line == "fps 60") vsync.gap = gapFor(60)
             else if (line.startsWith("h ")) { val p = line.split(' '); if (p.size == 3) haptics.play(p[1], p[2].toFloatOrNull() ?: 0.5f) }
+            else if (line.startsWith("name ")) { val first = line.startsWith("name 1"); val cur = line.drop(7); main.post { askName(first, cur) } }
             else if (line.startsWith("bench ")) { val path = line.substring(6); main.post { exportBench(path) } }
             else if (line.startsWith("crash ")) { val path = line.substring(6); main.post { exportCrash(path) } }
             else if (line.startsWith("map ")) { val name = line.substring(4).filter { it.isLetter() }
@@ -160,6 +161,39 @@ class MainActivity : Activity() {
                     if (webFresh) { webFresh = false; loadRtPage(name) }
                     else { web.resumeTimers(); web.evaluateJavascript("window.__rtBoot && window.__rtBoot('$name')", null) } } }
         }
+    }
+
+    private var nameDialog: android.app.AlertDialog? = null
+    /** the driver name, typed on the phone's own keyboard; `first`: the first run, it can't be skipped */
+    private fun askName(first: Boolean, current: String) {
+        if (nameDialog?.isShowing == true) return
+        val pad = (20 * resources.displayMetrics.density).toInt()
+        val edit = android.widget.EditText(this).apply {
+            setText(if (first) "" else current); setSelection(text.length); hint = "DRIVER NAME"; isSingleLine = true
+            filters = arrayOf(android.text.InputFilter.LengthFilter(12), android.text.InputFilter.AllCaps())
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS or android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE
+        }
+        val box = android.widget.FrameLayout(this).apply { setPadding(pad, pad / 2, pad, 0); addView(edit) }
+        val b = android.app.AlertDialog.Builder(this).setTitle(if (first) "Choose your driver name" else "Driver name")
+            .setMessage("Other players see it in online races.").setView(box).setCancelable(!first)
+            .setPositiveButton("OK") { _, _ -> val n = edit.text.toString().trim(); if (n.isNotEmpty()) NativeCore.rtName(n) }
+        if (!first) b.setNegativeButton("Cancel", null)
+        val d = b.create(); nameDialog = d
+        d.setOnShowListener {
+            val ok = d.getButton(android.app.AlertDialog.BUTTON_POSITIVE)
+            fun check() { ok.isEnabled = edit.text.toString().any { it.isLetterOrDigit() } }
+            check()
+            edit.addTextChangedListener(object : android.text.TextWatcher {
+                override fun afterTextChanged(s: android.text.Editable?) = check()
+                override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {} })
+            edit.setOnEditorActionListener { _, _, _ -> if (ok.isEnabled) ok.performClick(); true }
+            edit.requestFocus()
+            (getSystemService(INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager).showSoftInput(edit, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+        }
+        d.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
+        d.show()
     }
 
     private var crashShown = false

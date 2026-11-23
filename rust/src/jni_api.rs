@@ -77,6 +77,9 @@ pub extern "system" fn Java_com_fogwood_rally_NativeCore_rtTouch<'l>(_env: JNIEn
 pub extern "system" fn Java_com_fogwood_rally_NativeCore_rtBack<'l>(_env: JNIEnv<'l>, _c: JClass<'l>) -> jboolean { crate::guard::run("rtBack", 0, || { if crate::gfx::rt_back() { 1 } else { 0 } }) }
 #[no_mangle]
 pub extern "system" fn Java_com_fogwood_rally_NativeCore_rtInsets<'l>(_env: JNIEnv<'l>, _c: JClass<'l>, t: jfloat, r: jfloat, b: jfloat, l: jfloat) { crate::guard::run("rtInsets", (), || { crate::gfx::rt_insets(t, r, b, l); }) }
+/// the driver name from the system keyboard dialog
+#[no_mangle]
+pub extern "system" fn Java_com_fogwood_rally_NativeCore_rtName<'l>(mut env: JNIEnv<'l>, _c: JClass<'l>, n: JString<'l>) { let v = s(&mut env, &n); crate::guard::run("rtName", (), || crate::gfx::rt_name(&v)) }
 /// GL thread: one game frame; dt in nanoseconds. Returns the app events, one per line.
 #[no_mangle]
 pub extern "system" fn Java_com_fogwood_rally_NativeCore_rtFrame<'l>(mut env: JNIEnv<'l>, _c: JClass<'l>, dt_ns: jlong) -> jstring { 

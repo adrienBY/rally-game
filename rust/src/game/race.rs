@@ -40,6 +40,10 @@ pub struct RCar {
     pub bot: Option<u8>,
     /// online, the host's AI cars: their contact counter (travels with their states: see net::smooth::epoch)
     pub epoch: u8,
+    /// the livery it is drawn with (0: its body's own; another player's pick, or a duo's team livery)
+    pub paint: usize,
+    /// duos: its team
+    pub team: Option<u8>,
 }
 impl RCar {
     pub fn is_player(&self) -> bool { self.r.is_none() }
@@ -67,6 +71,8 @@ pub struct Race {
     pub touch_t: std::collections::HashMap<(usize, usize), f64>, pub pushed_t: std::collections::HashMap<(usize, usize), f64>,
     /// the menu's attract-mode race (AI drives your car too; nothing it does is saved)
     pub demo: bool,
+    /// online duos: teams of two, the best average time wins
+    pub duos: bool,
 }
 
 impl Race {
@@ -80,13 +86,13 @@ impl Race {
     pub fn new(rt: &Rt, ps: &Persist) -> Race {
         let np = rt.np; let n = (np + 9) / 10; let mut rlearn = vec![1.0; n];
         if let Some(v) = ps.saves.get(&format!("fogwood-learn-{}", rt.map)) { if v.len() == n * 2 { for i in 0..n { rlearn[i] = 0.7 + v[i * 2..i * 2 + 2].parse::<f64>().unwrap_or(99.0) / 330.0; } } }
-        Race { on: false, laps: if np > 2300 { 2 } else { 3 }, cars: Vec::new(), player: 0, phase: Phase::Off, t: 0.0, done_t: 0.0, note: String::new(), pos: 0, order: Vec::new(), finish_pos: 0, rlearn, shown: false, online: false, go_at: 0.0, hits: Vec::new(), me_id: 0, net_hits: Vec::new(), epoch: 0, touch_t: Default::default(), pushed_t: Default::default(), demo: false }
+        Race { on: false, laps: if np > 2300 { 2 } else { 3 }, cars: Vec::new(), player: 0, phase: Phase::Off, t: 0.0, done_t: 0.0, note: String::new(), pos: 0, order: Vec::new(), finish_pos: 0, rlearn, shown: false, online: false, go_at: 0.0, hits: Vec::new(), me_id: 0, net_hits: Vec::new(), epoch: 0, touch_t: Default::default(), pushed_t: Default::default(), demo: false, duos: false }
     }
 }
 
 pub(crate) fn mk_car(g: &mut Game, r: Option<usize>, k: usize, lat: f64) -> RCar {
     let form = 0.98 + g.rng.f() * 0.04; let mist_cd = 5.0 + g.rng.f() * 5.0; let react = 0.12 + g.rng.f() * 0.4;
-    RCar { r, car: Car::new(), prog: k as f64 - g.np as f64, last_idx: k, i: k, lat, v: 0.0, lane: lat, lane_t: lat, pass_t: 3.0, cap: 99.0, pv: 1.0, boost: 0.0, form, mist: 0.0, mist_cd,
+    RCar { paint: 0, team: None, r, car: Car::new(), prog: k as f64 - g.np as f64, last_idx: k, i: k, lat, v: 0.0, lane: lat, lane_t: lat, pass_t: 3.0, cap: 99.0, pv: 1.0, boost: 0.0, form, mist: 0.0, mist_cd,
         stuck_t: 0.0, lap_t0: 0.0, laps_done: 0, last: None, best: None, finished: false, finish_t: 0.0, react, tag_x: -99.0, tag_y: -99.0, tag_on: false, err: 0.0, trust: 1.0, off_at: None, resets: 0, remote: None, name: String::new(), left: false, owned: false, bot: None, epoch: 0,
         model: match r { Some(i) => super::cars::rival_model(i), None => g.ps.car } }
 }
@@ -111,7 +117,7 @@ pub fn start(g: &mut Game, w: &World) {
         let mut c = mk_car(g, Some(order[ri]), k, lat); ri += 1; rc_place(&mut c.car, &g.rt, w, k, lat, 0.0); g.race.cars.push(c);
     }
 }
-pub fn stop(g: &mut Game) { g.race.online = false; g.race.demo = false; g.race.on = false; g.race.phase = Phase::Off; g.race.cars.clear(); }
+pub fn stop(g: &mut Game) { g.race.duos = false; g.race.online = false; g.race.demo = false; g.race.on = false; g.race.phase = Phase::Off; g.race.cars.clear(); }
 
 fn state<'a>(g: &'a Game, k: usize) -> &'a Car { if g.race.cars[k].is_player() { &g.car } else { &g.race.cars[k].car } }
 
@@ -303,6 +309,17 @@ fn finish(g: &mut Game) {
     let m = if pos == 1 { "YOU WIN!".to_string() } else { format!("FINISHED P{}", pos) }; g.flash_msg(&m, 3.0);
 }
 
+/// duos: (team, its cars, average time, both done) best first; a car still out on the stage counts with its projected time
+pub fn team_results(g: &Game) -> Vec<(u8, Vec<usize>, f64, bool)> {
+    let res = results(g); let mut teams: Vec<(u8, Vec<usize>, f64, bool)> = Vec::new();
+    for (k, t, done) in res { let Some(tm) = g.race.cars[k].team else { continue };
+        match teams.iter_mut().find(|x| x.0 == tm) { Some(x) => { x.1.push(k); x.2 += t; x.3 &= done; } None => teams.push((tm, vec![k], t, done)) } }
+    for x in teams.iter_mut() { x.2 /= x.1.len() as f64; }
+    teams.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap()); teams
+}
+pub const TEAM_NAMES: [&str; 6] = ["RED", "BLUE", "GREEN", "YELLOW", "PURPLE", "ORANGE"];
+pub const TEAM_COLS: [[f64; 3]; 6] = [[0.76, 0.23, 0.17], [0.11, 0.37, 0.77], [0.18, 0.6, 0.31], [0.95, 0.76, 0.19], [0.48, 0.23, 0.76], [0.89, 0.4, 0.16]];
+
 /// (car index, time, done) best first
 pub fn results(g: &Game) -> Vec<(usize, f64, bool)> {
     let np = g.np as f64; let laps = g.race.laps as f64;
@@ -325,10 +342,10 @@ pub fn step(g: &mut Game, w: &World, obs: &Obstacles, dt: f64) {
         let inp = rival_input(g, w, k); let mut car = g.race.cars[k].car; car.update(w, obs, &t, dt, &inp); g.race.cars[k].car = car;
         recover(g, w, k, dt);
     }
-    contacts(g); progress(g, w);
+    contacts(g); if g.tf.on { super::tilefall::step(g, w, dt); } else { progress(g, w); }
     if g.race.phase == Phase::Done { g.race.done_t += dt; }
     let i = path_idx(w, g.car.x, g.car.z); let tn = g.rt.tan[i]; let fwd = g.car.h.sin() * tn[0] + g.car.h.cos() * tn[1];
-    g.wrong_t = if fwd < -0.4 && g.car.u.abs() > 4.0 { g.wrong_t + dt } else { (g.wrong_t - dt * 2.0).max(0.0) };
+    g.wrong_t = if g.tf.on { 0.0 } else if fwd < -0.4 && g.car.u.abs() > 4.0 { g.wrong_t + dt } else { (g.wrong_t - dt * 2.0).max(0.0) };
     if g.msg_t > 0.0 { g.msg_t -= dt; }
 }
 
@@ -343,9 +360,12 @@ pub fn gfx(g: &mut Game, r: &mut Renderer, w: &World) {
     for k in 0..g.race.cars.len() {
         if g.race.cars[k].is_player() { continue; }
         if g.race.cars[k].left { g.race.cars[k].tag_on = false; continue; }
-        let s = g.race.cars[k].car; let pose = g.car_pose(&s); let model = g.race.cars[k].model % nmodels; let col = RIVALS[g.race.cars[k].r.unwrap_or(0) % RIVALS.len()].col;
+        let s = g.race.cars[k].car; let pose = g.car_pose(&s); let model = g.race.cars[k].model % nmodels; let paint = g.race.cars[k].paint;
+        // AI cars: their team's tint on the body's own paint; players' cars: their own livery as they see it
+        let col = if g.race.cars[k].remote.is_some() && g.race.cars[k].bot.is_none() { [1.0; 3] } else { RIVALS[g.race.cars[k].r.unwrap_or(0) % RIVALS.len()].col };
         for (pi, p) in g.rt.rg_parts.iter().enumerate() {
             if let Some(m) = p.model { if m != model { continue; } }
+            if p.paint && p.liv != paint { continue; }
             for (node, local) in &p.src { let nw = pose.get(node).copied().unwrap_or(ID); mats[pi].extend_from_slice(&to_f32(&mul(&nw, local))); }
             if p.tint && p.model.is_some() { cols[pi].extend_from_slice(&[col[0] as f32, col[1] as f32, col[2] as f32]); }
         }

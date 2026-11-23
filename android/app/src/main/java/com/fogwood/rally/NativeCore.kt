@@ -28,6 +28,8 @@ object NativeCore {
     @JvmStatic external fun rtTouch(action: Int, id: Int, x: Float, y: Float)
     /** Back pressed: true when the game used it (driving -> menu). */
     @JvmStatic external fun rtBack(): Boolean
+    /** the driver name typed in the system keyboard dialog */
+    @JvmStatic external fun rtName(name: String)
     @JvmStatic external fun rtInsets(top: Float, right: Float, bottom: Float, left: Float)
     /** GL thread: run and draw one frame (dt in ns); returns app events, one per line. */
     @JvmStatic external fun rtFrame(dtNanos: Long): String

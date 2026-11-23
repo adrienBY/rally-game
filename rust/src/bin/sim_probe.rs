@@ -16,7 +16,7 @@ fn main() {
             let c = net::proto::CarSnap { x: (t * 10.0) as f32, vx: 10.0, h: std::f32::consts::FRAC_PI_2, ..Default::default() }; s.send_car(c, 0.016, None, false); s.advance_view(0.016);
             if host && !started && !s.peers.is_empty() && t > 4.0 {
                 if !sent_stage { sent_stage = true; println!("relay can drive AI cars: {}; stage upload ({} bytes): {}", s.sim_capable(), blob.len(), s.upload_stage(&blob)); }
-                started = true; let st = s.start_race("lakes", 3, 6.0, &[0, 1, 2], true).unwrap(); println!("start go_at {:.3} srv {}", st.go_at, st.srv);
+                started = true; let st = s.start_race("lakes", 3, 6.0, &[0, 1, 2], true, 0).unwrap(); println!("start go_at {:.3} srv {}", st.go_at, st.srv);
                 s.racing = true; nb = st.bots.len(); s.begin_race(nb, st.srv); }
             if let Some(st) = s.start_in.take() { println!("got start: {} AI cars, on the relay: {}", st.bots.len(), st.srv); s.racing = true; nb = st.bots.len(); s.begin_race(nb, st.srv); }
             if t >= next { next += 1.0;

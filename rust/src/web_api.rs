@@ -67,6 +67,9 @@ pub fn web_ws_open(k: u32) { crate::guard::run("ws", (), || if k >= crate::net::
 pub fn web_ws_data(k: u32, b: &[u8]) { crate::guard::run("ws", (), || if k >= crate::net::relay::web::SOCK { crate::net::relay::web::on_data(k, b) } else { crate::net::mqtt::web::on_data(k, b) }) }
 #[wasm_bindgen]
 pub fn web_ws_close(k: u32) { crate::guard::run("ws", (), || if k >= crate::net::relay::web::SOCK { crate::net::relay::web::on_close(k) } else { crate::net::mqtt::web::on_close(k) }) }
+/// the driver name from the page's text box (answer to the game's "name" event)
+#[wasm_bindgen]
+pub fn web_name(n: &str) { crate::guard::run("name", (), || crate::gfx::rt_name(n)) }
 /// the online room this page is in (0: none); for tests and the page
 #[wasm_bindgen]
 pub fn web_room() -> u32 { crate::net::with(|s| s.code).unwrap_or(0) }

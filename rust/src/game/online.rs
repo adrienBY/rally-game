@@ -9,7 +9,7 @@ use crate::world::World;
 #[derive(Clone, PartialEq, Debug, Default)]
 pub enum OnlineUi { #[default] Closed, Menu, Join(String), Lobby, Stages, Rooms }
 
-pub const KEYS: [&str; 37] = ["on_bots", "on_rooms", "on_r0", "on_r1", "on_r2", "on_r3", "on_r4", "on_r5", "on_host", "on_join", "on_back", "on_start", "on_leave", "on_stage", "k0", "k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "k9", "kdel", "kok", "on_laps", "online",
+pub const KEYS: [&str; 41] = ["on_cprev", "on_cnext", "on_lnext", "on_mode", "on_bots", "on_rooms", "on_r0", "on_r1", "on_r2", "on_r3", "on_r4", "on_r5", "on_host", "on_join", "on_back", "on_start", "on_leave", "on_stage", "k0", "k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "k9", "kdel", "kok", "on_laps", "online",
     "on_name", "on_st0", "on_st1", "on_st2", "on_st3", "on_st4", "on_st5", "on_st6", "on_st7"];
 const MAPS: [(&str, &str); 8] = [("forest", "FOGWOOD"), ("snow", "COL DE GIVRE"), ("canyon", "CANYON ROUGE"), ("lakes", "LAKELAND"), ("touge", "MOMIJI TOUGE"), ("riviera", "RIVIERA CORNICHE"), ("prism", "PRISM SKYWAY"), ("ember", "EMBER PEAK")];
 /// the stage list: tile key, short name, surface
@@ -41,8 +41,8 @@ impl Game {
         if matches!(self.ps.online_ui, OnlineUi::Menu | OnlineUi::Rooms) { net::lobby::open(); net::lobby::poll(); } else { net::lobby::close(); }
         if !net::active() { return; }
         let map = self.rt.map.clone(); let racing = self.race.online && self.state == State::Drive;
-        let name = self.ps.name.clone(); let mycar = self.ps.car as u8;   // name and car reach the room with the next presence message
-        let pending = net::with(|s| { s.map = map.clone(); s.racing = racing; s.car = mycar; if !name.is_empty() { s.name = name; } s.poll(); s.start_in.clone() }).flatten();
+        let name = self.ps.name.clone(); let mycar = self.ps.car as u8; let mypaint = self.ps.paint.get(self.ps.car).copied().unwrap_or(0) as u8;   // name and car reach the room with the next presence message
+        let pending = net::with(|s| { s.map = map.clone(); s.racing = racing; s.car = mycar; s.paint = mypaint; if !name.is_empty() { s.name = name; } s.poll(); s.start_in.clone() }).flatten();
         // guests follow the host's stage while waiting, so it is already built when the race starts
         if pending.is_none() && self.state == State::Title && self.loading.is_none() {
             if let Some(Some(hm)) = net::with(|s| if s.is_host { None } else { s.host_id.and_then(|h| s.peers.get(&h)).map(|p| p.map.clone()).filter(|m| !m.is_empty()) }) {
@@ -62,7 +62,9 @@ impl Game {
             let mine = snap_of(&self.car, self.race.epoch);
             let ids: Vec<(usize, u32)> = self.race.cars.iter().enumerate().filter_map(|(k, c)| c.remote.map(|id| (k, id))).collect();
             // both phones predict cars over the same terrain (the stage grids are identical everywhere)
-            let ground = |x: f32, z: f32| w.height(x as f64, z as f64) as f32; let g: net::smooth::Ground = Some(&ground);
+            // (tile fall: a flat plane at the arena's top, so a car dropping through a hole stays smooth)
+            let flat = if self.tf.on { Some(self.tf.y as f32) } else { None };
+            let ground = |x: f32, z: f32| flat.unwrap_or_else(|| w.height(x as f64, z as f64) as f32); let g: net::smooth::Ground = Some(&ground);
             // closer than 40 m a car eases onto the present, fully there by 15 m, and our states go out more precisely
             // within 30 m (contacts happen there)
             let near: Vec<(u32, f32, bool)> = ids.iter().map(|(k, id)| { let c = &self.race.cars[*k].car; let d = (c.x - self.car.x).hypot(c.z - self.car.z);
@@ -118,7 +120,7 @@ impl Game {
     fn online_begin(&mut self, w: &World, st: Start) {
         let me = net::with(|s| s.me).unwrap_or(0);
         let names: Vec<(u32, String)> = net::with(|s| s.peers.values().map(|p| (p.id, p.name.clone())).collect()).unwrap_or_default();
-        let carsof: Vec<(u32, usize)> = net::with(|s| s.peers.values().map(|p| (p.id, p.car as usize)).collect()).unwrap_or_default();
+        let carsof: Vec<(u32, usize, usize)> = net::with(|s| s.peers.values().map(|p| (p.id, p.car as usize, p.paint as usize)).collect()).unwrap_or_default();
         if self.state == State::Drive { self.to_title(); }
         self.gar.open = false;
         self.close_settings();
@@ -126,6 +128,8 @@ impl Game {
         let np = self.np; let rc = &mut self.race; rc.on = true; rc.online = true; rc.phase = race::Phase::Grid; rc.t = 0.0; rc.done_t = 0.0; rc.note.clear(); rc.cars.clear(); rc.pos = 0; rc.order.clear();
         rc.laps = st.laps.max(1) as i64; rc.go_at = st.go_at; rc.me_id = me; rc.hits.clear(); rc.net_hits.clear(); rc.touch_t.clear(); rc.pushed_t.clear();
         let is_host = net::with(|s| { s.begin_race(st.bots.len(), st.srv); s.is_host }).unwrap_or(false);
+        self.race.duos = st.mode == net::proto::MODE_DUOS;
+        let team_livery = |t: u8| super::cars::TEAM_LIVERY0 + (t as usize).min(super::cars::TEAMS - 1);
         // players' cars take the rival colours the AI cars leave free first
         let taken: Vec<usize> = st.bots.iter().map(|b| b.0 as usize % race::RIVALS.len()).collect();
         let free: Vec<usize> = (0..race::RIVALS.len()).filter(|c| !taken.contains(c)).chain(taken.iter().copied()).collect();
@@ -133,22 +137,25 @@ impl Game {
         for (idx, (ri, k)) in st.bots.iter().enumerate() {
             let (i, lat) = race::slot(np, *k as usize); let ri = *ri as usize % race::RIVALS.len();
             let mut c: RCar = race::mk_car(self, Some(ri), i, lat); race::rc_place(&mut c.car, &self.rt, w, i, lat, 0.0); c.bot = Some(idx as u8);
+            if let Some(t) = st.bot_teams.get(idx).copied().filter(|_| self.race.duos) { c.team = Some(t); c.paint = team_livery(t); }
             // the host's phone (or the relay) drives them; elsewhere they come in like another player's car
             if !is_host || st.srv { c.remote = Some(net::bot_id(idx as u8)); c.name = race::RIVALS[ri].name.to_string(); }
             self.race.cars.push(c);
         }
-        for (id, k) in &st.slots {
+        for (n, (id, k)) in st.slots.iter().enumerate() {
+            let team = st.teams.get(n).copied().filter(|_| self.race.duos);
             let (i, lat) = if std::env::var("FW_OVERLAP").is_ok() { let (i, _) = race::slot(np, 0); (i, -0.6 + *k as f64 * 1.2) } else { race::slot(np, *k as usize) };   // FW_OVERLAP: test hook, cars start touching
             if *id == me {
                 self.place_at(w, i); let tn = self.rt.tan[i]; self.car.x += -tn[1] * lat; self.car.z += tn[0] * lat; self.car.y = w.height(self.car.x, self.car.z) + 0.075;
-                let c = race::mk_car(self, None, i, lat); self.race.player = self.race.cars.len(); self.race.cars.push(c);
+                let mut c = race::mk_car(self, None, i, lat); c.team = team; self.race.player = self.race.cars.len(); self.race.cars.push(c);
             } else {
                 let mut c: RCar = race::mk_car(self, Some(free[colour % free.len()]), i, lat); colour += 1; race::rc_place(&mut c.car, &self.rt, w, i, lat, 0.0);
                 c.remote = Some(*id); c.name = names.iter().find(|n| n.0 == *id).map(|n| n.1.clone()).unwrap_or_else(|| "PLAYER".into());
-                c.model = carsof.iter().find(|n| n.0 == *id).map(|n| n.1).unwrap_or(0) % super::cars::CARS.len(); self.race.cars.push(c);
+                c.model = carsof.iter().find(|n| n.0 == *id).map(|n| n.1).unwrap_or(0) % super::cars::CARS.len(); c.paint = carsof.iter().find(|n| n.0 == *id).map(|n| n.2).unwrap_or(0); if let Some(t) = team { c.team = Some(t); c.paint = team_livery(t); } self.race.cars.push(c);
             }
         }
         if !self.race.cars.iter().any(|c| c.is_player()) { race::stop(self); self.state = State::Title; self.flash_msg("NOT IN THIS RACE", 2.0); return; }
+        if st.mode == net::proto::MODE_TILES { super::tilefall::begin(self, w); } else if self.tf.on { super::tilefall::stop(self, w, None); }
         self.last_idx = self.race.cars[self.race.player].last_idx;
         self.go = net::with(|s| (st.go_at - s.host_now() + 0.9).max(0.0)).unwrap_or(4.5);
         self.ps.online_ui = OnlineUi::Lobby;
@@ -174,24 +181,30 @@ impl Game {
                 self.ps.online_ui = OnlineUi::Join(code); }
             ("on_leave", OnlineUi::Lobby) => { net::leave(); self.ps.online_ui = OnlineUi::Menu; }
             ("on_name", _) => { self.edit_name(); }
+            // your car and its livery, from the room screen (the others see them with your next presence message)
+            ("on_cprev", OnlineUi::Lobby) | ("on_cnext", OnlineUi::Lobby) => { let n = super::cars::CARS.len(); let k = if key == "on_cnext" { (self.ps.car + 1) % n } else { (self.ps.car + n - 1) % n }; self.choose_car(k); self.buzz("tap", 0.5); }
+            ("on_lnext", OnlineUi::Lobby) => { let n = super::cars::LIVERIES.len(); let c = self.ps.car; if let Some(p) = self.ps.paint.get_mut(c) { *p = (*p + 1) % n; }
+                let v: Vec<String> = self.ps.paint.iter().map(|p| p.to_string()).collect(); self.ps.saves.set("fogwood-paint", v.join(",")); self.buzz("tap", 0.5); }
             ("on_stage", OnlineUi::Lobby) => { self.ps.online_ui = OnlineUi::Stages; }
             ("on_back", OnlineUi::Stages) => { self.ps.online_ui = OnlineUi::Lobby; }
             (k, OnlineUi::Stages) if k.starts_with("on_st") => {
                 if let Some(n) = k[5..].parse::<usize>().ok().filter(|n| *n < MAPS.len()) { let m = MAPS[n].0; if m != self.rt.map { self.switch_map(m); } }
                 self.ps.online_ui = OnlineUi::Lobby; }
             ("on_laps", OnlineUi::Lobby) => { self.ps.online_laps = self.ps.online_laps % 5 + 1; }
+            ("on_mode", OnlineUi::Lobby) => { self.ps.online_mode = (self.ps.online_mode + 1) % 3; self.ps.saves.set("fogwood-omode", self.ps.online_mode.to_string()); }
             ("on_bots", OnlineUi::Lobby) => { self.ps.online_bots = (self.ps.online_bots + 1) % 6; }
             ("on_start", OnlineUi::Lobby) => {
                 if self.loading.is_some() { return true; }
-                let (map, laps) = (self.rt.map.clone(), self.ps.online_laps);
+                let (map, laps, mode) = (self.rt.map.clone(), self.ps.online_laps, self.ps.online_mode);
                 // the AI cars: the rivals, fastest first, as many as picked
                 let mut order: Vec<u8> = (0..race::RIVALS.len() as u8).collect(); order.sort_by(|a, b| race::RIVALS[*b as usize].pace.partial_cmp(&race::RIVALS[*a as usize].pace).unwrap());
-                let bots: Vec<u8> = order.into_iter().take(self.ps.online_bots as usize).collect();
+                let nb = if mode == net::proto::MODE_TILES { 0 } else { self.ps.online_bots as usize };   // tile fall: players only
+                let bots: Vec<u8> = order.into_iter().take(nb).collect();
                 // the relay drives the AI cars when it can (the stage goes up first; the host takes them back if it never answers)
                 let blob = if bots.is_empty() || std::env::var("FW_NOSIM").is_ok() { None } else { Some(crate::server::stage_blob(&self.rt.raw)) };
                 if let Some(Some(st)) = net::with(|s| if s.peers.is_empty() { None } else {
                     let srv = blob.as_ref().map(|b| s.sim_capable() && s.upload_stage(b)).unwrap_or(false);
-                    s.start_race(&map, laps, 7.0, &bots, srv) }) { net::with(|s| s.start_in = Some(st)); }
+                    s.start_race(&map, laps, 7.0, &bots, srv, mode) }) { net::with(|s| s.start_in = Some(st)); }
                 else { self.flash_msg("WAITING FOR PLAYERS", 1.5); } }
             _ => return false,
         }
@@ -242,10 +255,16 @@ pub fn draw(ps: &super::Persist, map: &str, g: &mut Canvas, ui: &mut Vec<(&'stat
             ui.push(("on_name", Rect { x: bx, y: y - u, w: bw, h: 9.0 * u }));   // your own row: tap to rename
             let row = |g: &mut Canvas, y: f64, name: &str, right: &str, me: bool| { if me { g.rect_c(bx, y - u, bw, 9.0 * u, rgba(243, 207, 98, 0.16)); } g.tx(name, bx + 3.0 * u, y, u, if me { AMBER } else { INK }); g.text(right, bx + bw - 3.0 * u - text_w(right, u), y, u, rgba(233, 236, 226, 0.7), None); };
             row(g, y, &format!("{}{}", ps.name, if host { " (HOST)" } else { "" }), "YOU - EDIT NAME", true); y += 10.0 * u;
-            for (name, link, rtt, ph, _, _) in peers.iter().take(5) {
+            // your car: arrows change it, the middle changes its livery
+            { let aw = 16.0 * u; let cn = super::cars::CARS[ps.car.min(super::cars::CARS.len() - 1)].name; let lv = super::cars::LIVERIES[ps.paint.get(ps.car).copied().unwrap_or(0).min(super::cars::LIVERIES.len() - 1)];
+              ui.push(("on_cprev", Rect { x: bx, y: y - 2.0 * u, w: aw, h: 11.0 * u })); ui.push(("on_cnext", Rect { x: bx + bw - aw, y: y - 2.0 * u, w: aw, h: 11.0 * u })); ui.push(("on_lnext", Rect { x: bx + aw, y: y - 2.0 * u, w: bw - 2.0 * aw, h: 11.0 * u }));
+              g.panel(bx, y - 2.0 * u, bw, 11.0 * u, u, PANEL, Some(EDGE)); g.tx("<", bx + 5.0 * u, y, u, AMBER); g.tx(">", bx + bw - 10.0 * u, y, u, AMBER);
+              let t = format!("{}  {}", cn, lv); g.tx(&t, bx + (bw - text_w(&t, u)) / 2.0, y, u, INK); }
+            y += 13.0 * u;
+            for (name, link, rtt, ph, _, _) in peers.iter().take(4) {
                 let r = match link { Link::Direct => format!("DIRECT{}", if *rtt > 0.0 { format!(" {:.0}MS", rtt * 1000.0) } else { String::new() }), Link::Relay => format!("RELAY{}", if *rtt > 0.0 { format!(" {:.0}MS", rtt * 1000.0) } else { String::new() }), Link::Connecting => "...".into() };
                 row(g, y, &format!("{}{}", name, if *ph { " (HOST)" } else { "" }), &r, false); y += 10.0 * u; }
-            if peers.len() > 5 { row(g, y, &format!("+{} MORE", peers.len() - 5), "", false); }
+            if peers.len() > 4 { row(g, y, &format!("+{} MORE", peers.len() - 4), "", false); }
             let yb = py + ph - 32.0 * u;
             if host {
                 let half = ((bw - 4.0 * u) / 2.0).floor();
@@ -260,7 +279,8 @@ pub fn draw(ps: &super::Persist, map: &str, g: &mut Canvas, ui: &mut Vec<(&'stat
                 let half = ((bw - 4.0 * u) / 2.0).floor();
                 button(g, ui, "on_back", "HIDE", bx, yb, half, false); button(g, ui, "on_leave", "LEAVE ROOM", bx + half + 4.0 * u, yb, half, false);
             }
-            if host { button(g, ui, "on_back", "HIDE", bx, yb + 16.0 * u, bw, false); }
+            if host { let half = ((bw - 4.0 * u) / 2.0).floor(); let md = ["MODE: RACE", "MODE: DUOS", "MODE: TILES"][(ps.online_mode as usize).min(2)];
+                button(g, ui, "on_mode", md, bx, yb + 16.0 * u, half, ps.online_mode != 0); button(g, ui, "on_back", "HIDE", bx + half + 4.0 * u, yb + 16.0 * u, half, false); }
         }
         OnlineUi::Rooms => {
             centre(g, "OPEN ROOMS", py + 5.0 * u, u, AMBER);

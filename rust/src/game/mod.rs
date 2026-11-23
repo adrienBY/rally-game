@@ -13,6 +13,7 @@ pub mod dust;
 pub mod crash;
 pub mod menu;
 pub mod volc;
+pub mod tilefall;
 mod draw;
 
 use crate::bridge;
@@ -81,12 +82,14 @@ pub struct CamState { pub y: f64, pub h: f64, pub init: bool, pub mode: i32, pub
     pub shot: i32, pub cut_t: f64, pub passed: f64, pub anchor: V3, pub target: usize, pub side: f64 }
 
 /// settings that survive switching stages
-pub struct Persist { pub saves: Saves, pub sound_on: bool, pub vib_on: bool, pub pix_idx: usize, pub touch_used: bool, pub downgraded: bool,
+pub struct Persist { /** asked for a driver name this run already */ pub name_asked: bool, pub saves: Saves, pub sound_on: bool, pub vib_on: bool, pub pix_idx: usize, pub touch_used: bool, pub downgraded: bool,
     pub race_mode: bool, pub race_skill: f64,
     /// online: which room screen is open, your name in rooms, laps for a hosted race
     pub online_ui: online::OnlineUi, pub name: String, pub online_laps: u8,
     /// AI cars in online races the phone hosts (0-5)
     pub online_bots: u8,
+    /// the room's mode the host picked: net::proto::MODE_*
+    pub online_mode: u8,
     /// settings screen: volumes 0..10, haptics 0..3, sun rays, mph, camera view, camera shake, 30 fps battery saver, debug buttons
     pub vol: i32, pub rvol: i32, pub hap: i32, pub rays: bool, pub mph: bool, pub cam_mode: u8, pub shake: bool, pub saver: bool, pub debug: bool,
     /// your car (garage), and the livery picked for each car (0 = its own)
@@ -96,7 +99,7 @@ pub struct Persist { pub saves: Saves, pub sound_on: bool, pub vib_on: bool, pub
 impl Persist {
     pub fn new(save_path: &str) -> Persist {
         let saves = Saves::load(save_path);
-        let mut p = Persist { saves, sound_on: true, vib_on: true, pix_idx: 2, touch_used: false, downgraded: false, race_mode: false, race_skill: 0.95, online_ui: online::OnlineUi::Closed, name: String::new(), online_laps: 2, online_bots: 0,
+        let mut p = Persist { online_mode: 0, name_asked: false, saves, sound_on: true, vib_on: true, pix_idx: 2, touch_used: false, downgraded: false, race_mode: false, race_skill: 0.95, online_ui: online::OnlineUi::Closed, name: String::new(), online_laps: 2, online_bots: 0,
             vol: 10, rvol: 8, hap: 2, rays: true, mph: false, cam_mode: 0, shake: true, saver: false, debug: true, car: 0, paint: vec![0; cars::CARS.len()], particles: 2, damage: true, rivals: 1, race_laps: 3, menu_race: true };
         p.reload(); p
     }
@@ -115,6 +118,7 @@ impl Persist {
         if let Some(v) = gi(&self.saves, "fogwood-cam") { self.cam_mode = v.clamp(0, 2) as u8; }
         if let Some(v) = gi(&self.saves, "fogwood-olaps") { self.online_laps = v.clamp(1, 5) as u8; }
         if let Some(v) = gi(&self.saves, "fogwood-obots") { self.online_bots = v.clamp(0, 5) as u8; }
+        if let Some(v) = gi(&self.saves, "fogwood-omode") { self.online_mode = v.clamp(0, 2) as u8; }
         if let Some(v) = gi(&self.saves, "fogwood-parts") { self.particles = v.clamp(0, 2); }
         if let Some(v) = gi(&self.saves, "fogwood-rivals") { self.rivals = v.clamp(0, 2); }
         if let Some(v) = gi(&self.saves, "fogwood-rlaps") { self.race_laps = v.clamp(1, 5); }
@@ -139,6 +143,8 @@ pub struct Game {
     pub rt: Rt, pub np: usize, pub snow: bool, pub can: bool, pub lak: bool, pub tou: bool, pub riv: bool, pub pri: bool, pub pri_last: Option<usize>,
     /// Ember Peak: the volcano's hazards are on; the shared clock's reading last frame (fireballs that landed in between kick)
     pub vol: bool, volc_tp: f64,
+    /// tile fall: the arena round, while one is on
+    pub tf: tilefall::TileFall,
     /// the rivals' tint colours as last uploaded (they only change when the field changes), and the crash damage's half-rate clock
     pub rg_cols: Vec<Vec<f32>>, crash_flip: bool, crash_dt: f64,
     /// tools only: a camera placed from outside (eye, target, fov) and a fixed pixel height
@@ -208,7 +214,7 @@ impl Game {
         let race = Race::new(&rt, &ps);
         let ncull = rt.cull.len(); let nglit = rt.glit.len();
         let mut g = Game {
-            np, snow: mid == 1, can: mid == 2, lak: mid == 3, tou: mid == 5, riv: mid == 6, pri: mid == 7, pri_last: None, vol: mid == 8, volc_tp: -1.0, rg_cols: Vec::new(), cam_ovr: None, pix_h: None, inp_ovr: None, race_clock: None, crash_flip: false, crash_dt: 0.0, wave_sim: false, wave_t0: 0.0, wave_mesh: Vec::new(), wave_tab: Vec::new(),
+            np, snow: mid == 1, can: mid == 2, lak: mid == 3, tou: mid == 5, riv: mid == 6, pri: mid == 7, pri_last: None, vol: mid == 8, volc_tp: -1.0, tf: Default::default(), rg_cols: Vec::new(), cam_ovr: None, pix_h: None, inp_ovr: None, race_clock: None, crash_flip: false, crash_dt: 0.0, wave_sim: false, wave_t0: 0.0, wave_mesh: Vec::new(), wave_tab: Vec::new(),
             tune: cars::tune_for(&Tune::from_slice(&tv), ps.car), base_tune: Tune::from_slice(&tv), gar: Default::default(), car_vis: None, paint_vis: None, menu: menu::fresh(), crash: crash::Crash::new(), cam_follow, car: Car::new(), rpm_shown: 900.0, shake: 0.0, car_hit: 0.0, prev_throttle: 0.0,
             state: State::Title, g_t: 0.0, lap: 1, lap_start: 0.0, best, flags: [false; 3], last_idx: 0, msg: String::new(), msg_t: 0.0, wrong_t: 0.0, started: false, go: 0.0,
             cam: CamState { y: 0.0, h: 0.0, init: false, mode: ps.cam_mode as i32, fov: 56.0, lag: 0.0, cp: None, cr: None, shot: -1, cut_t: 0.0, passed: 0.0, anchor: [0.0; 3], target: 0, side: 1.0 },
@@ -367,7 +373,7 @@ impl Game {
         let tp = if self.volc_tp < 0.0 || self.volc_tp > t || t - self.volc_tp > 1.0 { t - dt.max(0.0) } else { self.volc_tp }; self.volc_tp = t;
         let f = volc::frame(&self.rt, w, t, tp, self.cam_pos);
         for (k, p) in [&f.fire, &f.solid, &f.glow, &f.ring, &f.disc].into_iter().enumerate() { r.set_instances(ims[k], p.n(), &p.m); if !p.c.is_empty() { r.set_instance_colors(ims[k], &p.c); } }
-        let live = (self.state == State::Drive || self.race.demo) && !(self.race.on && self.race.phase == race::Phase::Grid);   // not while the grid waits for the lights
+        let live = (self.state == State::Drive || self.race.demo) && !(self.race.on && self.race.phase == race::Phase::Grid) && !self.tf.on;   // not while the grid waits for the lights
         for b in &f.landed {
             // every blast is heard (fading out by 240 m) and one close by shakes the camera
             let d = (self.car.x - b.to[0]).hypot(self.car.z - b.to[2]).hypot(self.car.y - b.to[1]);
@@ -399,7 +405,7 @@ impl Game {
             r.reshape(m.id, &m.pos, None);
         }
     }
-    fn reset_car(&mut self) { if self.state != State::Drive { return; } let g = bridge::lock(); if let Some(e) = g.as_ref() { let i = path_idx(&e.world, self.car.x, self.car.z); self.place_at(&e.world, i); } drop(g); self.flash_msg("RESET", 1.0); if self.tel.is_some() { self.tel_note.push_str("reset;"); } }
+    fn reset_car(&mut self) { if self.state != State::Drive || self.tf.on { return; } let g = bridge::lock(); if let Some(e) = g.as_ref() { let i = path_idx(&e.world, self.car.x, self.car.z); self.place_at(&e.world, i); } drop(g); self.flash_msg("RESET", 1.0); if self.tel.is_some() { self.tel_note.push_str("reset;"); } }
     pub fn start_game(&mut self) {
         if self.state != State::Title { return; }
         let g = bridge::lock(); let Some(e) = g.as_ref() else { return };
@@ -442,6 +448,8 @@ impl Game {
     /// One frame of the game (dt seconds), drawn into the renderer's scene.
     pub fn tick(&mut self, r: &mut Renderer, dt: f64) {
         self.menu_step(dt);
+        // first run: pick the name other players will see (the phone's own keyboard), once the title is up
+        if !self.ps.name_asked && self.state == State::Title && self.loading.is_none() && self.time > 0.8 { self.ps.name_asked = true; if self.ps.saves.get("fogwood-name-set").is_none() { self.ask_name(true); } }
         if self.loading.is_some() { self.hud_frame(r); return; }
         let guard = bridge::lock(); let Some(eng) = guard.as_ref() else { return };
         let w = &eng.world; let obs = &eng.obstacles;
@@ -452,11 +460,12 @@ impl Game {
         if self.fps_n == 90 { if !self.ps.downgraded && self.fps_acc / 90.0 > 1.0 / 36.0 && self.ps.pix_idx > 0 { self.ps.pix_idx -= 1; let (a, b, c) = (self.w, self.h, self.inset_px); self.resize(a, b, c); self.ps.downgraded = true; } self.fps_acc = 0.0; self.fps_n = 0; }
         let gust = clamp(0.5 + (fbm(self.time * 0.06, 3.3, 3) - 0.5) * 1.8, 0.0, 1.0); self.wind = gust;
         let inp = if let Some(i) = self.inp_ovr { i } else if self.state == State::Drive {
-            if self.go > 0.9 { Input { steer: 0.0, throttle: 0.0, brake: 0.0, hb: true } } else if self.auto || (self.race.on && self.race.phase == race::Phase::Done) { self.ai_input(w) } else { self.read_input() }
+            if self.go > 0.9 { Input { steer: 0.0, throttle: 0.0, brake: 0.0, hb: true } } else if self.tf.on && (self.auto || self.race.phase == race::Phase::Done || !self.tf.alive(self.race.player)) { tilefall::auto_input(self) } else if self.auto || (self.race.on && self.race.phase == race::Phase::Done) { self.ai_input(w) } else { self.read_input() }
         } else if self.gar.open || (self.race.demo && self.go > 0.9) { Input { steer: 0.0, throttle: 0.0, brake: 0.0, hb: true } } else { self.ai_input(w) };
         let mut tp = web_time::Instant::now(); let mut prof = [0f32; 8];
         macro_rules! lap { ($k:expr) => {{ let n = web_time::Instant::now(); prof[$k] += (n - tp).as_secs_f32() * 1000.0; tp = n; }} }
         self.online_tick(w, dt);
+        if self.tf.on && !self.race.on { tilefall::stop(self, w, Some(&mut *r)); }
         self.garage_step(w, dt);
         // the menu's attract race: you and five rivals, AI at every wheel, round and round behind the menu
         let demo_ok = self.ps.menu_race && self.state == State::Title && !self.gar.open && self.ps.online_ui == online::OnlineUi::Closed && !crate::net::active();
@@ -466,7 +475,8 @@ impl Game {
         let want = if self.gar.open { self.gar.sel } else { self.ps.car };
         if self.car_vis != Some(want) && !self.rt.car_models.is_empty() { for (k, objs) in self.rt.car_models.iter().enumerate() { for &o in objs { r.set_vis(o, k == want); } } self.car_vis = Some(want); }
         // its livery: the paint drawn with the picked texture (carried by an invisible mesh of that body), or its own
-        let pk = self.ps.paint.get(want).copied().unwrap_or(0);
+        let duo = if self.race.on && self.race.duos { self.race.cars.get(self.race.player).and_then(|c| c.team) } else { None };
+        let pk = match duo { Some(t) => cars::TEAM_LIVERY0 + (t as usize).min(cars::TEAMS - 1), None => self.ps.paint.get(want).copied().unwrap_or(0) };
         if self.paint_vis != Some((want, pk)) { if let Some((paint, alt)) = self.rt.liveries.get(want) {
             let tex = if pk == 0 { None } else { alt.get(pk - 1).map(|&o| r.obj_map(o)) }; for &o in paint { r.set_map(o, tex); } } self.paint_vis = Some((want, pk)); }
         let paused = self.settings_paused();   // settings open while driving alone: the world holds still
@@ -474,7 +484,7 @@ impl Game {
         let shifted = if paused { false } else { self.car.update(w, obs, &self.tune, dt, &inp) }; lap!(0);
         if shifted { if self.state == State::Drive { self.buzz("shift", 0.45); } self.audio_msg(&[7.0, 2.0]); }
         // prism: off the edge of the skyway is a long way down - back on the deck a few metres before where you left it
-        if self.pri && !paused && (self.state == State::Drive || self.race.demo) {
+        if self.pri && !paused && !self.tf.on && (self.state == State::Drive || self.race.demo) {
             let np = self.np; let k = path_idx(w, self.car.x, self.car.z); if w.path_dist(self.car.x, self.car.z) < w.road() { self.pri_last = Some(k); }
             if self.car.y < self.rt.roadh[k] - 8.0 { let back = (self.pri_last.unwrap_or(k) + np - 4) % np; self.place_at(w, back); if self.state == State::Drive { self.flash_msg("RESPAWN", 1.0); self.buzz("land", 0.7); } }
         }
@@ -530,7 +540,7 @@ impl Game {
         self.last_pidx = path_idx(w, self.car.x, self.car.z);
         self.camera(w, dt); lap!(4);
         if let Some((obj, _)) = self.rt.dust { self.dust.upload(r, obj); }
-        if self.race.on { race::gfx(self, r, w); race::audio(self); } else if self.race_was { race::hide(self, r); self.audio_msg(&[8.0, 0.0]); }
+        if self.race.on { race::gfx(self, r, w); race::audio(self); tilefall::gfx(self, r); } else if self.race_was { race::hide(self, r); self.audio_msg(&[8.0, 0.0]); }
         self.race_was = self.race.on; lap!(5);
         self.world_fx(r, w, dt);
         self.light(w, dt);
@@ -587,6 +597,7 @@ impl Game {
         self.cam.fov += (fov_t - self.cam.fov) * (dt * 3.0).min(1.0);
         self.fov_now = if self.w > self.h { self.cam.fov } else { self.cam.fov + 20.0 };
         if let Some((p, t, f)) = self.cam_ovr { self.cam_pos = p; self.cam_rot = look_rot(p, t); self.fov_now = f; }
+        else if self.tf.on && self.race.on && !self.tf.alive(self.race.player) && self.car.y < self.tf.y - 12.0 { let (p, t, f) = self.tf.spectate(self.time); self.cam_pos = p; self.cam_rot = look_rot(p, t); self.fov_now = f; }
         let cw = compose(self.cam_pos, &self.cam_rot, [1.0; 3]); self.view = invert(&cw);
         self.proj = perspective(self.fov_now, self.w / self.h, self.rt.near, self.rt.far);
     }
@@ -782,6 +793,18 @@ impl Game {
         fr.expo = self.expo as f32; fr.dim = (self.dim * self.shade_dim) as f32;
         fr.split_s = [self.rt.split[0], self.rt.split[1], self.rt.split[2]]; fr.split_h = [self.rt.split[3], self.rt.split[4], self.rt.split[5]];
         fr.texel = [1.0 / self.lw as f32, 1.0 / self.lh as f32]; fr.valid = true;
+        // Ember Peak drives by headlight: your car and the three nearest others in view
+        fr.lamp_n = 0;
+        if self.rt.map == "ember" {
+            let mut lamps: Vec<(f64, [f64; 3], f64, f64)> = vec![(-1.0, [self.car.x, self.car.y, self.car.z], self.car.h, 1.0)];
+            if self.race.on { let cp = self.cam_pos; for (k, c) in self.race.cars.iter().enumerate() { if k == self.race.player || c.left { continue; }
+                let d = (c.car.x - cp[0]).hypot(c.car.z - cp[2]); if d < 90.0 { lamps.push((d, [c.car.x, c.car.y, c.car.z], c.car.h, 0.6)); } } }
+            lamps.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+            for (i, (_, p, h, k)) in lamps.iter().take(4).enumerate() { let (sh, ch) = (h.sin(), h.cos());
+                fr.lamp_p[i * 3..i * 3 + 3].copy_from_slice(&[(p[0] + sh * 2.0) as f32, (p[1] + 0.75) as f32, (p[2] + ch * 2.0) as f32]);
+                fr.lamp_d[i * 3..i * 3 + 3].copy_from_slice(&[(sh * k) as f32, (-0.07 * k) as f32, (ch * k) as f32]); fr.lamp_n = i as i32 + 1; }
+            fr.lamp_c = [2.0, 1.62, 1.1];
+        }
     }
 
     // ---------------- sound ----------------
