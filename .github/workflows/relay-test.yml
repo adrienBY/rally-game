@@ -13,6 +13,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Stats endpoints answer (a bad note is refused, the page needs its key)
+        run: |
+          R=https://fogwood-relay.adrien-paul-bonnay.workers.dev
+          a=$(curl -s -o /dev/null -w "%{http_code}" -X POST $R/stat -d '{"p":"web","x":{"d":"zz","e":"nope"}}'); echo "bad note: $a"
+          b=$(curl -s -o /dev/null -w "%{http_code}" "$R/stats?k=wrong"); echo "page without key: $b"
+          c=$(curl -s -o /dev/null -w "%{http_code}" -X OPTIONS $R/stat); echo "preflight: $c"
+          [ "$a" = 204 ] && [ "$b" = 404 ] && [ "$c" = 204 ]
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
