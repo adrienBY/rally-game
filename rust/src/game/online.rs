@@ -155,6 +155,8 @@ impl Game {
             }
         }
         if !self.race.cars.iter().any(|c| c.is_player()) { race::stop(self); self.state = State::Title; self.flash_msg("NOT IN THIS RACE", 2.0); return; }
+        let mode = ["online", "duos", "tiles"][(st.mode as usize).min(2)]; let np = st.slots.len() + st.bots.len();
+        self.stat("play", &[("o", super::stats::js(mode)), ("k", np.to_string()), ("h", if is_host { "1".into() } else { "0".into() })]);
         if st.mode == net::proto::MODE_TILES { super::tilefall::begin(self, w); } else if self.tf.on { super::tilefall::stop(self, w, None); }
         self.last_idx = self.race.cars[self.race.player].last_idx;
         self.go = net::with(|s| (st.go_at - s.host_now() + 0.9).max(0.0)).unwrap_or(4.5);

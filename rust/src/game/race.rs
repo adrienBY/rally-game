@@ -299,6 +299,8 @@ fn progress(g: &mut Game, w: &World) {
 fn finish(g: &mut Game) {
     g.race.phase = Phase::Done; g.race.done_t = 0.0;
     let pos = g.race.cars.iter().filter(|c| c.finished).count();
+    if !g.race.demo { let mode = if g.race.duos { "duos" } else if g.race.online { "online" } else { "race" }; let t = g.race.cars[g.race.player].finish_t;
+        g.stat("finish", &[("o", super::stats::js(mode)), ("t", format!("{:.3}", t)), ("r", pos.to_string()), ("k", g.race.cars.len().to_string())]); }
     let np = g.np as f64; let laps = g.race.laps as f64;
     let next = if g.race.cars.iter().filter(|c| !c.is_player() && c.finished).count() == 0 {
         let mut best = 1e9; for c in &g.race.cars { if !c.is_player() { best = f64::min(best, (laps * np - c.prog) / c.v.max(15.0)); } } best } else { 0.0 };

@@ -148,12 +148,27 @@ class MainActivity : Activity() {
     /** the page has handed its stage over (and had time to finish decoding the recordings): no timers, no work until the next stage */
     private val sleepPage = Runnable { if (rtMode) web.pauseTimers() }
 
+    /** a play-stats note from the game (see rust/src/game/stats.rs): posted to the relay's /stat in the background, best effort */
+    private fun postStat(json: String) {
+        val v = try { val pi = packageManager.getPackageInfo(packageName, 0); if (Build.VERSION.SDK_INT >= 28) pi.longVersionCode else pi.versionCode.toLong() } catch (_: Exception) { 0L }
+        val body = "{\"p\":\"android\",\"v\":$v,\"x\":$json}"
+        Thread {
+            try {
+                val c = java.net.URL("https://fogwood-relay.adrien-paul-bonnay.workers.dev/stat").openConnection() as java.net.HttpURLConnection
+                c.requestMethod = "POST"; c.doOutput = true; c.connectTimeout = 8000; c.readTimeout = 8000
+                c.setRequestProperty("Content-Type", "text/plain")
+                c.outputStream.use { it.write(body.toByteArray()) }; c.responseCode; c.disconnect()
+            } catch (_: Exception) {}
+        }.start()
+    }
+
     /** events from the native game: "h <kind> <strength>" haptics, "map <name>" build that stage */
     private fun handleEvents(ev: String) {
         for (line in ev.lineSequence()) {
             if (line == "fps 30") vsync.gap = gapFor(30) else if (line == "fps 60") vsync.gap = gapFor(60)
             else if (line.startsWith("h ")) { val p = line.split(' '); if (p.size == 3) haptics.play(p[1], p[2].toFloatOrNull() ?: 0.5f) }
             else if (line.startsWith("name ")) { val first = line.startsWith("name 1"); val cur = line.drop(7); main.post { askName(first, cur) } }
+            else if (line.startsWith("stat ")) postStat(line.substring(5))
             else if (line.startsWith("bench ")) { val path = line.substring(6); main.post { exportBench(path) } }
             else if (line.startsWith("crash ")) { val path = line.substring(6); main.post { exportCrash(path) } }
             else if (line.startsWith("map ")) { val name = line.substring(4).filter { it.isLetter() }

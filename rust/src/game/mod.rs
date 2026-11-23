@@ -14,6 +14,7 @@ pub mod crash;
 pub mod menu;
 pub mod volc;
 pub mod tilefall;
+pub mod stats;
 mod draw;
 
 use crate::bridge;
@@ -412,7 +413,8 @@ impl Game {
         self.close_settings(); self.gar.open = false; if self.race.on { race::stop(self); }
         self.state = State::Drive; let np = self.np; self.place_at(&e.world, np - 6); self.lap = 1; self.started = false; self.g_t = 0.0; self.flags = [false; 3]; self.last_idx = np - 6; self.go = 2.2;
         if self.ps.race_mode { race::start(self, &e.world); }
-        self.car_audio_on = true;
+        self.car_audio_on = true; drop(g);
+        let mode = if self.ps.race_mode { "race" } else { "drive" }; self.stat("play", &[("o", stats::js(mode))]);
     }
     pub fn to_title(&mut self) -> bool {
         if self.state != State::Drive { return false; }
@@ -434,6 +436,7 @@ impl Game {
                 if self.best.map(|b| lt < b).unwrap_or(true) { self.best = Some(lt); self.flash_msg(&format!("NEW BEST {}", fmt(Some(lt))), 3.0); let k = format!("fogwood-best-{}", self.rt.map); self.ps.saves.set(&k, format!("{}", lt)); }
                 else { self.flash_msg(&format!("STAGE {}", fmt(Some(lt))), 3.0); }
                 if self.tel.is_some() { self.tel_note.push_str(&format!("lap {:.3};", lt)); }
+                if !self.race.on { self.stat("stage", &[("t", format!("{:.3}", lt))]); }
                 self.lap += 1; self.lap_start = self.g_t;
             }
             self.flags = [false; 3];
@@ -449,7 +452,7 @@ impl Game {
     pub fn tick(&mut self, r: &mut Renderer, dt: f64) {
         self.menu_step(dt);
         // first run: pick the name other players will see (the phone's own keyboard), once the title is up
-        if !self.ps.name_asked && self.state == State::Title && self.loading.is_none() && self.time > 0.8 { self.ps.name_asked = true; if self.ps.saves.get("fogwood-name-set").is_none() { self.ask_name(true); } }
+        if !self.ps.name_asked && self.state == State::Title && self.loading.is_none() && self.time > 0.8 { self.ps.name_asked = true; if self.ps.saves.get("fogwood-name-set").is_none() { self.ask_name(true); } self.stat("launch", &[]); }
         if self.loading.is_some() { self.hud_frame(r); return; }
         let guard = bridge::lock(); let Some(eng) = guard.as_ref() else { return };
         let w = &eng.world; let obs = &eng.obstacles;

@@ -129,7 +129,8 @@ pub fn step(g: &mut Game, w: &World, dt: f64) {
         if alive.is_empty() || (n >= 2 && alive.len() <= 1) {
             g.race.phase = Phase::Done; g.race.done_t = 0.0; g.tf.winner = alive.first().copied();
             let m = match g.tf.winner { Some(k) if k == me => "YOU WIN!".to_string(), Some(k) => format!("{} WINS", g.race.cars[k].tag()), None => "NO ONE LEFT".into() };
-            g.flash_msg(&m, 3.0); g.race.finish_pos = g.race.pos; } }
+            g.flash_msg(&m, 3.0); g.race.finish_pos = g.race.pos;
+            let lasted = g.tf.out[me].unwrap_or(t); g.stat("finish", &[("o", super::stats::js("tiles")), ("t", format!("{:.3}", lasted)), ("r", g.race.pos.to_string()), ("k", n.to_string())]); } }
 }
 
 /// results, best first: (car, race time it fell or None for the winner)
