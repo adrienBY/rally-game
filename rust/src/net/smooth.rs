@@ -164,6 +164,10 @@ impl Track {
         while self.queue.len() > 24 { self.queue.pop_front(); }
         self.late.push_back(((arrival - c.t) as f32).clamp(0.0, 2.0)); while self.late.len() > 40 { self.late.pop_front(); }
     }
+    /// how bursty its arrivals are: the 95th minus the median lateness (s; a TCP stall shows as a long tail)
+    pub fn spread(&self) -> f32 {
+        if self.late.len() < 12 { return 0.0; } let mut v: Vec<f32> = self.late.iter().copied().collect(); v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        v[((v.len() - 1) as f32 * 0.95) as usize] - v[(v.len() - 1) / 2] }
     /// lateness the prediction covers on its own (a fast link is drawn at the present: contacts stay exact)
     fn free(&self) -> f32 { static F: std::sync::OnceLock<f32> = std::sync::OnceLock::new(); *F.get_or_init(|| std::env::var("FW_FREE").ok().and_then(|v| v.parse().ok()).unwrap_or(FREE)) }
     /// the delay the lateness asks for: its 90th percentile plus a frame
@@ -279,6 +283,21 @@ pub struct Policy {
 pub struct Thresholds { pub pos: f32, pub head: f32, pub speed: f32, pub height: f32, pub body: f32 }
 impl Default for Thresholds { fn default() -> Self { Thresholds { pos: 0.15, head: 0.026, speed: 0.8, height: 0.12, body: 0.06 } } }
 
+/// How precisely and how often a car goes out, by how far (m) the nearest other car is. Close by (contacts, side by
+/// side, a car being chased) the drift allowed shrinks and the rate goes up; out of everyone's sight it relaxes, and
+/// what that saves is what the pack spends. Receivers draw a far car in the past and smooth it anyway: they can't see
+/// the difference, but the room's data goes where the eyes are. (base thresholds, rate, heartbeat) -> the same, adjusted
+pub fn relevance(t: Thresholds, rate: f32, beat: f32, dist: f32) -> (Thresholds, f32, f32) {
+    if dist < 30.0 {
+        // within 30 m: tighter, tightest and quickest at contact range (12 m)
+        let k = ((30.0 - dist) / 18.0).clamp(0.0, 1.0); let m = |a: f32, b: f32| a + (b - a) * k;
+        (Thresholds { pos: t.pos * m(0.6, 0.35), head: t.head * m(0.7, 0.45), speed: t.speed * m(0.7, 0.45), height: t.height, body: t.body }, (rate * m(1.25, 1.6)).min(30.0), beat.min(m(0.4, 0.2)))
+    } else if dist > 120.0 {
+        let k = ((dist - 120.0) / 180.0).clamp(0.0, 1.0); let m = 1.0 + k;
+        (Thresholds { pos: t.pos * m, head: t.head * m, speed: t.speed * m, height: t.height * m, body: t.body * m }, rate * (1.0 - 0.45 * k), (beat * (1.0 + 0.6 * k)).min(1.1))
+    } else { (t, rate, beat) }
+}
+
 impl Policy {
     /// forward acceleration from the speed history, smoothed (~80 ms) so one bumpy frame does not swing the prediction
     pub fn accel(&mut self, u: f32, dt: f32) -> f32 {
@@ -289,7 +308,7 @@ impl Policy {
     /// `heartbeat` seconds passed. Never more than `rate` packets a second on average (bursts of up to a quarter second).
     pub fn due(&mut self, c: &CarSnap, g: Ground, thr: &Thresholds, rate: f32, heartbeat: f32) -> bool {
         let dt = if self.last_t > 0.0 { (c.t - self.last_t).clamp(0.0, 0.5) as f32 } else { 0.0 }; self.last_t = c.t;
-        let cap = (rate * 0.25).max(1.0); self.tokens = (self.tokens + dt * rate).min(cap);
+        let cap = (rate * 0.4).max(2.0); self.tokens = (self.tokens + dt * rate).min(cap);
         let Some(s) = &self.sent else { return self.take(); };
         let age = (c.t - s.t) as f32; if age < 1.0 / 31.0 || self.tokens < 1.0 { return false; }
         if age >= heartbeat || c.gear != s.gear || c.flags != s.flags { return self.take(); }

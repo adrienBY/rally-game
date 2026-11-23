@@ -18,6 +18,14 @@ pub const K_CAR2: u8 = 0xC2; pub const CAR2_LEN: usize = 27;
 pub const K_CAR3: u8 = 0xC3; pub const CAR3_LEN: usize = 29;
 /// one of the host's AI cars: CAR3 (sender = the host) plus the AI car's index, 30 bytes
 pub const K_BOT3: u8 = 0xC4; pub const BOT3_LEN: usize = 30;
+/// BATCH: several of the messages above in one packet (a frame's car states: ours and our AI cars), so a room full of
+/// cars costs one datagram / one relay message per frame instead of one each: [0xC8][count u8] then [len u8][message]...
+/// Only sent to phones whose hello says they read it (CAP_BATCH).
+pub const K_BATCH: u8 = 0xC8;
+/// hello capability bits
+pub const CAP_BATCH: u8 = 1;
+/// largest batch (bytes): well inside one datagram and one relay message
+pub const BATCH_MAX: usize = 1100;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Env { pub kind: u8, pub room: u32, pub from: u32, pub to: u32, pub seq: u32 }
@@ -36,7 +44,9 @@ pub struct Hello { pub host: bool, pub racing: bool, pub name: String, pub map: 
     /// the livery on that car (0: its own); newer builds
     pub paint: u8,
     /// which of the brokers (bit k: BROKERS[k]) this phone is connected to; 0xFF: unknown (older builds)
-    pub brokers: u8 }
+    pub brokers: u8,
+    /// what this build reads (CAP_* bits; 0: older builds)
+    pub caps: u8 }
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Start { pub map: String, pub laps: u8, pub go_at: f64, pub slots: Vec<(u32, u8)>,
     /// AI cars, driven by the host's phone: (rival, grid slot); their index in this list is their id on the wire
@@ -77,14 +87,14 @@ pub fn read_env(b: &[u8]) -> Option<(Env, R<'_>)> {
 
 pub fn hello(e: Env, h: &Hello) -> Vec<u8> {
     let mut w = W::env(e); w.u8(h.host as u8 | (h.racing as u8) << 1); w.str(&h.name); w.str(&h.map); w.u8(h.cands.len().min(4) as u8);
-    for (ip, port) in h.cands.iter().take(4) { w.0.extend_from_slice(ip); w.u16(*port); } w.u8(h.car); w.u8(h.brokers); w.u8(h.paint); w.0
+    for (ip, port) in h.cands.iter().take(4) { w.0.extend_from_slice(ip); w.u16(*port); } w.u8(h.car); w.u8(h.brokers); w.u8(h.paint); w.u8(h.caps); w.0
 }
 pub fn read_hello(r: &mut R) -> Option<Hello> {
     let f = r.u8()?; let name = r.str()?; let map = r.str()?; let n = r.u8()? as usize; let mut cands = Vec::new();
     for _ in 0..n.min(4) { let ip = r.take(4)?; let port = r.u16()?; cands.push(([ip[0], ip[1], ip[2], ip[3]], port)); }
     // the car came later: older builds stop before it (car 0)
-    let car = r.u8().unwrap_or(0); let brokers = r.u8().unwrap_or(0xFF); let paint = r.u8().unwrap_or(0);
-    Some(Hello { host: f & 1 != 0, racing: f & 2 != 0, name, map, cands, car, brokers, paint })
+    let car = r.u8().unwrap_or(0); let brokers = r.u8().unwrap_or(0xFF); let paint = r.u8().unwrap_or(0); let caps = r.u8().unwrap_or(0);
+    Some(Hello { host: f & 1 != 0, racing: f & 2 != 0, name, map, cands, car, brokers, paint, caps })
 }
 pub fn start(e: Env, s: &Start) -> Vec<u8> {
     let mut w = W::env(e); w.str(&s.map); w.u8(s.laps); w.f64(s.go_at); w.u8(s.slots.len().min(12) as u8); for (id, k) in s.slots.iter().take(12) { w.u32(*id); w.u8(*k); }
@@ -162,6 +172,26 @@ pub fn read_tiles(r: &mut R) -> Option<Vec<(u8, u16)>> { let n = r.u16()? as usi
 pub fn bot_hit(e: Env, idx: u8, d: [f32; 5], imp: f32) -> Vec<u8> { let mut w = W::env(e); w.u8(idx); for v in d { w.f32(v); } w.f32(imp); w.0 }
 pub fn read_bot_hit(r: &mut R) -> Option<(u8, [f32; 5], f32)> { let idx = r.u8()?; let mut d = [0f32; 5]; for v in d.iter_mut() { *v = r.f32()?; } Some((idx, d, r.f32()?)) }
 pub fn bare(e: Env) -> Vec<u8> { W::env(e).0 }
+/// pack messages into as few batches as fit (a lone message goes as it is)
+pub fn batches(msgs: &[Vec<u8>]) -> Vec<Vec<u8>> {
+    let mut out: Vec<Vec<u8>> = Vec::new(); let mut cur: Vec<u8> = Vec::new(); let mut n = 0u8; let mut first: Option<&Vec<u8>> = None;
+    let close = |out: &mut Vec<Vec<u8>>, cur: &mut Vec<u8>, n: &mut u8, first: &mut Option<&Vec<u8>>| {
+        if *n == 1 { out.push(first.unwrap().clone()); } else if *n > 1 { cur[1] = *n; out.push(std::mem::take(cur)); } cur.clear(); *n = 0; *first = None; };
+    for m in msgs {
+        if m.len() > 255 { out.push(m.clone()); continue; }
+        if n == 255 || cur.len() + 1 + m.len() > BATCH_MAX { close(&mut out, &mut cur, &mut n, &mut first); }
+        if n == 0 { cur.extend_from_slice(&[K_BATCH, 0]); first = Some(m); }
+        cur.push(m.len() as u8); cur.extend_from_slice(m); n += 1;
+    }
+    close(&mut out, &mut cur, &mut n, &mut first); out
+}
+/// the messages in a batch (None: not a batch)
+pub fn unbatch(b: &[u8]) -> Option<Vec<&[u8]>> {
+    if b.first() != Some(&K_BATCH) || b.len() < 2 { return None; }
+    let n = b[1] as usize; let mut i = 2; let mut v = Vec::with_capacity(n);
+    for _ in 0..n { let l = *b.get(i)? as usize; i += 1; v.push(b.get(i..i + l)?); i += l; }
+    Some(v)
+}
 
 #[cfg(test)]
 mod tests {
@@ -169,7 +199,7 @@ mod tests {
     #[test]
     fn roundtrips() {
         let e = Env { kind: K_HELLO, room: 123456, from: 0xdeadbeef, to: 0, seq: 9 };
-        let h = Hello { host: true, racing: false, name: "ADRIEN".into(), map: "lakes".into(), cands: vec![([192, 168, 1, 20], 40000), ([203, 0, 113, 9], 51234)], car: 3, brokers: 5, paint: 7 };
+        let h = Hello { host: true, racing: false, name: "ADRIEN".into(), map: "lakes".into(), cands: vec![([192, 168, 1, 20], 40000), ([203, 0, 113, 9], 51234)], car: 3, brokers: 5, paint: 7, caps: CAP_BATCH };
         let b = hello(e, &h); let (e2, mut r) = read_env(&b).unwrap(); assert_eq!(e2, e); assert_eq!(read_hello(&mut r).unwrap(), h);
         let s = Start { map: "snow".into(), laps: 3, go_at: 1234.5, slots: vec![(1, 0), (2, 1)], bots: vec![(0, 2), (3, 3)], srv: true, mode: MODE_DUOS, teams: vec![0, 0], bot_teams: vec![1, 1] };
         let b = start(Env { kind: K_START, ..e }, &s); let (_, mut r) = read_env(&b).unwrap(); assert_eq!(read_start(&mut r).unwrap(), s);
@@ -192,5 +222,12 @@ mod tests {
         assert!((d.x - c.x).abs() < 0.005 && d.gear == 4);
         let b = bot3(0xabcd1234, 79, 3, &c3); assert_eq!(b.len(), BOT3_LEN); assert_eq!(bot_idx(&b), Some(3));
         let (f, sq, _, d) = read_car2(&b).unwrap(); assert_eq!((f, sq), (0x1234, 79)); assert!((d.a + 9.3).abs() < 0.11 && (d.x - c.x).abs() < 0.005);
+        // batches: a frame's car states in one packet, split when too big, a lone one as it is
+        let msgs: Vec<Vec<u8>> = (0..12u8).map(|k| bot3(1, k, k, &c3)).collect();
+        let bs = batches(&msgs); assert_eq!(bs.len(), 1); let back = unbatch(&bs[0]).unwrap(); assert_eq!(back.len(), 12); assert_eq!(back[5], &msgs[5][..]);
+        assert_eq!(batches(&msgs[..1]), vec![msgs[0].clone()]); assert!(unbatch(&msgs[0]).is_none());
+        let many: Vec<Vec<u8>> = (0..80u8).map(|k| bot3(1, k, k, &c3)).collect(); let bs = batches(&many); assert!(bs.len() >= 3 && bs.iter().all(|b| b.len() <= BATCH_MAX));
+        assert_eq!(bs.iter().map(|b| unbatch(b).map(|v| v.len()).unwrap_or(1)).sum::<usize>(), 80);
+        assert!(unbatch(&[K_BATCH, 3, 2, 1]).is_none());
     }
 }

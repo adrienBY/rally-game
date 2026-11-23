@@ -13,7 +13,7 @@ fn main() {
     while t0.elapsed().as_secs_f64() < secs {
         let t = t0.elapsed().as_secs_f64();
         net::with(|s| { s.poll();
-            let c = net::proto::CarSnap { x: (t * 10.0) as f32, vx: 10.0, h: std::f32::consts::FRAC_PI_2, ..Default::default() }; s.send_car(c, 0.016, None, false); s.advance_view(0.016);
+            let c = net::proto::CarSnap { x: (t * 10.0) as f32, vx: 10.0, h: std::f32::consts::FRAC_PI_2, ..Default::default() }; s.send_car(c, 0.016, None, 1e9); s.flush(); s.advance_view(0.016);
             if host && !started && !s.peers.is_empty() && t > 4.0 {
                 if !sent_stage { sent_stage = true; println!("relay can drive AI cars: {}; stage upload ({} bytes): {}", s.sim_capable(), blob.len(), s.upload_stage(&blob)); }
                 started = true; let st = s.start_race("lakes", 3, 6.0, &[0, 1, 2], true, 0).unwrap(); println!("start go_at {:.3} srv {}", st.go_at, st.srv);

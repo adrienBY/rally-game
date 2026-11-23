@@ -67,9 +67,10 @@ impl Game {
             let ground = |x: f32, z: f32| flat.unwrap_or_else(|| w.height(x as f64, z as f64) as f32); let g: net::smooth::Ground = Some(&ground);
             // closer than 40 m a car eases onto the present, fully there by 15 m, and our states go out more precisely
             // within 30 m (contacts happen there)
-            let near: Vec<(u32, f32, bool)> = ids.iter().map(|(k, id)| { let c = &self.race.cars[*k].car; let d = (c.x - self.car.x).hypot(c.z - self.car.z);
-                let q = ((40.0 - d) / 25.0).clamp(0.0, 1.0); (*id, (q * q * (3.0 - 2.0 * q)) as f32, d < 30.0) }).collect();
-            let any_near = near.iter().any(|n| n.2);
+            let near: Vec<(u32, f32, f32)> = ids.iter().map(|(k, id)| { let c = &self.race.cars[*k].car; let d = (c.x - self.car.x).hypot(c.z - self.car.z);
+                let q = ((40.0 - d) / 25.0).clamp(0.0, 1.0); (*id, (q * q * (3.0 - 2.0 * q)) as f32, d as f32) }).collect();
+            // the nearest other car (AI cars driven here count too): how precisely and how often our states go out
+            let nearest = near.iter().map(|n| n.2).chain(self.race.cars.iter().filter(|c| c.is_ai()).map(|c| (c.car.x - self.car.x).hypot(c.car.z - self.car.z) as f32)).fold(1e9f32, f32::min);
             // bumps: the pushes we gave other cars this phone settled last frame (summed per car) are shown on their cars
             // and sent to their phones
             let hits = std::mem::take(&mut self.race.hits);
@@ -78,11 +79,12 @@ impl Game {
             if std::env::var("FW_DEBUG").is_ok() { for (id, by, d, imp) in &sum { eprintln!("hit-out t={:.2} to {:08x} by {} dv=({:.2},{:.2}) dr={:.2} imp={:.2}", self.race.t, id, by, d[0], d[1], d[2], imp); } }
             // host: our AI cars go out right after our own car (closer than 30 m to a player: more precisely)
             let humans: Vec<(f64, f64)> = self.race.cars.iter().enumerate().filter(|(_, c)| c.bot.is_none() && !c.left).map(|(k, c)| if k == self.race.player { (self.car.x, self.car.z) } else { (c.car.x, c.car.z) }).collect();
-            let bots_out: Vec<(usize, CarSnap, bool)> = self.race.cars.iter().filter(|c| c.is_ai()).filter_map(|c| c.bot.map(|b| (b as usize, snap_of(&c.car, c.epoch), humans.iter().any(|h| (h.0 - c.car.x).hypot(h.1 - c.car.z) < 30.0)))).collect();
+            let bots_out: Vec<(usize, CarSnap, f32)> = self.race.cars.iter().filter(|c| c.is_ai()).filter_map(|c| c.bot.map(|b| (b as usize, snap_of(&c.car, c.epoch), humans.iter().map(|h| (h.0 - c.car.x).hypot(h.1 - c.car.z) as f32).fold(1e9f32, f32::min)))).collect();
             let (snaps, owned, incoming, bot_in) = net::with(|s| {
                 for (id, by, d, imp) in &sum { s.bump(*id, *by, d.map(|v| v as f32), *imp as f32); }
-                for (id, n, _) in &near { s.set_near(*id, *n); } s.send_car(mine, dt, g, any_near);
+                for (id, n, _) in &near { s.set_near(*id, *n); } s.send_car(mine, dt, g, nearest);
                 for (k, sn, nr) in &bots_out { s.send_bot(*k, *sn, dt, g, *nr); }
+                s.flush();
                 s.advance_view(dt);
                 (ids.iter().map(|(k, id)| (*k, s.remote(*id, g))).collect::<Vec<_>>(), ids.iter().map(|(k, id)| (*k, s.owned(*id))).collect::<Vec<_>>(), s.take_hits(), s.take_bot_hits())
             }).unwrap_or_default();

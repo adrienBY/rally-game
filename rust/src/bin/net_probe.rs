@@ -7,7 +7,7 @@ fn main() {
     while t0.elapsed().as_secs_f64() < secs {
         let t = t0.elapsed().as_secs_f64();
         net::with(|s| { s.poll();
-            let c = net::proto::CarSnap { x: (t * 10.0) as f32, vx: 10.0, h: std::f32::consts::FRAC_PI_2, ..Default::default() }; s.send_car(c, 0.016, None, false); s.advance_view(0.016);
+            let c = net::proto::CarSnap { x: (t * 10.0) as f32, vx: 10.0, h: std::f32::consts::FRAC_PI_2, ..Default::default() }; s.send_car(c, 0.016, None, 1e9); s.flush(); s.advance_view(0.016);
             if s.is_host && t > 3.0 && !started { started = true; let st = s.start_race("lakes", 3, 5.0, &[], false, 0).unwrap(); println!("start go_at {:.3}", st.go_at); }
             if let Some(st) = s.start_in.take() { println!("got start map {} laps {} go_at {:.3} slots {:?} (host now {:.3})", st.map, st.laps, st.go_at, st.slots, s.host_now()); }
             if t >= next { next += 1.0;

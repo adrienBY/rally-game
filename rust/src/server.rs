@@ -42,6 +42,8 @@ pub struct Sim {
     bot_hits: Vec<(u32, u8, [f32; 5], f32)>,
     out: Vec<(u32, Vec<u8>)>, now: f64, last_heard: f64,
     pub log: Vec<String>,
+    /// what each phone's build reads (proto::CAP_*, from its hello)
+    caps: HashMap<u32, u8>,
 }
 
 impl Sim {
@@ -60,7 +62,7 @@ impl Sim {
         // the server has no car of its own: the race's "player" is parked far off the stage, out of everything
         game.car = Car::new(); game.car.x = 1.0e5; game.car.z = 1.0e5; game.car.y = -1.0e4;
         Ok(Sim { room, host, world, obs, game, seq: 0, offset: 0.0, best_rtt: 9.0, pongs: 0, last_ping: -9.0, pings: HashMap::new(), start: None, players: Vec::new(), bots: Vec::new(),
-            sim_t: 0.0, volc_t: -1.0, hits: Vec::new(), hit_tx: HashMap::new(), bot_hits: Vec::new(), out: Vec::new(), now, last_heard: now, log: Vec::new() })
+            sim_t: 0.0, volc_t: -1.0, hits: Vec::new(), hit_tx: HashMap::new(), bot_hits: Vec::new(), out: Vec::new(), now, last_heard: now, log: Vec::new(), caps: HashMap::new() })
     }
     pub fn map(&self) -> &str { &self.game.rt.map }
     fn host_now(&self) -> f64 { self.now + self.offset }
@@ -74,13 +76,14 @@ impl Sim {
     /// A game packet from member `from`.
     pub fn packet(&mut self, from: u32, b: &[u8], now: f64) {
         self.now = now; self.last_heard = now;
+        if let Some(list) = proto::unbatch(b) { for m in list { if m.first() != Some(&proto::K_BATCH) { self.packet(from, m, now); } } return; }
         if matches!(b.first(), Some(&proto::K_CAR2) | Some(&proto::K_CAR3)) { self.car_in(b); return; }
         if b.first() == Some(&proto::K_BOT3) { return; }
         let Some((e, mut r)) = proto::read_env(b) else { return };
         if e.room != self.room || e.from == SERVER_ID || (e.to != 0 && e.to != SERVER_ID) { return; }
         let _ = from;
         match e.kind {
-            proto::K_HELLO => { if let Some(h) = proto::read_hello(&mut r) { if h.host && e.from != self.host { self.host = e.from; self.best_rtt = 9.0; self.pongs = 0; } } }
+            proto::K_HELLO => { if let Some(h) = proto::read_hello(&mut r) { self.caps.insert(e.from, h.caps); if h.host && e.from != self.host { self.host = e.from; self.best_rtt = 9.0; self.pongs = 0; } } }
             proto::K_PONG => { if e.from == self.host { if let (Some(t), Some(ht)) = (r.f64(), r.f64()) { if self.pings.remove(&e.seq).is_some() {
                 let rtt = self.now - t; if (0.0..3.0).contains(&rtt) { self.pongs += 1; self.best_rtt += 0.002; if rtt <= self.best_rtt { self.best_rtt = rtt; self.offset = ht - (t + rtt / 2.0); } } } } } }
             proto::K_START => { if e.from == self.host { if let Some(s) = proto::read_start(&mut r) { if s.srv && self.start.as_ref().map(|o| (o.go_at - s.go_at).abs() > 0.01).unwrap_or(true) { self.begin(s); } } } }
@@ -178,18 +181,20 @@ impl Sim {
         // our AI cars out: like a phone's own car, when the receivers' prediction has drifted, within the data budget
         let humans: Vec<(f64, f64)> = self.game.race.cars.iter().filter(|c| c.remote.is_some() && !c.left).map(|c| (c.car.x, c.car.z)).collect();
         let n = humans.len().max(1); let (rate, beat) = if n <= 4 { (20.0f32, 0.5f32) } else if n <= 8 { (12.0, 0.6) } else { (8.0, 0.75) };
-        let base = smooth::Thresholds::default();
-        let list: Vec<(usize, CarSnap, bool)> = self.game.race.cars.iter().filter(|c| c.is_ai()).filter_map(|c| c.bot.map(|b| (b as usize, snap_of(&c.car, c.epoch), humans.iter().any(|h| (h.0 - c.car.x).hypot(h.1 - c.car.z) < 30.0)))).collect();
-        for (k, mut c, near) in list {
+        let base = smooth::Thresholds::default(); let mut batch: Vec<Vec<u8>> = Vec::new();
+        let list: Vec<(usize, CarSnap, f32)> = self.game.race.cars.iter().filter(|c| c.is_ai()).filter_map(|c| c.bot.map(|b| (b as usize, snap_of(&c.car, c.epoch), humans.iter().map(|h| (h.0 - c.car.x).hypot(h.1 - c.car.z) as f32).fold(1e9f32, f32::min)))).collect();
+        for (k, mut c, dist) in list {
             if k >= self.bots.len() { continue; }
             c.t = t; c.a = self.bots[k].policy.accel(c.u, DT as f32);
-            let thr = if near { smooth::Thresholds { pos: base.pos * 0.4, head: base.head * 0.5, speed: base.speed * 0.5, height: base.height, body: base.body } } else { base };
-            let (rate, beat) = if near { ((rate * 1.5).min(30.0), beat.min(0.25)) } else { (rate, beat) };
+            let (thr, rate, beat) = smooth::relevance(base, rate, beat, dist);
             let bo = &mut self.bots[k]; if !bo.policy.due(&c, gr, &thr, rate, beat) { continue; }
             bo.seq = bo.seq.wrapping_add(1); let b = proto::bot3(SERVER_ID, bo.seq, k as u8, &c);
             if let Some((_, _, _, mut q)) = proto::read_car2(&b) { q.t = t; bo.policy.sent = Some(q); }
-            self.out.push((0, b));
+            batch.push(b);
         }
+        // all due AI cars in one packet when every player's build reads batches
+        let all = !self.players.is_empty() && self.players.iter().all(|p| self.caps.get(&p.id).map(|c| c & proto::CAP_BATCH != 0).unwrap_or(false));
+        if all { for b in proto::batches(&batch) { self.out.push((0, b)); } } else { for b in batch { self.out.push((0, b)); } }
         // the race is over for everyone (or everyone left): stop
         let rc = &self.game.race; let players_done = rc.cars.iter().filter(|c| c.remote.is_some()).all(|c| c.finished || c.left);
         if rc.phase != race::Phase::Grid && players_done && !self.players.is_empty() { self.log.push(format!("race over at {:.1}s", rc.t)); self.start = None; }

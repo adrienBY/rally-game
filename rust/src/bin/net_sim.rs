@@ -103,7 +103,7 @@ fn main() {
         for ver in ["v1", "now"] {
             let mut net_rng = Rng(12345); let v1 = ver == "v1";
             // send: (arrival, seq, bytes)
-            let mut flight: Vec<(f64, Vec<u8>)> = Vec::new(); let mut pol = Policy::default(); let mut thr = Thresholds::default(); if let Ok(v) = std::env::var("THR") { let q: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect(); thr.pos = q[0]; thr.head = q[1]; thr.speed = q[2]; if q.len() > 3 { thr.height = q[3]; thr.body = q[4]; } } let mut v1s = V1::default();
+            let mut flight: Vec<(f64, Vec<Vec<u8>>)> = Vec::new(); let red = env("RED", 0.0) > 0.0 && !v1; let repeat = env("REPEAT", 0.0) / 1000.0; let dual = env("DUAL", 0.0) > 0.0 && !v1; let mut last_pkt: Option<(f64, Vec<u8>)> = None; let mut repeated = true; let mut tcp_last2 = 0.0f64; let hdr = env("HDR", -1.0); let mut pol = Policy::default(); let mut thr = Thresholds::default(); if let Ok(v) = std::env::var("THR") { let q: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect(); thr.pos = q[0]; thr.head = q[1]; thr.speed = q[2]; if q.len() > 3 { thr.height = q[3]; thr.body = q[4]; } } let mut v1s = V1::default();
             let mut seq = 0u8; let mut tcp_last = 0.0f64; let mut stamp = smooth::ViewClock::default(); let (mut pkts, mut bytes) = (0usize, 0usize);
             // rate: a 4-player all-direct room under the budget
             let players = env("PLAYERS", 4.0); let rate = ((fogwood_core::net::BUDGET - 250.0) / (2.0 * (players - 1.0) * (proto::CAR3_LEN as f64 + 28.0))).clamp(4.0, 24.0) as f32; let beat = (3.0 / rate).clamp(0.4, 0.75);
@@ -112,14 +112,23 @@ fn main() {
                 // vsync-paced clock locked to it instead
                 let t = f as f64 * dt; let mut s = snap_of(c); let raw = t + net_rng.f() * stampjit; s.t = if v1 || std::env::var("RAWSTAMP").is_ok() { raw } else { stamp.advance(raw, dt) };
                 let send = if v1 { v1s.due(&s) } else { s.a = pol.accel(s.u, dt as f32); pol.due(&s, g, &thr, rate, beat) };
-                if !send { continue; }
+                if !send {
+                    // a repeat of the last state, once, when nothing new followed it within REPEAT
+                    if repeat > 0.0 && !v1 && !repeated { if let Some((lt, lb)) = &last_pkt { if t - lt >= repeat { repeated = true; let b = lb.clone();
+                        pkts += 1; bytes += b.len() + if tcp { 4 + 10 + 40 } else { 28 };
+                        if !(net_rng.f() < loss) && !tcp { flight.push((t + lat + (net_rng.f() * 2.0 - 1.0) * jit, vec![b])); } } } }
+                    continue; }
                 seq = seq.wrapping_add(1); let b = if v1 { proto::car2(7, seq, &s) } else { proto::car3(7, seq, &s) };
                 let (_, _, _, mut q) = proto::read_car2(&b).unwrap(); q.t = t; if v1 { v1s.sent = Some(q); } else { pol.sent = Some(q); }
-                pkts += 1; bytes += b.len() + if tcp { 4 + 10 + 40 } else { 28 };
+                let mut msg = Vec::new(); if red { if let Some((lt, lb)) = &last_pkt { if t - lt < 0.3 { msg.push(lb.clone()); } } } msg.push(b.clone());
+                let payload: usize = msg.iter().map(|m| m.len()).sum::<usize>(); let over = if hdr >= 0.0 { hdr as usize } else if tcp { 4 + 10 + 40 } else { 28 };
+                pkts += 1; bytes += payload + over; last_pkt = Some((t, b)); repeated = false;
                 let lost = net_rng.f() < loss;
-                let arr = if tcp { let mut a = t + lat + (net_rng.f() * 2.0 - 1.0) * jit; if lost { a += 0.2 + lat * 2.0; } a = a.max(tcp_last); tcp_last = a; Some(a) }
+                let arr = if tcp { let mut a = t + lat + (net_rng.f() * 2.0 - 1.0) * jit; if lost { a += 0.2 + lat * 2.0; } a = a.max(tcp_last); tcp_last = a;
+                        if dual { bytes += payload + over; let lost2 = net_rng.f() < loss; let mut a2 = t + lat + (net_rng.f() * 2.0 - 1.0) * jit; if lost2 { a2 += 0.2 + lat * 2.0; } a2 = a2.max(tcp_last2); tcp_last2 = a2; a = a.min(a2); }
+                        Some(a) }
                     else if lost { None } else { Some(t + lat + (net_rng.f() * 2.0 - 1.0) * jit) };
-                if let Some(a) = arr { flight.push((a, b)); }
+                if let Some(a) = arr { flight.push((a, msg)); }
             }
             flight.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
             // receive and draw
@@ -128,10 +137,11 @@ fn main() {
             for f in 0..n {
                 let vs = f as f64 * dt; let tick = vs + net_rng.f() * tickjit;   // the frame starts a little after vsync, by a varying amount
                 while fi < flight.len() && flight[fi].0 <= tick {
-                    let (_, sq, ms, mut c) = proto::read_car2(&flight[fi].1).unwrap(); fi += 1;
+                    let msg = flight[fi].1.clone(); fi += 1;
+                    for m in msg { let (_, sq, ms, mut c) = proto::read_car2(&m).unwrap();
                     if let Some(l) = last_seq { if (sq.wrapping_sub(l) as i8) <= 0 { continue; } } last_seq = Some(sq);
                     let age = ((tick * 1000.0).rem_euclid(65536.0) - ms as f64).rem_euclid(65536.0) / 1000.0; c.t = tick - age;
-                    if v1 { v1r.push(c, tick); } else { tr.push_at(c, tick); }
+                    if v1 { v1r.push(c, tick); } else { tr.push_at(c, tick); } }
                 }
                 let s = if v1 { v1r.sample(tick) } else {
                     let t = view.advance(tick, dt);

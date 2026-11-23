@@ -7,6 +7,12 @@
 // 0x06 LIST; the answer is 0x86 + JSON [{c, n, m, p, r}] of rooms heard from in the last 12 s.
 // Play stats: the app POSTs small JSON notes to /stat (rust/src/game/stats.rs: launch, play, stage, finish), kept in one
 // Stats object (SQLite); /stats?k=<key> shows them as a page (the key's SHA-256 is STATS_KEY_SHA256 below).
+// v2 (WELCOME caps bit 1): a phone may join on two sockets ("lanes": JOIN's flags byte, bits 1-2 the lane, bit 0 "I read
+// coalesced messages", bit 3 "write the room's packets to this socket"). It sends packets as 0x09 SEND2 to u32, seq u16,
+// payload, on one lane or, when its link turns lossy, on both: the first copy is passed on, the other dropped. The relay
+// writes to each of its sockets that asked (both lanes then, the phone taking the first copy): a TCP connection stalled
+// on a lost segment (head-of-line blocking: mobile networks, busy Wi-Fi) no longer holds the cars back. To v2 sockets it writes 0x88 + [u16 len][message]...: messages due within 16 ms of the last write wait
+// and go together, so a busy room costs a socket one frame per 16 ms, not one per car.
 // AI cars: WELCOME carries one more byte, bit 0 set: this relay drives a race's AI cars. The host sends 0x07 STAGE +
 // the stage blob (rust/src/server.rs, stage_blob), answered 0x87 + 1 (ready) or 2 (failed); the room's packets (to
 // everyone, or to the server's id) then also go to the race simulation (fogwood_core::server through WebAssembly, built
@@ -43,8 +49,35 @@ export default {
   },
 };
 
+const FLUSH_MS = 16, ROOM_SOCKETS = 40;
 export class Room {
-  constructor(ctx, env) { this.ctx = ctx; this.env = env; this.sim = null; this.timer = null; this.code = 0; }
+  constructor(ctx, env) { this.ctx = ctx; this.env = env; this.sim = null; this.timer = null; this.code = 0;
+    this.members = new Map();   // id -> recent SEND2 seqs (ring + Set; in memory: a sleep forgets them, harmlessly)
+    this.out = new Map();       // socket -> { q: [Uint8Array], last: ms, t: timer }
+  }
+  member(id) { let m = this.members.get(id); if (!m) { m = { ring: new Uint16Array(256), ri: 0, set: new Set() }; this.members.set(id, m); } return m; }
+  // a v2 member's packet seq: true the first time it is seen
+  fresh(id, q) { const m = this.member(id); if (m.set.has(q)) return false; const old = m.ring[m.ri]; if (m.set.size >= 256) m.set.delete(old); m.ring[m.ri] = q; m.ri = (m.ri + 1) & 255; m.set.add(q); return true; }
+  // the sockets a message goes to: every lane of everyone (or of `to`), not the sender's
+  *targets(to, except) {
+    for (const s of this.ctx.getWebSockets()) { const a = s.deserializeAttachment(); if (!a || a.rx === false || a.id === except || (to !== 0 && a.id !== to)) continue; yield { s, a }; }
+  }
+  // one message to a socket: at once, or with the others due in the same 16 ms (v2 sockets)
+  write(s, a, w) {
+    if (!a.v2) { try { s.send(w); } catch (_) {} return; }
+    let o = this.out.get(s); const now = Date.now();
+    if (!o) { o = { q: [], n: 0, last: 0, t: null }; this.out.set(s, o); }
+    if (o.q.length === 0 && now - o.last >= FLUSH_MS) { o.last = now; try { s.send(w); } catch (_) {} return; }
+    o.q.push(w); o.n += w.length + 2;
+    if (o.n > 1100) { this.flushSock(s, o); return; }
+    if (!o.t) o.t = setTimeout(() => { o.t = null; this.flushSock(s, o); }, Math.max(1, FLUSH_MS - (now - o.last)));
+  }
+  flushSock(s, o) {
+    if (o.t) { clearTimeout(o.t); o.t = null; } if (o.q.length === 0) return;
+    o.last = Date.now(); let w;
+    if (o.q.length === 1) w = o.q[0]; else { w = new Uint8Array(1 + o.n); w[0] = 0x88; let i = 1; for (const m of o.q) { w[i] = m.length & 255; w[i + 1] = m.length >> 8; w.set(m, i + 2); i += m.length + 2; } }
+    o.q = []; o.n = 0; try { s.send(w); } catch (_) {}
+  }
   // the AI cars: moved on to now, and what they have to say sent to the room
   simTick() {
     const now = Date.now() / 1000, sim = this.sim; if (!sim) return;
@@ -60,12 +93,12 @@ export class Room {
     for (let o = 0; o + 6 <= out.length;) {
       const to = dv.getUint32(o, true), n = dv.getUint16(o + 4, true); o += 6;
       const w = new Uint8Array(n + 5); w[0] = 0x82; new DataView(w.buffer).setUint32(1, sid, true); w.set(out.subarray(o, o + n), 5); o += n;
-      for (const s of socks) { const a = s.deserializeAttachment(); if (!a || (to !== 0 && a.id !== to)) continue; try { s.send(w); } catch (_) {} }
+      for (const { s, a } of this.targets(to, -1)) this.write(s, a, w);
     }
   }
   simStop() { if (this.timer) clearInterval(this.timer); this.timer = null; if (this.sim) { try { this.sim.free(); } catch (_) {} } this.sim = null; }
   async fetch() {
-    if (this.ctx.getWebSockets().length >= 16) return new Response("room full", { status: 503 });
+    if (this.ctx.getWebSockets().length >= ROOM_SOCKETS) return new Response("room full", { status: 503 });
     const [client, server] = Object.values(new WebSocketPair());
     this.ctx.acceptWebSocket(server);   // hibernation API: no duration billed while the room is quiet
     return new Response(null, { status: 101, webSocket: client });
@@ -75,15 +108,19 @@ export class Room {
     const b = new Uint8Array(msg); if (b.length === 0) return;
     const dv = new DataView(msg); const now = Date.now() / 1000;
     if (b[0] === 0x01 && b.length >= 9) {
-      ws.serializeAttachment({ id: dv.getUint32(5, true) }); this.code = dv.getUint32(1, true);
-      const w = new ArrayBuffer(11), o = new DataView(w); o.setUint8(0, 0x81); o.setFloat64(1, now, true); o.setUint8(9, this.ctx.getWebSockets().length); o.setUint8(10, 1);
+      const id = dv.getUint32(5, true), f = b.length >= 10 ? b[9] : 0, lane = (f >> 1) & 3;
+      ws.serializeAttachment({ id, lane, v2: (f & 1) !== 0, rx: b.length < 10 || (f & 8) !== 0 }); this.code = dv.getUint32(1, true);
+      const ids = new Set(); for (const s of this.ctx.getWebSockets()) { const a = s.deserializeAttachment(); if (a) ids.add(a.id); }
+      const w = new ArrayBuffer(11), o = new DataView(w); o.setUint8(0, 0x81); o.setFloat64(1, now, true); o.setUint8(9, ids.size); o.setUint8(10, 1 | 2);
       ws.send(w);
-    } else if (b[0] === 0x02 && b.length >= 5 && b.length <= 1205) {
+    } else if ((b[0] === 0x02 && b.length >= 5 && b.length <= 1205) || (b[0] === 0x09 && b.length >= 7 && b.length <= 1207)) {
       const me = ws.deserializeAttachment(); if (!me) return;
+      const v2 = b[0] === 0x09, off = v2 ? 7 : 5;
+      if (v2 && !this.fresh(me.id, dv.getUint16(5, true))) return;   // the copy from the other lane
       const to = dv.getUint32(1, true), toSim = simReady && to === server_id();
-      if (!toSim) { const w = new Uint8Array(b.length); w[0] = 0x82; new DataView(w.buffer).setUint32(1, me.id, true); w.set(b.subarray(5), 5);
-        for (const o of this.ctx.getWebSockets()) { if (o === ws) continue; const a = o.deserializeAttachment(); if (!a || a.id === me.id || (to !== 0 && a.id !== to)) continue; try { o.send(w); } catch (_) {} } }
-      if (this.sim && (to === 0 || toSim)) { try { this.sim.packet(me.id, b.subarray(5), now); } catch (e) { console.log("sim packet: " + e); } }
+      if (!toSim) { const w = new Uint8Array(b.length - off + 5); w[0] = 0x82; new DataView(w.buffer).setUint32(1, me.id, true); w.set(b.subarray(off), 5);
+        for (const { s, a } of this.targets(to, me.id)) this.write(s, a, w); }
+      if (this.sim && (to === 0 || toSim)) { try { this.sim.packet(me.id, b.subarray(off), now); } catch (e) { console.log("sim packet: " + e); } }
     } else if (b[0] === 0x07 && b.length > 8) {   // the stage for this room's AI cars (from the host)
       const me = ws.deserializeAttachment(); if (!me) return;
       let ok = 2;
@@ -100,8 +137,9 @@ export class Room {
       this.ctx.waitUntil(this.env.DIR.get(this.env.DIR.idFromName("all")).fetch("https://dir/announce", { method: "POST", body }).catch(() => {}));
     }
   }
-  webSocketClose(ws, code) { try { ws.close(code, "closed"); } catch (_) {} }
-  webSocketError(ws) { try { ws.close(1011, "error"); } catch (_) {} }
+  webSocketClose(ws, code) { this.drop(ws); try { ws.close(code, "closed"); } catch (_) {} }
+  webSocketError(ws) { this.drop(ws); try { ws.close(1011, "error"); } catch (_) {} }
+  drop(ws) { const o = this.out.get(ws); if (o && o.t) clearTimeout(o.t); this.out.delete(ws); }
 }
 
 export class Directory {
