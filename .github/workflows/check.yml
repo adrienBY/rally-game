@@ -4,8 +4,11 @@ name: Check (branches)
 # Nothing is published.
 on:
   push:
-    branches-ignore: [main]
+    branches-ignore: [main, webtest-dist]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   wasm:
@@ -25,12 +28,12 @@ jobs:
         run: sh web/build_web.sh
       - name: The page's scripts parse
         run: node --check web/web_boot.js && node --check web/fw_rtc.js
-      - name: Keep the build (for testing it in a browser)
-        uses: actions/upload-artifact@v4
-        with:
-          name: dist-web
-          path: web/dist-web
-          retention-days: 3
+      - name: Keep the build on the webtest-dist branch (for the browser end-to-end check)
+        run: |
+          cd web/dist-web
+          git init -q -b webtest && git add -A
+          git -c user.name=ci -c user.email=ci@users.noreply.github.com commit -qm "browser build of ${GITHUB_SHA}"
+          git push -qf "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${GITHUB_REPOSITORY}.git" webtest:webtest-dist
   android:
     runs-on: ubuntu-latest
     steps:
