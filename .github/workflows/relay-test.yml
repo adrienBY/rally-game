@@ -1,0 +1,33 @@
+name: Relay AI cars (live test)
+
+# Two network-only clients join the live Cloudflare relay: the host uploads a stage (rust/tests/fixtures/lakes_stage.fws)
+# and starts a race with three AI cars on the relay; both print where the relay's AI cars are every second.
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["Relay (Cloudflare)"]
+    types: [completed]
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Build the probe
+        run: cd rust && cargo build --release --bin sim_probe
+      - name: Race against the relay's AI cars
+        env:
+          FW_BROKERS: ""
+          FW_NOSTUN: "1"
+        run: |
+          P=rust/target/release/sim_probe
+          $P host rust/tests/fixtures/lakes_stage.fws 30 > host.log 2>&1 &
+          sleep 2
+          $P join $(cat /tmp/sim_code) 27 > guest.log 2>&1
+          wait
+          echo "== host"; cat host.log; echo "== guest"; cat guest.log
+          grep -q "relay drives true silence 0" guest.log && grep -q "relay drives true silence 0" host.log
