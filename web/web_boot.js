@@ -118,7 +118,7 @@ const fallback = () => { const s = document.createElement("script"); s.type = "m
     if (ev) for (const l of ev.split("\n")) {
       if (l === "fps 30") gap = 29; else if (l === "fps 60") gap = 12.5;
       else if (l.startsWith("h ")) { const p = l.split(" "); if (p.length === 3) vib(p[1], +p[2] || 0.5); }
-      else if (l.startsWith("stat ")) { try { fetch("https://fogwood-relay.adrien-paul-bonnay.workers.dev/stat", { method: "POST", mode: "no-cors", keepalive: true, body: '{"p":"web","x":' + l.slice(5) + "}" }).catch(() => {}); } catch (_) {} }
+      else if (l.startsWith("stat ")) { try { fetch("https://fogwood-relay.adrien-paul-bonnay.workers.dev/stat", { method: "POST", mode: "no-cors", keepalive: true, body: '{"p":"' + (/(^|\.)itch\.(zone|io)$/.test(location.hostname) ? "itch" : "web") + '","x":' + l.slice(5) + "}" }).catch(() => {}); } catch (_) {} }
       else if (l.startsWith("name ")) { const f = l[5] === "1", c = l.slice(7); setTimeout(() => askName(f, c), 0); }
       else if (l.startsWith("map ")) { const n = l.slice(4).replace(/[^a-z]/gi, ""); setTimeout(() => window.__rtBoot && window.__rtBoot(n), 0); } } };
   requestAnimationFrame(frame);

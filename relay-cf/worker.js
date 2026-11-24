@@ -27,7 +27,7 @@ async function sha256hex(s) { const h = await crypto.subtle.digest("SHA-256", ne
 // credentials minted here from the TURN key kept in this worker's secrets (TURN_KEY_ID, TURN_KEY_TOKEN), shared for a
 // few minutes per isolate. Only pages of the game get them.
 let turnCache = null, turnAt = 0, turnErr = "";
-const TURN_ORIGINS = /^(https:\/\/adrienby\.github\.io|http:\/\/(localhost|127\.0\.0\.1)(:\d+)?)$/;
+const TURN_ORIGINS = /^(https:\/\/adrienby\.github\.io|https:\/\/html-classic\.itch\.zone|http:\/\/(localhost|127\.0\.0\.1)(:\d+)?)$/;
 async function turn(req, env) {
   const origin = req.headers.get("Origin") || "", ok = TURN_ORIGINS.test(origin);
   const cors = { "Access-Control-Allow-Origin": ok ? origin : "null", "Vary": "Origin", "cache-control": "no-store", "content-type": "application/json" };
@@ -225,7 +225,7 @@ export class Stats {
     const x = a && typeof a.x === "object" ? a.x : null; if (!x || !/^[0-9a-f]{8,16}$/.test(x.d || "") || !EVENTS[x.e]) return new Response("bad", { status: 400 });
     const now = Date.now(), r = this.rate.get(x.d) || { t: now, n: 0 }; if (now - r.t > 60000) { r.t = now; r.n = 0; } r.n++; this.rate.set(x.d, r); if (r.n > 30) return new Response("slow down", { status: 429 });
     const str = (v, n) => String(v ?? "").slice(0, n), num = (v) => (Number.isFinite(+v) ? +v : null);
-    this.sql.exec(`INSERT INTO ev VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, now, x.d, a.p === "android" ? "android" : "web", num(a.v), x.e, str(x.n, 16), str(x.m, 12), str(x.c, 20), str(x.o, 10),
+    this.sql.exec(`INSERT INTO ev VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, now, x.d, (a.p === "android" || a.p === "itch") ? a.p : "web", num(a.v), x.e, str(x.n, 16), str(x.m, 12), str(x.c, 20), str(x.o, 10),
       num(x.k), num(x.t), num(x.r), num(x.h), str(req.headers.get("x-cc"), 2), str(req.headers.get("x-city"), 40));
     if (Math.random() < 0.01) this.sql.exec(`DELETE FROM ev WHERE t < ?`, now - 400 * DAY);   // keep about a year
     return new Response("ok");
@@ -308,12 +308,12 @@ ${D.rooms.length ? `<div class="panel" style="margin-bottom:12px"><h2 class="liv
 <div class="panel"><h2>STAGES</h2>${bars(D.maps, MAPS)}</div>
 <div class="panel"><h2>MODES</h2>${bars(D.modes, MODES)}</div>
 <div class="panel"><h2>CARS</h2>${bars(D.cars)}</div>
-<div class="panel"><h2>WHERE</h2>${bars(D.platforms, { android: "Android app", web: "Web" }, "")}<div style="height:8px"></div>${bars(D.countries.map((c) => ({ k: flag(c.k) + " " + c.k, n: c.n })))}</div>
+<div class="panel"><h2>WHERE</h2>${bars(D.platforms, { android: "Android app", web: "Web", itch: "itch.io" }, "")}<div style="height:8px"></div>${bars(D.countries.map((c) => ({ k: flag(c.k) + " " + c.k, n: c.n })))}</div>
 </div>
 ${D.best.length ? `<div class="panel" style="margin-bottom:12px"><h2>STAGE RECORDS</h2><table><tr><th>stage</th><th>driver</th><th>car</th><th class="r">time</th></tr>${D.best.map((b) => `<tr><td>${esc(MAPS[b.m] || b.m)}</td><td>${esc(b.n || "unnamed")}</td><td>${esc(b.c)}</td><td class="r"><b>${tfmt(b.tm)}</b></td></tr>`).join("")}</table></div>` : ""}
 <div class="panel" style="margin-bottom:12px"><h2>PLAYERS</h2><div class="wrap"><table>
 <tr><th>driver</th><th>on</th><th>from</th><th>car</th><th class="r">opens</th><th class="r">drives</th><th class="r">finishes</th><th>first seen</th><th>last seen</th></tr>
-${D.players.map((p) => `<tr><td>${who(p)}</td><td><span class="pill">${p.p === "android" ? "app" + (p.v ? " " + p.v : "") : "web"}</span></td><td>${flag(p.cc)} ${esc(p.city || p.cc || "")}</td><td>${esc(p.c || "")}</td><td class="r">${p.nl}</td><td class="r">${p.np}</td><td class="r">${p.nf}</td><td class="dim">${esc(parisWhen.format(p.f))}</td><td>${ago(p.l)}</td></tr>`).join("") || `<tr><td colspan="9" class="dim">no one yet: stats start with the next app build</td></tr>`}
+${D.players.map((p) => `<tr><td>${who(p)}</td><td><span class="pill">${p.p === "android" ? "app" + (p.v ? " " + p.v : "") : p.p === "itch" ? "itch" : "web"}</span></td><td>${flag(p.cc)} ${esc(p.city || p.cc || "")}</td><td>${esc(p.c || "")}</td><td class="r">${p.nl}</td><td class="r">${p.np}</td><td class="r">${p.nf}</td><td class="dim">${esc(parisWhen.format(p.f))}</td><td>${ago(p.l)}</td></tr>`).join("") || `<tr><td colspan="9" class="dim">no one yet: stats start with the next app build</td></tr>`}
 </table></div></div>
 <div class="panel"><h2>LATEST</h2><div class="wrap"><table class="feed">${D.recent.map((r) => `<tr><td>${esc(parisWhen.format(r.t))}</td><td>${who(r)}</td><td>${what(r)}</td></tr>`).join("") || `<tr><td class="dim">nothing yet</td></tr>`}</table></div></div>
 <p class="dim" style="font-size:12px;margin-top:14px">Each install sends a random id (no account, nothing from the device), its driver name, stage, car and times. Countries and cities come from Cloudflare's IP lookup; IPs aren't stored.</p>

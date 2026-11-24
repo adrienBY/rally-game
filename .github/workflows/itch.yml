@@ -1,0 +1,78 @@
+name: itch.io
+
+# Sends every new build to itch.io with butler:
+#   web build (the same files as GitHub Pages)  -> channel "html5"   (plays in the browser on the itch page)
+#   APK                                          -> channel "android" (download)
+# Runs by itself after "Web version (GitHub Pages)" or "Build APK" succeeds; "Run workflow" by hand re-sends the latest of both.
+# Setup: repo secret BUTLER_API_KEY (itch.io > Settings > API keys), optional repo variable ITCH_GAME (user/game-url-name).
+on:
+  workflow_run:
+    workflows: ["Web version (GitHub Pages)", "Build APK"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: itch-${{ github.event.workflow_run.name || 'manual' }}
+  cancel-in-progress: false
+
+jobs:
+  push:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    env:
+      BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
+      ITCH_GAME: ${{ vars.ITCH_GAME || 'adrienby/fogwood-rally' }}
+      GH_TOKEN: ${{ github.token }}
+      EVENT: ${{ github.event_name }}
+      RUN_NAME: ${{ github.event.workflow_run.name }}
+      RUN_ID: ${{ github.event.workflow_run.id }}
+    steps:
+      - name: Check the itch.io key
+        id: key
+        run: |
+          if [ -z "$BUTLER_API_KEY" ]; then
+            echo "::warning::No BUTLER_API_KEY secret: add it in Settings > Secrets and variables > Actions"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install butler
+        if: steps.key.outputs.ok == 'true'
+        run: |
+          curl -sSL -o butler.zip https://broth.itch.zone/butler/linux-amd64/LATEST/archive/default
+          unzip -q butler.zip -d "$HOME/butler" && chmod +x "$HOME/butler/butler"
+          echo "$HOME/butler" >> "$GITHUB_PATH"
+
+      - name: Push to itch.io
+        if: steps.key.outputs.ok == 'true'
+        run: |
+          butler -V
+          R="$GITHUB_REPOSITORY"; web_id=""; apk_id=""
+          if [ "$EVENT" = "workflow_run" ]; then
+            if [ "$RUN_NAME" = "Build APK" ]; then apk_id="$RUN_ID"; else web_id="$RUN_ID"; fi
+          else
+            web_id=$(gh run list -R "$R" -w pages.yml -s success -L 1 --json databaseId -q '.[0].databaseId')
+            apk_id=$(gh run list -R "$R" -w android.yml -s success -L 1 --json databaseId -q '.[0].databaseId')
+          fi
+
+          if [ -n "$web_id" ]; then
+            # the Pages artifact is a tar of web/dist-web (kept 1 day by GitHub, so a manual run later may not find it)
+            if gh run download "$web_id" -R "$R" -n github-pages -D pages; then
+              mkdir -p site && tar -xf pages/artifact.tar -C site
+              test -f site/index.html
+              butler push site "$ITCH_GAME:html5" --userversion "web-$web_id"
+            else
+              echo "::warning::web build of run $web_id has expired: push to main or re-run the Pages workflow"
+            fi
+          fi
+
+          if [ -n "$apk_id" ]; then
+            gh run download "$apk_id" -R "$R" -n FogwoodRally-apk -D apk
+            apk=$(ls apk/*.apk | head -1); n=$(basename "$apk" .apk); n=${n#FogwoodRally-}
+            butler push apk "$ITCH_GAME:android" --userversion "build-$n"
+          fi
