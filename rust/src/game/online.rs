@@ -9,7 +9,7 @@ use crate::world::World;
 #[derive(Clone, PartialEq, Debug, Default)]
 pub enum OnlineUi { #[default] Closed, Menu, Join(String), Lobby, Stages, Rooms }
 
-pub const KEYS: [&str; 41] = ["on_cprev", "on_cnext", "on_lnext", "on_mode", "on_bots", "on_rooms", "on_r0", "on_r1", "on_r2", "on_r3", "on_r4", "on_r5", "on_host", "on_join", "on_back", "on_start", "on_leave", "on_stage", "k0", "k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "k9", "kdel", "kok", "on_laps", "online",
+pub const KEYS: [&str; 42] = ["on_cprev", "on_cnext", "on_lnext", "on_mode", "on_bots", "on_ai", "on_rooms", "on_r0", "on_r1", "on_r2", "on_r3", "on_r4", "on_r5", "on_host", "on_join", "on_back", "on_start", "on_leave", "on_stage", "k0", "k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "k9", "kdel", "kok", "on_laps", "online",
     "on_name", "on_st0", "on_st1", "on_st2", "on_st3", "on_st4", "on_st5", "on_st6", "on_st7"];
 const MAPS: [(&str, &str); 8] = [("forest", "FOGWOOD"), ("snow", "COL DE GIVRE"), ("canyon", "CANYON ROUGE"), ("lakes", "LAKELAND"), ("touge", "MOMIJI TOUGE"), ("riviera", "RIVIERA CORNICHE"), ("prism", "PRISM SKYWAY"), ("ember", "EMBER PEAK")];
 /// the stage list: tile key, short name, surface
@@ -128,7 +128,7 @@ impl Game {
         self.close_settings();
         self.state = State::Drive; self.lap = 1; self.started = false; self.g_t = 0.0; self.flags = [false; 3]; self.car_audio_on = true;
         let np = self.np; let rc = &mut self.race; rc.on = true; rc.online = true; rc.phase = race::Phase::Grid; rc.t = 0.0; rc.done_t = 0.0; rc.note.clear(); rc.cars.clear(); rc.pos = 0; rc.order.clear();
-        rc.laps = st.laps.max(1) as i64; rc.go_at = st.go_at; rc.me_id = me; rc.hits.clear(); rc.net_hits.clear(); rc.touch_t.clear(); rc.pushed_t.clear();
+        rc.laps = st.laps.max(1) as i64; rc.go_at = st.go_at; rc.ai = st.ai.min(race::AI_EXTREME); rc.xprof.clear(); rc.me_id = me; rc.hits.clear(); rc.net_hits.clear(); rc.touch_t.clear(); rc.pushed_t.clear();
         let is_host = net::with(|s| { s.begin_race(st.bots.len(), st.srv); s.is_host }).unwrap_or(false);
         self.race.duos = st.mode == net::proto::MODE_DUOS;
         let team_livery = |t: u8| super::cars::TEAM_LIVERY0 + (t as usize).min(super::cars::TEAMS - 1);
@@ -197,6 +197,7 @@ impl Game {
             ("on_laps", OnlineUi::Lobby) => { self.ps.online_laps = self.ps.online_laps % 5 + 1; }
             ("on_mode", OnlineUi::Lobby) => { self.ps.online_mode = (self.ps.online_mode + 1) % 3; self.ps.saves.set("fogwood-omode", self.ps.online_mode.to_string()); }
             ("on_bots", OnlineUi::Lobby) => { self.ps.online_bots = (self.ps.online_bots + 1) % 6; }
+            ("on_ai", OnlineUi::Lobby) => { self.ps.online_ai = (self.ps.online_ai + 1) % 4; }
             ("on_start", OnlineUi::Lobby) => {
                 if self.loading.is_some() { return true; }
                 let (map, laps, mode) = (self.rt.map.clone(), self.ps.online_laps, self.ps.online_mode);
@@ -208,7 +209,7 @@ impl Game {
                 let blob = if bots.is_empty() || std::env::var("FW_NOSIM").is_ok() { None } else { Some(crate::server::stage_blob(&self.rt.raw)) };
                 if let Some(Some(st)) = net::with(|s| if s.peers.is_empty() { None } else {
                     let srv = blob.as_ref().map(|b| s.sim_capable() && s.upload_stage(b)).unwrap_or(false);
-                    s.start_race(&map, laps, 7.0, &bots, srv, mode) }) { net::with(|s| s.start_in = Some(st)); }
+                    s.start_race(&map, laps, 7.0, &bots, srv, mode, self.ps.online_ai) }) { net::with(|s| s.start_in = Some(st)); }
                 else { self.flash_msg("WAITING FOR PLAYERS", 1.5); } }
             _ => return false,
         }
@@ -283,8 +284,10 @@ pub fn draw(ps: &super::Persist, map: &str, g: &mut Canvas, ui: &mut Vec<(&'stat
                 let half = ((bw - 4.0 * u) / 2.0).floor();
                 button(g, ui, "on_back", "HIDE", bx, yb, half, false); button(g, ui, "on_leave", "LEAVE ROOM", bx + half + 4.0 * u, yb, half, false);
             }
-            if host { let half = ((bw - 4.0 * u) / 2.0).floor(); let md = ["MODE: RACE", "MODE: DUOS", "MODE: TILES"][(ps.online_mode as usize).min(2)];
-                button(g, ui, "on_mode", md, bx, yb + 16.0 * u, half, ps.online_mode != 0); button(g, ui, "on_back", "HIDE", bx + half + 4.0 * u, yb + 16.0 * u, half, false); }
+            if host { let half = ((bw - 4.0 * u) / 2.0).floor(); let q = ((half - 4.0 * u) / 2.0).floor(); let md = ["MODE: RACE", "MODE: DUOS", "MODE: TILES"][(ps.online_mode as usize).min(2)];
+                button(g, ui, "on_mode", md, bx, yb + 16.0 * u, half, ps.online_mode != 0); button(g, ui, "on_back", "HIDE", bx + half + 4.0 * u, yb + 16.0 * u, q, false);
+                // how hard the AI cars drive (under their number)
+                button(g, ui, "on_ai", race::AI_NAMES[(ps.online_ai as usize).min(3)], bx + half + 8.0 * u + q, yb + 16.0 * u, q, ps.online_ai == race::AI_EXTREME); }
         }
         OnlineUi::Rooms => {
             centre(g, "OPEN ROOMS", py + 5.0 * u, u, AMBER);

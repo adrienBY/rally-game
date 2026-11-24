@@ -91,18 +91,20 @@ pub struct Persist { /** asked for a driver name this run already */ pub name_as
     pub online_ui: online::OnlineUi, pub name: String, pub online_laps: u8,
     /// AI cars in online races the phone hosts (0-5)
     pub online_bots: u8,
+    /// the AI level the host picks for online races (race::AI_EASY .. AI_EXTREME)
+    pub online_ai: u8,
     /// the room's mode the host picked: net::proto::MODE_*
     pub online_mode: u8,
     /// settings screen: volumes 0..10, haptics 0..3, sun rays, mph, camera view, camera shake, 30 fps battery saver, debug buttons
     pub vol: i32, pub rvol: i32, pub hap: i32, pub rays: bool, pub mph: bool, pub cam_mode: u8, pub shake: bool, pub saver: bool, pub debug: bool,
     /// your car (garage), and the livery picked for each car (0 = its own)
     pub car: usize, pub paint: Vec<usize>,
-    /// dust and smoke 0 off .. 2 full, visual crash damage, rivals 0 easy / 1 adaptive / 2 hard, laps of an offline race, the menu's attract race
+    /// dust and smoke 0 off .. 2 full, visual crash damage, rivals 0 easy / 1 adaptive / 2 hard / 3 extreme, laps of an offline race, the menu's attract race
     pub particles: i32, pub damage: bool, pub rivals: i32, pub race_laps: i32, pub menu_race: bool }
 impl Persist {
     pub fn new(save_path: &str) -> Persist {
         let saves = Saves::load(save_path);
-        let mut p = Persist { online_mode: 0, name_asked: false, saves, sound_on: true, vib_on: true, pix_idx: 2, touch_used: false, downgraded: false, race_mode: false, race_skill: 0.95, online_ui: online::OnlineUi::Closed, name: String::new(), online_laps: 2, online_bots: 0,
+        let mut p = Persist { online_mode: 0, name_asked: false, saves, sound_on: true, vib_on: true, pix_idx: 2, touch_used: false, downgraded: false, race_mode: false, race_skill: 0.95, online_ui: online::OnlineUi::Closed, name: String::new(), online_laps: 2, online_bots: 0, online_ai: 1,
             vol: 10, rvol: 8, hap: 2, rays: true, mph: false, cam_mode: 0, shake: true, saver: false, debug: true, car: 0, paint: vec![0; cars::CARS.len()], particles: 2, damage: true, rivals: 1, race_laps: 3, menu_race: true };
         p.reload(); p
     }
@@ -121,9 +123,10 @@ impl Persist {
         if let Some(v) = gi(&self.saves, "fogwood-cam") { self.cam_mode = v.clamp(0, 2) as u8; }
         if let Some(v) = gi(&self.saves, "fogwood-olaps") { self.online_laps = v.clamp(1, 5) as u8; }
         if let Some(v) = gi(&self.saves, "fogwood-obots") { self.online_bots = v.clamp(0, 5) as u8; }
+        if let Some(v) = gi(&self.saves, "fogwood-oai") { self.online_ai = v.clamp(0, 3) as u8; }
         if let Some(v) = gi(&self.saves, "fogwood-omode") { self.online_mode = v.clamp(0, 2) as u8; }
         if let Some(v) = gi(&self.saves, "fogwood-parts") { self.particles = v.clamp(0, 2); }
-        if let Some(v) = gi(&self.saves, "fogwood-rivals") { self.rivals = v.clamp(0, 2); }
+        if let Some(v) = gi(&self.saves, "fogwood-rivals") { self.rivals = v.clamp(0, 3); }
         if let Some(v) = gi(&self.saves, "fogwood-rlaps") { self.race_laps = v.clamp(1, 5); }
         if let Some(v) = gi(&self.saves, "fogwood-car") { self.car = (v.max(0) as usize).min(cars::CARS.len() - 1); }
         if let Some(v) = self.saves.get("fogwood-paint") { for (k, x) in v.split(',').enumerate() { if let (Some(slot), Ok(n)) = (self.paint.get_mut(k), x.parse::<usize>()) { *slot = n.min(cars::LIVERIES.len() - 1); } } }
@@ -135,7 +138,7 @@ impl Persist {
     pub fn store(&mut self) {
         let b = |v: bool| if v { "1".to_string() } else { "0".to_string() };
         let kv = [("fogwood-vol", self.vol.to_string()), ("fogwood-rvol", self.rvol.to_string()), ("fogwood-hap", self.hap.to_string()), ("fogwood-vib", b(self.vib_on)),
-            ("fogwood-pix", self.pix_idx.to_string()), ("fogwood-cam", self.cam_mode.to_string()), ("fogwood-olaps", self.online_laps.to_string()), ("fogwood-obots", self.online_bots.to_string()), ("fogwood-rays", b(self.rays)),
+            ("fogwood-pix", self.pix_idx.to_string()), ("fogwood-cam", self.cam_mode.to_string()), ("fogwood-olaps", self.online_laps.to_string()), ("fogwood-obots", self.online_bots.to_string()), ("fogwood-oai", self.online_ai.to_string()), ("fogwood-rays", b(self.rays)),
             ("fogwood-mph", b(self.mph)), ("fogwood-shake", b(self.shake)), ("fogwood-saver", b(self.saver)), ("fogwood-debug", b(self.debug)), ("fogwood-dg", b(self.downgraded)),
             ("fogwood-parts", self.particles.to_string()), ("fogwood-damage", b(self.damage)), ("fogwood-rivals", self.rivals.to_string()), ("fogwood-rlaps", self.race_laps.to_string()), ("fogwood-mrace", b(self.menu_race))];
         for (k, v) in kv { self.saves.set(k, v); }

@@ -106,7 +106,7 @@ impl Sim {
     /// The race starts: the same grid as on the phones, our AI cars driven here, the players' cars from their packets.
     fn begin(&mut self, st: Start) {
         let hn = self.host_now(); let g = &mut self.game; let w = &self.world; let np = g.np;
-        let rc = &mut g.race; rc.on = true; rc.online = true; rc.phase = race::Phase::Grid; rc.t = 0.0; rc.done_t = 0.0; rc.cars.clear(); rc.pos = 0; rc.order.clear();
+        let rc = &mut g.race; rc.on = true; rc.online = true; rc.ai = st.ai.min(race::AI_EXTREME); rc.xprof.clear(); rc.phase = race::Phase::Grid; rc.t = 0.0; rc.done_t = 0.0; rc.cars.clear(); rc.pos = 0; rc.order.clear();
         rc.laps = st.laps.max(1) as i64; rc.go_at = st.go_at; rc.me_id = SERVER_ID; rc.hits.clear(); rc.net_hits.clear(); rc.touch_t.clear(); rc.pushed_t.clear();
         let taken: Vec<usize> = st.bots.iter().map(|b| b.0 as usize % race::RIVALS.len()).collect();
         let free: Vec<usize> = (0..race::RIVALS.len()).filter(|c| !taken.contains(c)).chain(taken.iter().copied()).collect();

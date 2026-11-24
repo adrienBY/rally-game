@@ -14,7 +14,7 @@ const PIXELS: &[&str] = &["CHUNKY", "CLASSIC", "FINE"];
 const UNITS: &[&str] = &["KM/H", "MPH"];
 const VIEWS: &[&str] = &["CHASE", "CLOSE", "BONNET"];
 const PARTICLES: &[&str] = &["OFF", "LOW", "FULL"];
-const RIVALS: &[&str] = &["EASY", "ADAPTIVE", "HARD"];
+const RIVALS: &[&str] = &["EASY", "ADAPTIVE", "HARD", "EXTREME"];
 const TABS: [(&str, &[Item]); 5] = [
     ("SOUND", &[Item { key: "vol", label: "MASTER VOLUME", kind: Kind::Slider(10) }, Item { key: "rvol", label: "RIVAL ENGINES", kind: Kind::Slider(10) }, Item { key: "hap", label: "HAPTICS", kind: Kind::Choice(HAPTICS) }]),
     ("DISPLAY", &[Item { key: "pix", label: "PIXEL SIZE", kind: Kind::Choice(PIXELS) }, Item { key: "rays", label: "SUN RAYS", kind: Kind::Toggle }, Item { key: "parts", label: "DUST AND SMOKE", kind: Kind::Choice(PARTICLES) }, Item { key: "units", label: "SPEED IN", kind: Kind::Choice(UNITS) }]),
@@ -78,7 +78,7 @@ impl Game {
             "pix" => { ps.pix_idx = v.clamp(0, PIX.len() as i32 - 1) as usize; ps.downgraded = true; let (w, h, i) = (self.w, self.h, self.inset_px); self.resize(w, h, i); }
             "rays" => ps.rays = v != 0, "units" => ps.mph = v != 0, "shake" => ps.shake = v != 0, "saver" => ps.saver = v != 0, "debug" => ps.debug = v != 0,
             "olaps" => ps.online_laps = v.clamp(1, 5) as u8,
-            "parts" => ps.particles = v.clamp(0, 2), "damage" => ps.damage = v != 0, "rivals" => ps.rivals = v.clamp(0, 2), "rlaps" => ps.race_laps = v.clamp(1, 5), "mrace" => ps.menu_race = v != 0,
+            "parts" => ps.particles = v.clamp(0, 2), "damage" => ps.damage = v != 0, "rivals" => ps.rivals = v.clamp(0, 3), "rlaps" => ps.race_laps = v.clamp(1, 5), "mrace" => ps.menu_race = v != 0,
             "cam" => { self.cam.mode = v.rem_euclid(3); self.cam.init = false; }
             _ => {}
         }

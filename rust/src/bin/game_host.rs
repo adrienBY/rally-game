@@ -124,6 +124,10 @@ fn main() {
                     "stap" => { let f: f64 = parts.get(2).and_then(|v| v.parse().ok()).unwrap_or(0.5); let key = parts[1].replace(".", ":"); println!("stap {} {} vol={} hap={} pix={} rays={}", key, g.settings_tap_key(&key, f), g.ps.vol, g.ps.hap, g.ps.pix_idx, g.ps.rays); }
                     "netstat" => { fogwood_core::net::with(|s| println!("traffic t={:.1} bytes {:?} packets {:?}", t, s.traffic.get(), s.packets.get())); }
                     "net" => { fogwood_core::net::with(|s| println!("net t={:.1} host={} up={} peers={:?} host_now={:.2}", t, s.is_host, s.brokers_up(), s.peers.values().map(|p| (p.name.clone(), p.link(), (p.rtt * 1000.0) as i32)).collect::<Vec<_>>(), s.host_now())); }
+                    "rivals" => { g.ps.rivals = parts.get(1).and_then(|v| v.parse().ok()).unwrap_or(1); }   // rivals:N - the offline AI level (0 easy .. 3 extreme)
+                    "rres" => {   // the race so far: each car's laps, best and last lap, resets, finish
+                        let res = fogwood_core::game::race::results(&g); for (pos, (k, tm, done)) in res.iter().enumerate() { let c = &g.race.cars[*k];
+                            println!("rres {} {} laps {} best {} last {} resets {} {}", pos + 1, if c.is_player() { "YOU".to_string() } else { c.tag() }, c.laps_done, c.best.map(|b| format!("{:.2}", b)).unwrap_or("-".into()), c.last.map(|b| format!("{:.2}", b)).unwrap_or("-".into()), c.resets, if *done { format!("finished {:.2}", tm) } else { format!("est {:.1}", tm) }); } }
                     "rstate" => { println!("race t={:.1} on={} online={} phase={:?} go={:.2} race_t={:.2} pos={} cars={:?}", t, g.race.on, g.race.online, g.race.phase, g.go, g.race.t, g.race.pos,
                         g.race.cars.iter().map(|c| (c.tag(), (c.car.x * 10.0).round() / 10.0, (c.car.z * 10.0).round() / 10.0, c.prog as i64)).collect::<Vec<_>>()); }
                     "aisim" => {   // same as the page's AI lap test: placeAt(0), demo driver + physics at 60 Hz until a full lap
