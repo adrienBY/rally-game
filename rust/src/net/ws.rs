@@ -59,6 +59,11 @@ fn session(url: &str, rx: &Receiver<Vec<u8>>, inbox: &Mutex<Vec<Vec<u8>>>, open:
     ws.get_mut().timeout(Some(Duration::from_millis(4)))?;
     open.store(true, Ordering::Relaxed); fresh.store(true, Ordering::Relaxed);
     if std::env::var("FW_WSDEBUG").is_ok() { eprintln!("ws open"); }
+    // test hook FW_UPLAG="ms,jitter ms,loss": what we send held back like a slow uplink on this TCP connection (late, in
+    // order, a lost segment holding everything behind it for a retransmission)
+    let up = super::lag_env("FW_UPLAG"); let mut held: std::collections::VecDeque<(std::time::Instant, Vec<u8>)> = Default::default();
+    let mut last_due = std::time::Instant::now(); let mut seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(7) | 1;
+    let mut rnd = move || { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; (seed >> 11) as f64 / (1u64 << 53) as f64 };
     loop {
         if stop.load(Ordering::Relaxed) { let _ = ws.close(None); return Ok(()); }
         if kick.load(Ordering::Relaxed) { return Ok(()); }
@@ -70,7 +75,11 @@ fn session(url: &str, rx: &Receiver<Vec<u8>>, inbox: &Mutex<Vec<Vec<u8>>>, open:
             Err(e) => return Err(err(&e.to_string())),
         }
         let mut wrote = false;
-        while let Ok(b) = rx.try_recv() { ws.write(tungstenite::Message::Binary(b.into())).map_err(|e| err(&e.to_string()))?; wrote = true; }
+        while let Ok(b) = rx.try_recv() {
+            if let Some((lat, jit, loss)) = up { let mut d = lat + (rnd() * 2.0 - 1.0) * jit; if rnd() < loss { d += 0.2 + 2.0 * lat; }
+                let due = (std::time::Instant::now() + Duration::from_secs_f64(d.max(0.0))).max(last_due); last_due = due; held.push_back((due, b)); continue; }
+            ws.write(tungstenite::Message::Binary(b.into())).map_err(|e| err(&e.to_string()))?; wrote = true; }
+        while held.front().map(|h| h.0 <= std::time::Instant::now()).unwrap_or(false) { let b = held.pop_front().unwrap().1; ws.write(tungstenite::Message::Binary(b.into())).map_err(|e| err(&e.to_string()))?; wrote = true; }
         if wrote { ws.flush().map_err(|e| err(&e.to_string()))?; }
     }
 }

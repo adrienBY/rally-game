@@ -134,8 +134,8 @@ pub struct Session {
     rate_k: f64, meter: (f64, u64),
     /// WebRTC links (UDP to and from browsers), and negotiation messages still arriving in parts
     rtc: std::cell::RefCell<rtc::Links>, rtc_in: HashMap<(u32, u8, u8), Vec<Option<Vec<u8>>>>,
-    /// test hook FW_UDPLAG: datagrams held back like a slow network (due, bytes, from)
-    udp_held: VecDeque<(f64, Vec<u8>, SocketAddr)>,
+    /// test hook FW_UDPLAG: datagrams held back like a slow network (due, bytes, from); FW_UDPUPLAG: ours, on the way out
+    udp_held: VecDeque<(f64, Vec<u8>, SocketAddr)>, udp_out: std::cell::RefCell<VecDeque<(f64, Vec<u8>, SocketAddr)>>,
     /// which way the message being handled came (dual::RTC / dual::RELAY, 0: other), and when the thin relay stream last went
     rx_via: u8, relay_thin_tx: f64,
     /// the latest state of each of our cars (dual::OWN, AI cars by index), when it went, and whether the thin relay stream
@@ -147,12 +147,15 @@ const UDP_OVERHEAD: u64 = 28; const TCP_OVERHEAD: u64 = 40;
 const RTC_OVERHEAD: u64 = 28 + 29 + 28;
 /// car states take a peer's WebRTC link when its car is this close to ours (m)
 const RTC_NEAR: f32 = 90.0;
-/// what this build tells the room it can do over WebRTC (FW_NORTC: nothing)
-fn udp_lag() -> Option<(f64, f64, f64)> {
-    static L: std::sync::OnceLock<Option<(f64, f64, f64)>> = std::sync::OnceLock::new();
-    *L.get_or_init(|| { let v: Vec<f64> = std::env::var("FW_UDPLAG").ok()?.split(',').filter_map(|x| x.parse().ok()).collect(); if v.len() == 3 { Some((v[0] / 1000.0, v[1] / 1000.0, v[2])) } else { None } })
+/// test hooks "ms,jitter ms,loss" from the environment (seconds out)
+pub(crate) fn lag_env(name: &str) -> Option<(f64, f64, f64)> {
+    let v: Vec<f64> = std::env::var(name).ok()?.split(',').filter_map(|x| x.parse().ok()).collect(); if v.len() == 3 { Some((v[0] / 1000.0, v[1] / 1000.0, v[2])) } else { None }
 }
-fn rtc_caps() -> u8 { if std::env::var("FW_NORTC").is_ok() { return 0; } CAP_RTC | if cfg!(target_arch = "wasm32") { CAP_WEB } else { 0 } }
+/// FW_UDPLAG: datagrams that reach us; FW_UDPUPLAG: those we send (our own network's uplink)
+fn udp_lag() -> Option<(f64, f64, f64)> { static L: std::sync::OnceLock<Option<(f64, f64, f64)>> = std::sync::OnceLock::new(); *L.get_or_init(|| lag_env("FW_UDPLAG")) }
+fn udp_uplag() -> Option<(f64, f64, f64)> { static L: std::sync::OnceLock<Option<(f64, f64, f64)>> = std::sync::OnceLock::new(); *L.get_or_init(|| lag_env("FW_UDPUPLAG")) }
+/// what this build tells the room it can do over WebRTC (FW_NORTC: nothing; FW_FAKEWEB: a test phone posing as a browser)
+fn rtc_caps() -> u8 { if std::env::var("FW_NORTC").is_ok() { return 0; } CAP_RTC | if cfg!(target_arch = "wasm32") || std::env::var("FW_FAKEWEB").is_ok() { CAP_WEB } else { 0 } }
 /// a WebSocket message's wire cost beyond its payload: frame header (masked from us), TLS record, TCP/IP
 const WS_OVERHEAD: f64 = 6.0 + 21.0 + 40.0;
 /// Data budget for a session, both directions, every header counted: 22 kB/s is 79 MB an hour, under the 100 MB limit
@@ -210,7 +213,7 @@ fn open(code: u32, name: &str, map: &str, is_host: bool) {
         cut: std::env::var("FW_CUT").ok().and_then(|v| { let q: Vec<f64> = v.split(',').filter_map(|x| x.parse().ok()).collect(); if q.len() == 2 { Some([q[0], q[1]]) } else { None } }),
         loss: std::env::var("FW_LOSS").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0),
         thr: smooth::Thresholds::default(), heartbeat: None,
-        server_bots: false, srv_heard: -9.0, relay: if std::env::var("FW_NORELAY").is_ok() { None } else { Some(relay::Client::start(code, me)) }, last_announce: -9.0, outq: Vec::new(), rate_k: 1.0, meter: (0.0, 0), rtc: Default::default(), rtc_in: HashMap::new(), udp_held: VecDeque::new(), rx_via: 0, relay_thin_tx: -9.0, last_out: HashMap::new() };
+        server_bots: false, srv_heard: -9.0, relay: if std::env::var("FW_NORELAY").is_ok() { None } else { Some(relay::Client::start(code, me)) }, last_announce: -9.0, outq: Vec::new(), rate_k: 1.0, meter: (0.0, 0), rtc: Default::default(), rtc_in: HashMap::new(), udp_held: VecDeque::new(), udp_out: Default::default(), rx_via: 0, relay_thin_tx: -9.0, last_out: HashMap::new() };
     let mut s = s;
     if let Ok(v) = std::env::var("FW_THR") { let q: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect();
         if q.len() >= 3 { s.thr.pos = q[0]; s.thr.head = q[1]; s.thr.speed = q[2]; } if q.len() >= 4 { s.heartbeat = Some(q[3]); } }
@@ -231,7 +234,20 @@ impl Session {
     fn way(&self, k: usize, bytes: u64) { let mut w = self.ways.get(); w[k] += bytes; self.ways.set(w); }
     fn count(&self, k: usize, bytes: u64) { let mut t = self.traffic.get(); t[k] += bytes; self.traffic.set(t); let mut p = self.packets.get(); p[k] += 1; self.packets.set(p); }
     fn mqtt_bytes(&self, payload: usize) -> u64 { (payload + self.topic.len() + 4) as u64 + TCP_OVERHEAD }
-    fn udp(&self, b: &[u8], a: SocketAddr) { if let Some(s) = &self.sock { if s.send_to(b, a).is_ok() { self.count(0, b.len() as u64 + UDP_OVERHEAD); self.way(4, b.len() as u64 + UDP_OVERHEAD); } } }
+    fn udp(&self, b: &[u8], a: SocketAddr) { if self.sock_send(b, a) { self.count(0, b.len() as u64 + UDP_OVERHEAD); self.way(4, b.len() as u64 + UDP_OVERHEAD); } }
+    /// a datagram out on our socket (FW_UDPUPLAG: held back, or lost, like a slow uplink; in order)
+    fn sock_send(&self, b: &[u8], a: SocketAddr) -> bool {
+        let Some(s) = &self.sock else { return false };
+        match udp_uplag() {
+            Some((lat, jit, loss)) => { let now = self.now(); if (rand_u32() as f64 / u32::MAX as f64) < loss { return true; }
+                let mut q = self.udp_out.borrow_mut(); let at = (now + lat + (rand_u32() as f64 / u32::MAX as f64 * 2.0 - 1.0) * jit).max(q.back().map(|h| h.0).unwrap_or(0.0));
+                q.push_back((at, b.to_vec(), a)); true }
+            None => s.send_to(b, a).is_ok() }
+    }
+    fn sock_flush(&self) {
+        if self.udp_out.borrow().is_empty() { return; } let now = self.now();
+        if let Some(s) = &self.sock { let mut q = self.udp_out.borrow_mut(); while q.front().map(|h| h.0 <= now).unwrap_or(false) { let (_, b, a) = q.pop_front().unwrap(); let _ = s.send_to(&b, a); } }
+    }
     /// to every broker (lobby traffic: small, and it must reach phones that only got through to one of them)
     fn relay_all(&self, b: &[u8]) { let now = self.now(); self.relay_send(0, b, now); for k in &self.brokers { if k.is_up() { k.publish(&self.topic, b); self.count(2, self.mqtt_bytes(b.len())); self.way(6, self.mqtt_bytes(b.len())); } } }
     /// the brokers we are connected to (bit k: brokers[k])
@@ -296,7 +312,7 @@ impl Session {
         self.rtc_out();   // the link's copies leave now, with the relay's (not at the next poll)
     }
     /// the app's WebRTC packets out on our socket
-    fn rtc_out(&self) { if let Some(s) = &self.sock { for (a, b) in self.rtc.borrow_mut().take_transmit() { if s.send_to(&b, a).is_ok() { self.count(0, b.len() as u64 + UDP_OVERHEAD); self.way(0, b.len() as u64 + UDP_OVERHEAD); } } } }
+    fn rtc_out(&self) { let out = self.rtc.borrow_mut().take_transmit(); for (a, b) in out { if self.sock_send(&b, a) { self.count(0, b.len() as u64 + UDP_OVERHEAD); self.way(0, b.len() as u64 + UDP_OVERHEAD); } } self.sock_flush(); }
     /// net::dual: the phones whose link alone carries our cars still get, every THIN s through the relay, the latest state
     /// of each of our cars (a safety net that covers every car, whatever frame it was last sent in, and the receiver's
     /// yardstick for losses on the link)
