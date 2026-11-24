@@ -106,7 +106,7 @@ impl Sim {
     /// The race starts: the same grid as on the phones, our AI cars driven here, the players' cars from their packets.
     fn begin(&mut self, st: Start) {
         let hn = self.host_now(); let g = &mut self.game; let w = &self.world; let np = g.np;
-        let rc = &mut g.race; rc.on = true; rc.online = true; rc.phase = race::Phase::Grid; rc.t = 0.0; rc.done_t = 0.0; rc.cars.clear(); rc.pos = 0; rc.order.clear();
+        let rc = &mut g.race; rc.on = true; rc.online = true; rc.ai = st.ai.min(race::AI_EXTREME); rc.xprof.clear(); rc.xbudget = (250, 60); rc.phase = race::Phase::Grid; rc.t = 0.0; rc.done_t = 0.0; rc.cars.clear(); rc.pos = 0; rc.order.clear();
         rc.laps = st.laps.max(1) as i64; rc.go_at = st.go_at; rc.me_id = SERVER_ID; rc.hits.clear(); rc.net_hits.clear(); rc.touch_t.clear(); rc.pushed_t.clear();
         let taken: Vec<usize> = st.bots.iter().map(|b| b.0 as usize % race::RIVALS.len()).collect();
         let free: Vec<usize> = (0..race::RIVALS.len()).filter(|c| !taken.contains(c)).chain(taken.iter().copied()).collect();
@@ -163,7 +163,8 @@ impl Sim {
         if self.game.rt.volc.is_some() {
             let vt = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| (d.as_millis() % (volc::PERIOD as u128 * 1000)) as f64 / 1000.0).unwrap_or(0.0);
             let tp = if self.volc_t < 0.0 || self.volc_t > vt || vt - self.volc_t > 1.0 { vt - DT } else { self.volc_t }; self.volc_t = vt;
-            if vt > tp { for b in volc::landed(&self.game.rt, w, vt, tp) { for c in self.game.race.cars.iter_mut() { if c.is_ai() { volc::kick(&mut c.car, &b); } } } }
+            let kf = if self.game.race.ai == race::AI_EXTREME { race::X_KICK } else { 1.0 };
+            if vt > tp { for b in volc::landed(&self.game.rt, w, vt, tp) { for c in self.game.race.cars.iter_mut() { if c.is_ai() { volc::kick_k(&mut c.car, &b, kf); } } } }
         }
         if !self.game.rt.wave_secs.is_empty() {
             w.wave.get_or_init(|| world::Wave::new(&self.game.rt.path, &self.game.rt.tan, &self.game.rt.roadh, &self.game.rt.wave_secs));
@@ -184,7 +185,7 @@ impl Sim {
         let base = smooth::Thresholds::default(); let mut batch: Vec<Vec<u8>> = Vec::new();
         // with their drivers' inputs when every player's build predicts from them (the phones then run the physics on)
         let phys = !self.players.is_empty() && self.players.iter().all(|p| self.caps.get(&p.id).map(|c| c & proto::CAP_PHYS != 0).unwrap_or(false));
-        let ai_ph = smooth::Phys { world: w, obs: &self.obs, tune: race::ai_tune(&self.game.base_tune, 0.0) };
+        let ai_ph = smooth::Phys { world: w, obs: &self.obs, tune: race::ai_tune(&self.game.base_tune, 0.0, self.game.race.ai) };
         let ctl = |i: &crate::physics::Input| if phys { Some(proto::Ctl { steer: i.steer as f32, throttle: i.throttle as f32, brake: i.brake as f32, hb: i.hb }) } else { None };
         let list: Vec<(usize, CarSnap, f32)> = self.game.race.cars.iter().filter(|c| c.is_ai()).filter_map(|c| c.bot.map(|b| (b as usize, CarSnap { ctl: ctl(&c.inp), ..snap_of(&c.car, c.epoch) }, humans.iter().map(|h| (h.0 - c.car.x).hypot(h.1 - c.car.z) as f32).fold(1e9f32, f32::min)))).collect();
         for (k, mut c, dist) in list {

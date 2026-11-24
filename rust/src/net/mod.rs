@@ -557,7 +557,7 @@ impl Session {
     /// first). Like a solo race the players start mid-grid: the quicker half of the AI cars ahead of them, the rest behind; the players'
     /// own order is shuffled each race.
     /// Returns the start for the host itself.
-    pub fn start_race(&mut self, map: &str, laps: u8, delay: f64, bots: &[u8], srv: bool, mode: u8) -> Option<Start> {
+    pub fn start_race(&mut self, map: &str, laps: u8, delay: f64, bots: &[u8], srv: bool, mode: u8, ai: u8) -> Option<Start> {
         if !self.is_host { return None; }
         let mut ids: Vec<(f64, u32)> = self.peers.values().map(|p| (p.first_seen, p.id)).collect(); ids.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let mut players = vec![self.me]; players.extend(ids.iter().take(11).map(|x| x.1));
@@ -569,7 +569,7 @@ impl Session {
         // duos: in grid order, two by two (the players first, then the AI cars), each pair side by side on its row
         let (teams, bot_teams) = if mode == MODE_DUOS { ((0..players.len()).map(|k| (k / 2) as u8).collect(), (0..nb).map(|k| ((players.len() + k) / 2).min(5) as u8).collect()) } else { (Vec::new(), Vec::new()) };
         let slots = players.iter().enumerate().map(|(k, id)| (*id, (ahead + k) as u8)).collect();
-        let s = Start { map: map.to_string(), laps, go_at: self.host_now() + delay, slots, bots: bot_slots, srv: srv && !bots.is_empty(), mode, teams, bot_teams }; self.start_out = Some((s.clone(), self.now() + 3.0)); Some(s)
+        let s = Start { map: map.to_string(), laps, go_at: self.host_now() + delay, slots, bots: bot_slots, srv: srv && !bots.is_empty(), mode, teams, bot_teams, ai }; self.start_out = Some((s.clone(), self.now() + 3.0)); Some(s)
     }
     /// a race begins with `n` AI cars (driven by the host's phone): fresh tracks and senders
     pub fn begin_race(&mut self, n: usize, srv: bool) {

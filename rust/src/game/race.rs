@@ -16,6 +16,90 @@ pub const RIVALS: [Rival; 5] = [
     Rival { name: "ELISE DUVAL", tag: "DUV", col: [1.0, 0.88, 0.32], pace: 0.935, aggr: 0.35, cons: 0.93 }];
 const ENG_PITCH: [f64; 5] = [1.0, 1.1, 0.9, 1.05, 0.95];
 const RT_MU: f64 = 1.08; const RT_GRIP: f64 = 1.5; const RT_YAW: f64 = 1.15;
+/// how hard the AI cars drive (offline: the RIVALS setting, ADAPTIVE for NORMAL; online: the host's pick in the lobby)
+pub const AI_EASY: u8 = 0; pub const AI_NORMAL: u8 = 1; pub const AI_HARD: u8 = 2; pub const AI_EXTREME: u8 = 3;
+pub const AI_NAMES: [&str; 4] = ["EASY", "NORMAL", "HARD", "EXTREME"];
+/// EXTREME's cars: corner speeds this much over the speed profile, on this much more grip, power, braking and acceleration,
+/// a firmer hold on their line and a quicker turn-in than the other levels' cars; braking planned again for that speed and
+/// grip, then practised on the stage (x_practice); no mistakes, no easing off when ahead, sharp starts, and Ember Peak's
+/// blasts only shove them this much. (Measured on all eight stages, AI cars alone: 6-11% quicker per lap than HARD,
+/// Prism Skyway ~4% as its gap jumps set the pace there.)
+const X_SKILL: f64 = 1.18; const X_MU: f64 = 1.3; const X_POW: f64 = 1.3; const X_BRK: f64 = 1.3; const X_ACC: f64 = 1.3; const X_AGRIP: f64 = 1.5; const X_YAW: f64 = 1.25;
+pub const X_KICK: f64 = 0.35;
+/// EXTREME's braking (the page's aB, on the extra grip): for (m/s)² per path step
+fn x_brake(g: &Game) -> f64 { 9.81 * g.base_tune.mu_road * 0.85 * 1.1 * RT_MU.min(1.0) * X_MU }
+/// the speed plan braked for: nowhere faster than it can slow down from for what comes next
+fn rebrake(v: &mut [f64], ab: f64) { let np = v.len(); for _ in 0..3 { for i in (0..np).rev() { v[i] = v[i].min((v[(i + 1) % np].powi(2) + 2.0 * ab).sqrt()); } } }
+/// EXTREME's speed plan before practice: the profile's speeds scaled, then braked for again with the grip those cars have
+/// (scaling the whole profile, as the other levels do, would scale its braking zones too: the cars would overshoot the bends)
+fn x_profile(g: &Game) -> Vec<f64> { let mut v: Vec<f64> = g.rt.rprof.iter().map(|p| p * X_SKILL).collect(); rebrake(&mut v, x_brake(g)); v }
+/// slow the plan for the stretch before path point i (a slip there), keeping it brakeable
+/// (never below `floor` x the stage's profile)
+fn x_slow(g: &mut Game, i: usize, f_near: f64, f_far: f64, floor: f64) {
+    let ab = x_brake(g); let np = g.np; let v = &mut g.race.xprof;
+    for d in 0..100 { let j = (i + np * 2 + 10 - d) % np; let f = if d < 60 { f_near } else { f_far }; v[j] = (v[j] * f).max(g.rt.rprof[j] * floor); } rebrake(v, ab);
+}
+/// EXTREME's practice laps, as its race loads: one car alone on the stage, on EXTREME's plan and a little quicker than it
+/// races (margin). Wherever it would have needed a reset (off the road a while, into the lava, off the skyway, on its roof,
+/// turned round) the plan slows the stretch before that spot, and the car goes on from just behind it; until clean laps on
+/// the racing line and on both passing lanes (or 24 laps). So each stage gets a plan that suits it, with no tuning per
+/// stage. Done a slice at a time (Race::xbudget physics steps per frame, through the grid countdown, carrying on into the
+/// race if it must), and kept per stage in the saves, so the next EXTREME race there starts with it.
+pub struct XPrac { car: Option<RCar>, laps: usize, fixes: usize, streak: usize, run: usize, last: usize, steps: usize, clean: bool, pub done: bool, ms: f64, off_t: f64 }
+const XPLAN_VER: &str = "x3";
+const X_PRAC_PACE: f64 = 1.03;
+fn xplan_key(g: &Game) -> String { format!("fogwood-xplan-{}", g.rt.map) }
+fn xlog() -> bool { std::env::var("FW_XLOG").is_ok() }
+/// a race on EXTREME begins: its plan from the saves if this stage has been practised (with these settings), else practice
+pub fn x_begin(g: &mut Game) {
+    g.race.xprof = x_profile(g); g.race.xprac = None; let np = g.np;
+    if std::env::var("FW_XFRESH").is_err() { if let Some(v) = g.ps.saves.get(&xplan_key(g)) {
+        if let Some(rest) = v.strip_prefix(&format!("{}:{}:", XPLAN_VER, np)) { let f: Vec<f64> = rest.split(',').filter_map(|x| x.parse::<f64>().ok()).collect();
+            if f.len() == (np + 9) / 10 { let ab = x_brake(g); for i in 0..np { g.race.xprof[i] = (g.race.xprof[i] * f[i / 10] / 1000.0).max(g.rt.rprof[i] * 0.7); }
+                rebrake(&mut g.race.xprof, ab); if xlog() { eprintln!("EXTREME plan from the saves"); } return; } } } }
+    g.race.xprac = Some(Box::new(XPrac { car: None, laps: 0, fixes: 0, streak: 0, run: 0, last: 0, steps: 0, clean: true, done: false, ms: 0.0, off_t: 0.0 }));
+}
+/// up to `budget` more practice steps; true once practice is over
+pub fn x_practice(g: &mut Game, w: &World, obs: &Obstacles, budget: usize) -> bool {
+    let Some(mut xp) = g.race.xprac.take() else { return true; };
+    if xp.done { g.race.xprac = Some(xp); return true; }
+    let t_start = web_time::Instant::now(); let np = g.np; let wk = w.road() / ROAD; let lanes = [0.0, 1.9 * wk, -1.9 * wk];
+    let (phase, t0) = (g.race.phase, g.race.t); g.race.phase = Phase::Race; g.race.t = 1e6;   // (rival_input drives only in a race)
+    let mut c = match xp.car.take() { Some(c) => c, None => {
+        let mut c = mk_car(g, Some(0), 0, 0.0); c.pv = X_PRAC_PACE; c.form = 1.0; c.react = 0.0; c.mist_cd = 1e9;
+        rc_place(&mut c.car, &g.rt, w, 0, 0.0, g.race.xprof[0].min(20.0)); xp.last = 0; xp.laps = 1; c } };
+    let k = g.race.cars.len(); let tune = ai_tune(&g.base_tune, 0.0, AI_EXTREME); let dt = 1.0 / 60.0;
+    for _ in 0..budget {
+        g.race.cars.push(c);
+        let inp = rival_input(g, w, k); c = g.race.cars.pop().unwrap(); let mut car = c.car; car.update(w, obs, &tune, dt, &inp); c.car = car; xp.steps += 1;
+        let i = path_idx(w, car.x, car.z); let d = (i + np - xp.last) % np; if d < np / 4 { xp.run += d; } xp.last = i;
+        let pd = w.path_dist(car.x, car.z); let tn = g.rt.tan[i]; let fwd = car.h.sin() * tn[0] + car.h.cos() * tn[1];
+        let lava = g.vol && super::volc::in_canyon(&g.rt, w, car.x, car.y, car.z).is_some();
+        let fell = g.pri && car.y < g.rt.roadh[i] - 6.0;
+        // what a race would reset (off the road a while, in the lava, off the skyway, rolled, turned round), only sooner
+        let off = pd > w.road() + 4.0 || fwd < -0.2; xp.off_t = if off { xp.off_t + dt } else { 0.0 };
+        if xp.off_t > 0.5 || lava || fell || car.roll.abs() > 0.9 || car.pitch.abs() > 0.9 {
+            if std::env::var("FW_XFIXLOG").is_ok() { eprintln!("XFIX lap {} lane {:.1} at {} off_t {:.2} lava {} fell {} roll {:.2} pitch {:.2} sp {:.1} air {:.2}", xp.laps, c.lane, i, xp.off_t, lava, fell, car.roll, car.pitch, car.vx.hypot(car.vz), car.air_t); }
+            // (falling off Prism Skyway in the air: a gap jump, where too slow falls short too - no slower than the stage's own plan)
+            let floor = if g.pri && car.air_t > 0.25 { 1.0 } else { 0.7 };
+            xp.off_t = 0.0; xp.clean = false; xp.fixes += 1; x_slow(g, i, 0.95, 0.975, floor);
+            let back = (i + np - 40) % np; rc_place(&mut c.car, &g.rt, w, back, 0.0, g.race.xprof[back] * 0.9); c.err = 0.0; c.trust = 1.0; xp.last = back; xp.run = xp.run.saturating_sub(40);
+        }
+        if xp.run >= np || xp.steps >= 60 * 300 {   // a lap: the next on the next lane
+            xp.streak = if xp.clean { xp.streak + 1 } else { 0 };
+            if xp.streak >= 3 || xp.laps >= 24 || xp.fixes > 400 { xp.done = true; break; }
+            let lane = lanes[xp.laps % 3]; c.lane = lane; c.lane_t = lane; xp.laps += 1; xp.run = 0; xp.steps = 0; xp.clean = true;
+        }
+    }
+    g.race.phase = phase; g.race.t = t0; xp.ms += t_start.elapsed().as_secs_f64() * 1000.0;
+    if xp.done {
+        // kept per stage: the plan as factors of the plain one, per 10 path points (the slowest in each)
+        let base = x_profile(g); let f: Vec<String> = (0..(np + 9) / 10).map(|b| { let m = (b * 10..((b + 1) * 10).min(np)).map(|i| g.race.xprof[i] / base[i].max(0.1)).fold(1.0, f64::min); format!("{}", (m * 1000.0).round() as i64) }).collect();
+        let key = xplan_key(g); g.ps.saves.set(&key, format!("{}:{}:{}", XPLAN_VER, np, f.join(",")));
+        if xlog() { eprintln!("EXTREME practice: {} laps, {} fixes, {:.0} ms", xp.laps, xp.fixes, xp.ms); }
+    } else { xp.car = Some(c); }
+    let done = xp.done; g.race.xprac = Some(xp); done
+}
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Phase { Off, Grid, Race, Done }
@@ -77,6 +161,12 @@ pub struct Race {
     pub demo: bool,
     /// online duos: teams of two, the best average time wins
     pub duos: bool,
+    /// AI_EASY .. AI_EXTREME for this race, and EXTREME's speed plan (x_profile, built at its first step)
+    pub ai: u8, pub xprof: Vec<f64>,
+    /// EXTREME's practice laps while they last (x_practice)
+    pub xprac: Option<Box<XPrac>>,
+    /// practice steps per frame on the grid and once racing (the relay, which drives AI cars for many rooms, takes it slower)
+    pub xbudget: (usize, usize),
 }
 
 impl Race {
@@ -90,12 +180,13 @@ impl Race {
     pub fn new(rt: &Rt, ps: &Persist) -> Race {
         let np = rt.np; let n = (np + 9) / 10; let mut rlearn = vec![1.0; n];
         if let Some(v) = ps.saves.get(&format!("fogwood-learn-{}", rt.map)) { if v.len() == n * 2 { for i in 0..n { rlearn[i] = 0.7 + v[i * 2..i * 2 + 2].parse::<f64>().unwrap_or(99.0) / 330.0; } } }
-        Race { on: false, laps: if np > 2300 { 2 } else { 3 }, cars: Vec::new(), player: 0, phase: Phase::Off, t: 0.0, done_t: 0.0, note: String::new(), pos: 0, order: Vec::new(), finish_pos: 0, rlearn, shown: false, online: false, go_at: 0.0, hits: Vec::new(), me_id: 0, net_hits: Vec::new(), epoch: 0, touch_t: Default::default(), pushed_t: Default::default(), demo: false, duos: false }
+        Race { on: false, laps: if np > 2300 { 2 } else { 3 }, cars: Vec::new(), player: 0, phase: Phase::Off, t: 0.0, done_t: 0.0, note: String::new(), pos: 0, order: Vec::new(), finish_pos: 0, rlearn, shown: false, online: false, go_at: 0.0, hits: Vec::new(), me_id: 0, net_hits: Vec::new(), epoch: 0, touch_t: Default::default(), pushed_t: Default::default(), demo: false, duos: false, ai: AI_NORMAL, xprof: Vec::new(), xprac: None, xbudget: (700, 150) }
     }
 }
 
 pub(crate) fn mk_car(g: &mut Game, r: Option<usize>, k: usize, lat: f64) -> RCar {
-    let form = 0.98 + g.rng.f() * 0.04; let mist_cd = 5.0 + g.rng.f() * 5.0; let react = 0.12 + g.rng.f() * 0.4;
+    let xt = g.race.ai == AI_EXTREME;
+    let form = if xt { 1.0 + g.rng.f() * 0.02 } else { 0.98 + g.rng.f() * 0.04 }; let mist_cd = 5.0 + g.rng.f() * 5.0; let react = if xt { 0.06 + g.rng.f() * 0.08 } else { 0.12 + g.rng.f() * 0.4 };
     RCar { paint: 0, team: None, r, car: Car::new(), prog: k as f64 - g.np as f64, last_idx: k, i: k, lat, v: 0.0, lane: lat, lane_t: lat, pass_t: 3.0, cap: 99.0, pv: 1.0, boost: 0.0, form, mist: 0.0, mist_cd,
         stuck_t: 0.0, lap_t0: 0.0, laps_done: 0, last: None, best: None, finished: false, finish_t: 0.0, react, inp: Input::default(), tag_x: -99.0, tag_y: -99.0, tag_on: false, err: 0.0, trust: 1.0, off_at: None, resets: 0, remote: None, name: String::new(), left: false, owned: false, horizon: 0.0, bot: None, epoch: 0,
         model: match r { Some(i) => super::cars::rival_model(i), None => g.ps.car } }
@@ -109,6 +200,7 @@ pub(crate) fn rc_place(c: &mut Car, rt: &Rt, w: &World, i: usize, lat: f64, spee
 /// grid slot s: (path index, metres right of the centre line)
 pub(crate) fn slot(np: usize, s: usize) -> (usize, f64) { let row = s >> 1; let col = s & 1; ((np * 4 - 9 - row * 11 - col * 5) % np, if col == 1 { 1.55 } else { -1.55 }) }
 pub fn start(g: &mut Game, w: &World) {
+    g.race.ai = g.ps.rivals.clamp(0, 3) as u8; g.race.xprof.clear();
     let np = g.np; g.race.on = true; g.race.phase = Phase::Grid; g.race.t = 0.0; g.race.done_t = 0.0; g.race.note.clear(); g.race.cars.clear(); g.go = 4.5; g.race.laps = g.ps.race_laps.clamp(1, 5) as i64;
     let slot = |s: usize| -> (usize, f64) { let row = s >> 1; let col = s & 1; ((np * 4 - 9 - row * 11 - col * 5) % np, if col == 1 { 1.55 } else { -1.55 }) };
     let mut order: Vec<usize> = (0..5).collect(); order.sort_by(|a, b| RIVALS[*b].pace.partial_cmp(&RIVALS[*a].pace).unwrap());
@@ -123,9 +215,13 @@ pub fn start(g: &mut Game, w: &World) {
 }
 /// the tune an AI car drives on: the stage's, with the rivals' grip and the catch-up boost (0: none; other phones predict
 /// it without)
-pub fn ai_tune(b: &Tune, bo: f64) -> Tune {
+/// the AI cars' tune (also what the phones and the relay use to guess their moves): the stage tune with more grip, plus
+/// its catch-up boost, plus EXTREME's extra grip and power
+pub fn ai_tune(b: &Tune, bo: f64, ai: u8) -> Tune {
     let mut t: Tune = *b; t.power = b.power * (1.0 + bo); t.mu_road = b.mu_road * (RT_MU + bo * 0.4); t.mu_grass = b.mu_grass * (1.0 + bo * 0.4);
-    t.a_grip = b.a_grip * RT_GRIP; t.a_yaw_cap = b.a_yaw_cap * RT_YAW; t
+    t.a_grip = b.a_grip * RT_GRIP; t.a_yaw_cap = b.a_yaw_cap * RT_YAW;
+    if ai == AI_EXTREME { t.mu_road *= X_MU; t.mu_grass *= X_MU; t.power *= X_POW; t.brake *= X_BRK; t.a_brake *= X_BRK; t.a_accel *= X_ACC; t.a_grip *= X_AGRIP; t.a_yaw_cap *= X_YAW; }
+    t
 }
 pub fn stop(g: &mut Game) { g.race.duos = false; g.race.online = false; g.race.demo = false; g.race.on = false; g.race.phase = Phase::Off; g.race.cars.clear(); }
 
@@ -137,15 +233,19 @@ fn plan(g: &mut Game, w: &World, dt: f64) {
     let n = g.race.cars.len(); let np = g.np;
     for k in 0..n { let st = *state(g, k); let i = path_idx(w, st.x, st.z); let p = g.rt.path[i]; let tn = g.rt.tan[i];
         let c = &mut g.race.cars[k]; c.i = i; c.lat = (st.x - p[0]) * -tn[1] + (st.z - p[1]) * tn[0]; c.v = (st.vx * tn[0] + st.vz * tn[1]).max(0.0); }
-    let pprog = g.race.cars[g.race.player].prog; let skill = match g.ps.rivals { 0 => 0.87, 2 => 1.07, _ => g.ps.race_skill }; let br = 6.5 * g.tune.mu_road;
+    let xt = g.race.ai == AI_EXTREME;
+    let skill = match g.race.ai { AI_EASY => 0.87, AI_HARD => 1.07, AI_EXTREME => 1.0, _ => if g.race.online { 0.95 } else { g.ps.race_skill } };
+    let pprog = g.race.cars[g.race.player].prog; let br = 6.5 * g.tune.mu_road;
     // online, the AI cars keep close to the players: each measures its gap to the nearest player still racing
     let humans: Vec<f64> = if g.race.online { g.race.cars.iter().filter(|c| c.bot.is_none() && !c.left && !c.finished).map(|c| c.prog).collect() } else { Vec::new() };
     for k in 0..n {
         if !g.race.cars[k].is_ai() { continue; }
         let (cprog, clat, cv, ci, clane, aggr) = { let c = &g.race.cars[k]; (c.prog, c.lat, c.v, c.i, c.lane, RIVALS[c.r.unwrap()].aggr) };
         let gap = if humans.is_empty() { pprog - cprog } else { humans.iter().map(|p| p - cprog).fold(f64::MAX, |m, d| if d.abs() < m.abs() { d } else { m }) };
-        let band = clamp(gap / 1100.0, -0.07, 0.07);
-        let pv = { let c = &g.race.cars[k]; RIVALS[c.r.unwrap()].pace * skill * (1.0 + band) * c.form };
+        let band = clamp(gap / 1100.0, if xt { 0.0 } else { -0.07 }, 0.07);
+        let band = if std::env::var("FW_NOBAND").is_ok() { 0.0 } else { band };   // test hook: raw pace
+        // (EXTREME: the drivers' pace differences mostly gone)
+        let pv = { let c = &g.race.cars[k]; let pace = RIVALS[c.r.unwrap()].pace; (if xt { 1.0 - (1.0 - pace) * 0.3 } else { pace }) * skill * (1.0 + band) * c.form };
         let boost = clamp((gap - 60.0) / 900.0, 0.0, 0.22);
         let mut block: Option<usize> = None; let mut bd = 99.0; let mut side = 0.0;
         for o in 0..n { if o == k { continue; } let oc = &g.race.cars[o]; let dp = oc.prog - cprog; let dl = oc.lat - clat;
@@ -165,7 +265,7 @@ fn plan(g: &mut Game, w: &World, dt: f64) {
         if side != 0.0 { c.lane_t = clamp(c.lane_t + side * 0.9, -2.35 * wk, 2.35 * wk); }
         let ls = if c.pass_t > 0.0 { 2.4 } else { 1.6 }; c.lane += clamp(c.lane_t - c.lane, -ls * dt, ls * dt);
         c.mist_cd -= dt; c.mist = (c.mist - dt).max(0.0);
-        if c.mist_cd <= 0.0 && g.rt.vcurve[(ci + 45) % np] < 18.0 && g.rt.vcurve[ci] > 24.0 { c.mist_cd = 7.0; let cons = RIVALS[c.r.unwrap()].cons; let q = g.rng.f(); let c = &mut g.race.cars[k]; if q < (1.0 - cons) * 0.5 { c.mist = 1.7; } }
+        if !xt && c.mist_cd <= 0.0 && g.rt.vcurve[(ci + 45) % np] < 18.0 && g.rt.vcurve[ci] > 24.0 { c.mist_cd = 7.0; let cons = RIVALS[c.r.unwrap()].cons; let q = g.rng.f(); let c = &mut g.race.cars[k]; if q < (1.0 - cons) * 0.5 { c.mist = 1.7; } }
     }
 }
 
@@ -181,16 +281,22 @@ fn rival_input(g: &mut Game, w: &World, k: usize) -> Input {
     let (dx, dz) = (p[0] - tn[1] * lat - s.x, p[1] + tn[0] * lat - s.z); let sp = s.vx.hypot(s.vz); let vh = if sp > 2.0 { s.vx.atan2(s.vz) } else { s.h };
     let al = wrap_a(dx.atan2(dz) - vh); let r_want = 2.0 * sp.max(1.0) * al.sin() / ld;
     let delta = wrap_a(vh - s.h) + (2.0 * 2.5 * al.sin() / ld).atan() - (s.r - r_want) * 0.12 + if c.mist > 0.0 { (time * 6.0 + c.last_idx as f64).sin() * 0.04 } else { 0.0 };
-    let q = (i + 4) % np; let mut vt = rt.rprof[q] * g.race.rlearn[q / 10] * c.pv * (1.0 + c.boost * 0.5); if c.mist > 0.0 { vt *= 1.1; }
+    let q = (i + 4) % np;
+    let prof = if g.race.xprof.len() == np && g.race.ai == AI_EXTREME { g.race.xprof[q] } else { rt.rprof[q] };   // EXTREME: its practised plan
+    let rl = if g.race.ai == AI_EXTREME { 1.0 } else { g.race.rlearn[q / 10] };   // EXTREME's plan comes from its practice laps
+    let mut vt = prof * rl * c.pv * (1.0 + c.boost * 0.5); if c.mist > 0.0 { vt *= 1.1; }
     c.trust = clamp(c.trust + ((if c.err > 1.3 || s.vl.abs() > 2.6 { 0.82 } else { 1.0 }) - c.trust) * 0.05, 0.8, 1.0);
     vt = (vt * c.trust * clamp(1.12 - c.err * 0.09, 0.72, 1.0)).min(c.cap);
     if let Some(c) = super::volc::bridge_cap(rt, i) { vt = vt.min(c); }   // Ember Peak: steady over the bridges
     let slide_cut = clamp(1.0 - (s.vl.abs() - 1.5) / 3.0, 0.15, 1.0);
     let lock = g.tune.lock / (1.0 + u / g.tune.lock_fall);
-    Input { steer: clamp(delta / lock, -1.0, 1.0), throttle: clamp((vt - u) * 0.5, 0.0, 1.0) * slide_cut, brake: clamp((u - vt - 0.8) * 0.45, 0.0, 1.0), hb: false }
+    let inp = Input { steer: clamp(delta / lock, -1.0, 1.0), throttle: clamp((vt - u) * 0.5, 0.0, 1.0) * slide_cut, brake: clamp((u - vt - 0.8) * 0.45, 0.0, 1.0), hb: false };
+    inp
 }
 
 fn learn(g: &mut Game, i: usize) {
+    // EXTREME: a slip in the race slows its own plan a little (this race only), not the saved learning of the other levels
+    if g.race.ai == AI_EXTREME && g.race.xprof.len() == g.np { x_slow(g, i, 0.975, 0.99, 0.7); return; }
     let np = g.np as i64; let mut d = -70; while d <= 10 { let b = (((i as i64 + d + np) % np) / 10) as usize; let rl = &mut g.race.rlearn[b]; *rl = (*rl * if d > -40 { 0.93 } else { 0.96 }).max(0.72); d += 10; }
     let s: String = g.race.rlearn.iter().map(|v| { let q = format!("{:02}", ((v - 0.7) * 330.0 + 0.5).floor() as i64); q[q.len() - 2..].to_string() }).collect();
     let k = format!("fogwood-learn-{}", g.rt.map); g.ps.saves.set(&k, s);
@@ -211,7 +317,8 @@ fn recover(g: &mut Game, w: &World, k: usize, dt: f64) {
     if fell { c.stuck_t = 9.0; if std::env::var("FW_FALLS").is_ok() { eprintln!("FALL car {} at {} off_at {:?} sp {:.1}", k, i, c.off_at, sp); } }
     if c.stuck_t > if off { 1.6 } else { 2.6 } {
         c.stuck_t = 0.0; let off_at = c.off_at.unwrap_or(i);
-        if std::env::var("FW_RESETS").is_ok() { let lt = { let p0 = g.rt.path[i]; let t0 = g.rt.tan[i]; (s.x - p0[0]) * -t0[1] + (s.z - p0[1]) * t0[0] }; eprintln!("RESET car {} at {} lava {} off {} sp {:.1} lat {:+.2} dodge {:?} lane {:.2}", k, i, lava_kc.is_some(), off, sp, lt, super::volc::dodge(&g.rt, i), g.race.cars[k].lane); }
+        if std::env::var("FW_RESETS").is_ok() { let lt = { let p0 = g.rt.path[i]; let t0 = g.rt.tan[i]; (s.x - p0[0]) * -t0[1] + (s.z - p0[1]) * t0[0] }; let near = (0..g.race.cars.len()).filter(|&o| o != k).map(|o| { let st = state(g, o); (st.x - s.x).hypot(st.z - s.z) }).fold(99.0, f64::min);
+            eprintln!("RESET car {} at {} lava {} off {} sp {:.1} lat {:+.2} lane {:.2} roll {:.2} pitch {:.2} fwd {:.2} near {:.1} t {:.1}", k, i, lava_kc.is_some(), off, sp, lt, g.race.cars[k].lane, s.roll, s.pitch, fwd, near, g.race.t); }
         if off { learn(g, off_at); }
         let kk = lava_kc.unwrap_or((i + np - 6) % np); let mut lat = 0.0;
         for o in 0..g.race.cars.len() { if o == k { continue; } let st = state(g, o); if (st.x - g.rt.path[kk][0]).hypot(st.z - g.rt.path[kk][1]) < 6.0 { lat = if lat != 0.0 { -lat } else { 2.0 }; } }
@@ -329,7 +436,7 @@ fn finish(g: &mut Game) {
         let mut best = 1e9; for c in &g.race.cars { if !c.is_player() { best = f64::min(best, (laps * np - c.prog) / c.v.max(15.0)); } } best } else { 0.0 };
     let d = if pos == 1 { if next > 10.0 { 0.05 } else if next > 4.0 { 0.03 } else { 0.015 } } else if pos <= 3 { 0.0 } else if pos <= 5 { -0.015 } else { -0.03 };
     let d = if g.race.online { 0.0 } else { d };
-    if !g.race.online && !g.race.demo && g.ps.rivals == 1 { g.ps.race_skill = clamp(g.ps.race_skill + d, 0.84, 1.1); let v = format!("{:.3}", g.ps.race_skill); g.ps.saves.set("fogwood-skill", v); }
+    if !g.race.online && !g.race.demo && g.race.ai == AI_NORMAL { g.ps.race_skill = clamp(g.ps.race_skill + d, 0.84, 1.1); let v = format!("{:.3}", g.ps.race_skill); g.ps.saves.set("fogwood-skill", v); }
     g.race.note = if d > 0.0 { "RIVALS WILL PUSH HARDER".into() } else if d < 0.0 { "RIVALS WILL EASE OFF".into() } else { String::new() }; g.race.finish_pos = pos;
     let m = if pos == 1 { "YOU WIN!".to_string() } else { format!("FINISHED P{}", pos) }; g.flash_msg(&m, 3.0);
 }
@@ -357,11 +464,15 @@ pub fn step(g: &mut Game, w: &World, obs: &Obstacles, dt: f64) {
     else if g.go > 0.0 { g.go -= dt; }
     if g.race.phase == Phase::Grid && g.go <= 0.9 { g.race.phase = Phase::Race; }
     if g.race.phase != Phase::Grid && !g.race.online { g.race.t += dt; }
+    if g.race.ai == AI_EXTREME && g.race.cars.iter().any(|c| c.is_ai()) {   // (only where AI cars are driven)
+        if g.race.xprof.len() != g.np { x_begin(g); }
+        if g.race.xprac.as_ref().map(|x| !x.done).unwrap_or(false) { let b = if g.race.phase == Phase::Grid { g.race.xbudget.0 } else { g.race.xbudget.1 }; x_practice(g, w, obs, b); }
+    }
     plan(g, w, dt);
     for k in 0..g.race.cars.len() {
         if !g.race.cars[k].is_ai() { continue; }
         // rivals drive on the stage tune (their pace is balanced for it), whatever car you picked
-        let t = ai_tune(&g.base_tune, g.race.cars[k].boost);
+        let t = ai_tune(&g.base_tune, g.race.cars[k].boost, g.race.ai);
         let inp = rival_input(g, w, k); let mut car = g.race.cars[k].car; car.update(w, obs, &t, dt, &inp); g.race.cars[k].car = car; g.race.cars[k].inp = inp;
         recover(g, w, k, dt);
     }

@@ -77,7 +77,9 @@ pub struct Start { pub map: String, pub laps: u8, pub go_at: f64, pub slots: Vec
     /// the AI cars run on the relay server (net::SERVER_ID), not on the host's phone
     pub srv: bool,
     /// MODE_RACE, MODE_DUOS or MODE_TILES; duos: each player's team (slots order), then each AI car's
-    pub mode: u8, pub teams: Vec<u8>, pub bot_teams: Vec<u8> }
+    pub mode: u8, pub teams: Vec<u8>, pub bot_teams: Vec<u8>,
+    /// how hard the AI cars drive: game::race::AI_EASY .. AI_EXTREME (older hosts: AI_NORMAL)
+    pub ai: u8 }
 pub const MODE_RACE: u8 = 0; pub const MODE_DUOS: u8 = 1; pub const MODE_TILES: u8 = 2;
 
 #[derive(Default)]
@@ -122,7 +124,7 @@ pub fn read_hello(r: &mut R) -> Option<Hello> {
 }
 pub fn start(e: Env, s: &Start) -> Vec<u8> {
     let mut w = W::env(e); w.str(&s.map); w.u8(s.laps); w.f64(s.go_at); w.u8(s.slots.len().min(12) as u8); for (id, k) in s.slots.iter().take(12) { w.u32(*id); w.u8(*k); }
-    w.u8(s.bots.len().min(11) as u8); for (r, k) in s.bots.iter().take(11) { w.u8(*r); w.u8(*k); } w.u8(s.srv as u8); w.u8(s.mode); w.u8(s.teams.len().min(12) as u8); for t in s.teams.iter().take(12) { w.u8(*t); } w.u8(s.bot_teams.len().min(11) as u8); for t in s.bot_teams.iter().take(11) { w.u8(*t); } w.0
+    w.u8(s.bots.len().min(11) as u8); for (r, k) in s.bots.iter().take(11) { w.u8(*r); w.u8(*k); } w.u8(s.srv as u8); w.u8(s.mode); w.u8(s.teams.len().min(12) as u8); for t in s.teams.iter().take(12) { w.u8(*t); } w.u8(s.bot_teams.len().min(11) as u8); for t in s.bot_teams.iter().take(11) { w.u8(*t); } w.u8(s.ai); w.0
 }
 pub fn read_start(r: &mut R) -> Option<Start> {
     let map = r.str()?; let laps = r.u8()?; let go_at = r.f64()?; let n = r.u8()? as usize; let mut slots = Vec::new(); for _ in 0..n { slots.push((r.u32()?, r.u8()?)); }
@@ -132,7 +134,8 @@ pub fn read_start(r: &mut R) -> Option<Start> {
     let mode = r.u8().unwrap_or(MODE_RACE); let mut teams = Vec::new(); let mut bot_teams = Vec::new();
     if let Some(n) = r.u8() { for _ in 0..n { if let Some(t) = r.u8() { teams.push(t); } } }
     if let Some(n) = r.u8() { for _ in 0..n { if let Some(t) = r.u8() { bot_teams.push(t); } } }
-    Some(Start { map, laps, go_at, slots, bots, srv, mode, teams, bot_teams })
+    let ai = r.u8().unwrap_or(1);   // newest: the AI level
+    Some(Start { map, laps, go_at, slots, bots, srv, mode, teams, bot_teams, ai })
 }
 pub fn car(e: Env, c: &CarSnap) -> Vec<u8> {
     let mut w = W::env(e); w.f64(c.t);
@@ -232,10 +235,12 @@ mod tests {
         let e = Env { kind: K_HELLO, room: 123456, from: 0xdeadbeef, to: 0, seq: 9 };
         let h = Hello { host: true, racing: false, name: "ADRIEN".into(), map: "lakes".into(), cands: vec![([192, 168, 1, 20], 40000), ([203, 0, 113, 9], 51234)], car: 3, brokers: 5, paint: 7, caps: CAP_BATCH };
         let b = hello(e, &h); let (e2, mut r) = read_env(&b).unwrap(); assert_eq!(e2, e); assert_eq!(read_hello(&mut r).unwrap(), h);
-        let s = Start { map: "snow".into(), laps: 3, go_at: 1234.5, slots: vec![(1, 0), (2, 1)], bots: vec![(0, 2), (3, 3)], srv: true, mode: MODE_DUOS, teams: vec![0, 0], bot_teams: vec![1, 1] };
+        let s = Start { map: "snow".into(), laps: 3, go_at: 1234.5, slots: vec![(1, 0), (2, 1)], bots: vec![(0, 2), (3, 3)], srv: true, mode: MODE_DUOS, teams: vec![0, 0], bot_teams: vec![1, 1], ai: 3 };
         let b = start(Env { kind: K_START, ..e }, &s); let (_, mut r) = read_env(&b).unwrap(); assert_eq!(read_start(&mut r).unwrap(), s);
         // an older host's start (no AI cars) still reads
-        let old = { let mut b = start(Env { kind: K_START, ..e }, &Start { bots: vec![], ..s.clone() }); b.pop(); b }; let (_, mut r) = read_env(&old).unwrap(); assert!(read_start(&mut r).unwrap().bots.is_empty());
+        // an older host's start (no AI level): normal
+        let b = { let mut b = start(Env { kind: K_START, ..e }, &s); b.pop(); b }; let (_, mut r) = read_env(&b).unwrap(); assert_eq!(read_start(&mut r).unwrap().ai, 1);
+        let old = { let mut b = start(Env { kind: K_START, ..e }, &Start { bots: vec![], ..s.clone() }); b.truncate(b.len() - 6); b }; let (_, mut r) = read_env(&old).unwrap(); assert!(read_start(&mut r).unwrap().bots.is_empty());
         let b = hit(Env { kind: K_HIT, ..e }, [1.0, -2.0, 0.5, 0.1, 0.0], 3.5, 2); let (_, mut r) = read_env(&b).unwrap(); assert_eq!(read_hit(&mut r).unwrap(), ([1.0, -2.0, 0.5, 0.1, 0.0], 3.5, 2));
         let b = bot_hit(Env { kind: K_BOTHIT, ..e }, 4, [1.0, -2.0, 0.5, 0.1, 0.0], 3.5); let (_, mut r) = read_env(&b).unwrap(); assert_eq!(read_bot_hit(&mut r).unwrap(), (4, [1.0, -2.0, 0.5, 0.1, 0.0], 3.5));
         let c = CarSnap { t: 5.25, x: 1.0, y: 2.0, z: -3.0, h: 0.5, u: 20.0, gear: 3, rpm: 6100, d: [0.07; 4], ang: [1.0, 2.0, 3.0, 4.0], flags: 1, ..Default::default() };

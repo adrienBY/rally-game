@@ -91,18 +91,20 @@ pub struct Persist { /** asked for a driver name this run already */ pub name_as
     pub online_ui: online::OnlineUi, pub name: String, pub online_laps: u8,
     /// AI cars in online races the phone hosts (0-5)
     pub online_bots: u8,
+    /// the AI level the host picks for online races (race::AI_EASY .. AI_EXTREME)
+    pub online_ai: u8,
     /// the room's mode the host picked: net::proto::MODE_*
     pub online_mode: u8,
     /// settings screen: volumes 0..10, haptics 0..3, sun rays, mph, camera view, camera shake, 30 fps battery saver, debug buttons
     pub vol: i32, pub rvol: i32, pub hap: i32, pub rays: bool, pub mph: bool, pub cam_mode: u8, pub shake: bool, pub saver: bool, pub debug: bool,
     /// your car (garage), and the livery picked for each car (0 = its own)
     pub car: usize, pub paint: Vec<usize>,
-    /// dust and smoke 0 off .. 2 full, visual crash damage, rivals 0 easy / 1 adaptive / 2 hard, laps of an offline race, the menu's attract race
+    /// dust and smoke 0 off .. 2 full, visual crash damage, rivals 0 easy / 1 adaptive / 2 hard / 3 extreme, laps of an offline race, the menu's attract race
     pub particles: i32, pub damage: bool, pub rivals: i32, pub race_laps: i32, pub menu_race: bool }
 impl Persist {
     pub fn new(save_path: &str) -> Persist {
         let saves = Saves::load(save_path);
-        let mut p = Persist { online_mode: 0, name_asked: false, saves, sound_on: true, vib_on: true, pix_idx: 2, touch_used: false, downgraded: false, race_mode: false, race_skill: 0.95, online_ui: online::OnlineUi::Closed, name: String::new(), online_laps: 2, online_bots: 0,
+        let mut p = Persist { online_mode: 0, name_asked: false, saves, sound_on: true, vib_on: true, pix_idx: 2, touch_used: false, downgraded: false, race_mode: false, race_skill: 0.95, online_ui: online::OnlineUi::Closed, name: String::new(), online_laps: 2, online_bots: 0, online_ai: 1,
             vol: 10, rvol: 8, hap: 2, rays: true, mph: false, cam_mode: 0, shake: true, saver: false, debug: true, car: 0, paint: vec![0; cars::CARS.len()], particles: 2, damage: true, rivals: 1, race_laps: 3, menu_race: true };
         p.reload(); p
     }
@@ -121,9 +123,10 @@ impl Persist {
         if let Some(v) = gi(&self.saves, "fogwood-cam") { self.cam_mode = v.clamp(0, 2) as u8; }
         if let Some(v) = gi(&self.saves, "fogwood-olaps") { self.online_laps = v.clamp(1, 5) as u8; }
         if let Some(v) = gi(&self.saves, "fogwood-obots") { self.online_bots = v.clamp(0, 5) as u8; }
+        if let Some(v) = gi(&self.saves, "fogwood-oai") { self.online_ai = v.clamp(0, 3) as u8; }
         if let Some(v) = gi(&self.saves, "fogwood-omode") { self.online_mode = v.clamp(0, 2) as u8; }
         if let Some(v) = gi(&self.saves, "fogwood-parts") { self.particles = v.clamp(0, 2); }
-        if let Some(v) = gi(&self.saves, "fogwood-rivals") { self.rivals = v.clamp(0, 2); }
+        if let Some(v) = gi(&self.saves, "fogwood-rivals") { self.rivals = v.clamp(0, 3); }
         if let Some(v) = gi(&self.saves, "fogwood-rlaps") { self.race_laps = v.clamp(1, 5); }
         if let Some(v) = gi(&self.saves, "fogwood-car") { self.car = (v.max(0) as usize).min(cars::CARS.len() - 1); }
         if let Some(v) = self.saves.get("fogwood-paint") { for (k, x) in v.split(',').enumerate() { if let (Some(slot), Ok(n)) = (self.paint.get_mut(k), x.parse::<usize>()) { *slot = n.min(cars::LIVERIES.len() - 1); } } }
@@ -135,7 +138,7 @@ impl Persist {
     pub fn store(&mut self) {
         let b = |v: bool| if v { "1".to_string() } else { "0".to_string() };
         let kv = [("fogwood-vol", self.vol.to_string()), ("fogwood-rvol", self.rvol.to_string()), ("fogwood-hap", self.hap.to_string()), ("fogwood-vib", b(self.vib_on)),
-            ("fogwood-pix", self.pix_idx.to_string()), ("fogwood-cam", self.cam_mode.to_string()), ("fogwood-olaps", self.online_laps.to_string()), ("fogwood-obots", self.online_bots.to_string()), ("fogwood-rays", b(self.rays)),
+            ("fogwood-pix", self.pix_idx.to_string()), ("fogwood-cam", self.cam_mode.to_string()), ("fogwood-olaps", self.online_laps.to_string()), ("fogwood-obots", self.online_bots.to_string()), ("fogwood-oai", self.online_ai.to_string()), ("fogwood-rays", b(self.rays)),
             ("fogwood-mph", b(self.mph)), ("fogwood-shake", b(self.shake)), ("fogwood-saver", b(self.saver)), ("fogwood-debug", b(self.debug)), ("fogwood-dg", b(self.downgraded)),
             ("fogwood-parts", self.particles.to_string()), ("fogwood-damage", b(self.damage)), ("fogwood-rivals", self.rivals.to_string()), ("fogwood-rlaps", self.race_laps.to_string()), ("fogwood-mrace", b(self.menu_race))];
         for (k, v) in kv { self.saves.set(k, v); }
@@ -379,10 +382,14 @@ impl Game {
     /// meshes heaved to match (rest shape + lift at each vertex's place along the road; only vertices a wave can reach are touched)
     /// Ember Peak, each frame: fly and draw the fireballs, kick the cars a landing one catches, and put a car that drove into lava back on
     /// the road before the crossing
+    /// Ember Peak's fireball clock (shared by the phones: the real time, mod volc::PERIOD)
+    pub fn volc_clock(&self) -> f64 {
+        if self.wave_sim { (self.wave_t0 + self.time).rem_euclid(volc::PERIOD) } else { web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| (d.as_millis() % (volc::PERIOD as u128 * 1000)) as f64 / 1000.0).unwrap_or(self.time % volc::PERIOD) }
+    }
     fn volc_step(&mut self, r: &mut Renderer, w: &World, dt: f64) {
         let Some(ims) = self.rt.volc.as_ref().map(|v| v.ims) else { return };
         volc::init_bridges(&self.rt, w);
-        let t = if self.wave_sim { (self.wave_t0 + self.time).rem_euclid(volc::PERIOD) } else { web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| (d.as_millis() % (volc::PERIOD as u128 * 1000)) as f64 / 1000.0).unwrap_or(self.time % volc::PERIOD) };
+        let t = self.volc_clock();
         let tp = if self.volc_tp < 0.0 || self.volc_tp > t || t - self.volc_tp > 1.0 { t - dt.max(0.0) } else { self.volc_tp }; self.volc_tp = t;
         let f = volc::frame(&self.rt, w, t, tp, self.cam_pos);
         for (k, p) in [&f.fire, &f.solid, &f.glow, &f.ring, &f.disc].into_iter().enumerate() { r.set_instances(ims[k], p.n(), &p.m); if !p.c.is_empty() { r.set_instance_colors(ims[k], &p.c); } }
@@ -394,7 +401,8 @@ impl Game {
             if d < 45.0 && self.state == State::Drive { self.shake = self.shake.max(0.8 * (1.0 - d / 45.0).powf(1.5)); }
             if live { let k = volc::kick(&mut self.car, b); if k > 0.0 && self.state == State::Drive { self.buzz("land", 0.5 + 0.5 * k); self.audio_msg(&[2.0, 6.0, k as f32, 0.0]); }
                 else if self.state == State::Drive && (self.car.x - b.to[0]).hypot(self.car.z - b.to[2]) < 22.0 { self.buzz("shift", 0.35); } }
-            for c in self.race.cars.iter_mut() { if c.is_ai() { volc::kick(&mut c.car, b); } }
+            let kf = if self.race.ai == race::AI_EXTREME { race::X_KICK } else { 1.0 };   // EXTREME's planted cars
+            for c in self.race.cars.iter_mut() { if c.is_ai() { volc::kick_k(&mut c.car, b, kf); } }
         }
         if live { if let Some(rv) = volc::in_canyon(&self.rt, w, self.car.x, self.car.y, self.car.z) {
             let back = volc::back_from(&self.rt, rv, path_idx(w, self.car.x, self.car.z)); self.place_at(w, back);
@@ -484,7 +492,7 @@ impl Game {
         self.garage_step(w, dt);
         // the menu's attract race: you and five rivals, AI at every wheel, round and round behind the menu
         let demo_ok = self.ps.menu_race && self.state == State::Title && !self.gar.open && self.ps.online_ui == online::OnlineUi::Closed && !crate::net::active();
-        if demo_ok && !self.race.on { race::start(self, w); self.race.demo = true; }
+        if demo_ok && !self.race.on { race::start(self, w); self.race.demo = true; if self.race.ai == race::AI_EXTREME { self.race.ai = race::AI_HARD; } }   // (the menu's race: no practice laps behind the title)
         else if self.race.demo && (!demo_ok || (self.race.phase == race::Phase::Done && self.race.done_t > 4.0)) { race::stop(self); }
         // the body on show: yours, or the one the garage is looking at
         let want = if self.gar.open { self.gar.sel } else { self.ps.car };

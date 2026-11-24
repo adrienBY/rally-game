@@ -52,7 +52,7 @@ fn main() {
             for c in 0..chs { for i in 0..frames { let q = (i * ch as usize + c) * 2; m.extend_from_slice(&data[q..q + 2]); } }
             fogwood_audio::native::message(&m); println!("loaded {} {} ch {} Hz {} frames", f, chs, rate, frames);
         }
-        let mut g = Game::new(rt, Persist::new("/tmp/game_host.sav")); g.wave_sim = std::env::var("FW_REALTIME").is_err(); g.wave_t0 = std::env::var("FW_WAVE_T0").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0); if let Ok(n) = std::env::var("DUSTN") { g.dust = fogwood_core::game::dust::Dust::new(n.parse().unwrap_or(6000), 0x5EED); }   // a scene dumped from the browser build has the browser's small dust buffer
+        let mut g = Game::new(rt, Persist::new(&std::env::var("FW_SAVE").unwrap_or("/tmp/game_host.sav".into()))); g.wave_sim = std::env::var("FW_REALTIME").is_err(); g.wave_t0 = std::env::var("FW_WAVE_T0").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0); if let Ok(n) = std::env::var("DUSTN") { g.dust = fogwood_core::game::dust::Dust::new(n.parse().unwrap_or(6000), 0x5EED); }   // a scene dumped from the browser build has the browser's small dust buffer
         g.resize(w as f64, h as f64, [0.0; 4]); if std::env::var("NOLOD").is_err() { g.attach(&mut r); }
         let gl = r.gl();
         let tex = gl.create_texture().unwrap(); gl.bind_texture(glow::TEXTURE_2D, Some(tex));
@@ -124,7 +124,15 @@ fn main() {
                     "stap" => { let f: f64 = parts.get(2).and_then(|v| v.parse().ok()).unwrap_or(0.5); let key = parts[1].replace(".", ":"); println!("stap {} {} vol={} hap={} pix={} rays={}", key, g.settings_tap_key(&key, f), g.ps.vol, g.ps.hap, g.ps.pix_idx, g.ps.rays); }
                     "netstat" => { fogwood_core::net::with(|s| println!("traffic t={:.1} bytes {:?} packets {:?}", t, s.traffic.get(), s.packets.get())); }
                     "net" => { fogwood_core::net::with(|s| println!("net t={:.1} host={} up={} peers={:?} host_now={:.2}", t, s.is_host, s.brokers_up(), s.peers.values().map(|p| (p.name.clone(), p.link(), (p.rtt * 1000.0) as i32)).collect::<Vec<_>>(), s.host_now())); }
-                    "rstate" => { println!("race t={:.1} on={} online={} phase={:?} go={:.2} race_t={:.2} pos={} cars={:?}", t, g.race.on, g.race.online, g.race.phase, g.go, g.race.t, g.race.pos,
+                    "hudppm" => {   // hudppm:PATH - the HUD layer as it was last drawn (menus, lobby), on a dark grey ground
+                        let (w, h) = (g.hud.w as usize, g.hud.h as usize); let mut out = format!("P6\n{} {}\n255\n", w, h).into_bytes();
+                        for px in g.hud.bytes.chunks(4).take(w * h) { let a = px[3] as f32 / 255.0; for ch in 0..3 { out.push((px[ch] as f32 * a + 40.0 * (1.0 - a)) as u8); } }
+                        std::fs::write(parts.get(1).copied().unwrap_or("/tmp/hud.ppm"), out).unwrap(); println!("hud {}x{}", w, h); }
+                    "rivals" => { g.ps.rivals = parts.get(1).and_then(|v| v.parse().ok()).unwrap_or(1); }   // rivals:N - the offline AI level (0 easy .. 3 extreme)
+                    "rres" => {   // the race so far: each car's laps, best and last lap, resets, finish
+                        let res = fogwood_core::game::race::results(&g); for (pos, (k, tm, done)) in res.iter().enumerate() { let c = &g.race.cars[*k];
+                            println!("rres {} {} laps {} best {} last {} resets {} {}", pos + 1, if c.is_player() { "YOU".to_string() } else { c.tag() }, c.laps_done, c.best.map(|b| format!("{:.2}", b)).unwrap_or("-".into()), c.last.map(|b| format!("{:.2}", b)).unwrap_or("-".into()), c.resets, if *done { format!("finished {:.2}", tm) } else { format!("est {:.1}", tm) }); } }
+                    "rstate" => { println!("race t={:.1} ai={} on={} online={} phase={:?} go={:.2} race_t={:.2} pos={} cars={:?}", t, g.race.ai, g.race.on, g.race.online, g.race.phase, g.go, g.race.t, g.race.pos,
                         g.race.cars.iter().map(|c| (c.tag(), (c.car.x * 10.0).round() / 10.0, (c.car.z * 10.0).round() / 10.0, c.prog as i64)).collect::<Vec<_>>()); }
                     "aisim" => {   // same as the page's AI lap test: placeAt(0), demo driver + physics at 60 Hz until a full lap
                         let lock = fogwood_core::bridge::lock(); let e = lock.as_ref().unwrap(); let np = g.np;

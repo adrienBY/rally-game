@@ -38,7 +38,7 @@ fn main() {
         let wall = t0.elapsed().as_secs_f64(); if wall > secs { break; }
         net::with(|s| {
             s.poll();
-            if k == 0 && !started && wall > 4.0 { started = true; s.start_race("lakes", 3, 1.0, &[], false, 0); }
+            if k == 0 && !started && wall > 4.0 { started = true; s.start_race("lakes", 3, 1.0, &[], false, 0, 1); }
             if !s.racing && wall > 4.0 && (k == 0 || s.start_in.take().is_some()) { s.racing = true; s.begin_race(bots, false); }
             let th = s.host_now();
             s.send_car(truth(k, th), dt, None, None, 60.0);

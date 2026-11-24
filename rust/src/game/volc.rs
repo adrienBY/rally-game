@@ -74,11 +74,13 @@ pub fn bridge_cap(rt: &Rt, i: usize) -> Option<f64> {
 pub fn back_from(rt: &Rt, rv: &River, _i: usize) -> usize { let np = rt.path.len(); (rv.kc + np - 28) % np }
 
 /// a fireball landing at `b` throws the car out from the blast and up; returns how hard (0: out of reach)
-pub fn kick(c: &mut Car, b: &Ball) -> f64 {
+pub fn kick(c: &mut Car, b: &Ball) -> f64 { kick_k(c, b, 1.0) }
+/// the same, `f` as strong (EXTREME's planted cars)
+pub fn kick_k(c: &mut Car, b: &Ball, f: f64) -> f64 {
     let (dx, dz) = (c.x - b.to[0], c.z - b.to[2]); let d = dx.hypot(dz);
     if d > REACH || (c.y - b.to[1]).abs() > 4.0 { return 0.0; }
     let k = 1.0 - d / REACH; let (ux, uz) = if d > 0.2 { (dx / d, dz / d) } else { (c.h.sin(), c.h.cos()) };
-    let push = 4.0 + 9.0 * k; c.vx += ux * push; c.vz += uz * push; c.vy += 3.0 + 5.0 * k; c.r += b.spin * 2.0 * k;
+    let push = (4.0 + 9.0 * k) * f; c.vx += ux * push; c.vz += uz * push; c.vy += (3.0 + 5.0 * k) * f; c.r += b.spin * 2.0 * k * f;
     c.impact = c.impact.max(6.0 + 9.0 * k); k
 }
 
