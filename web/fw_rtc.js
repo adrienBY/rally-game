@@ -4,21 +4,17 @@
 //   open(id), close(id), data(id, Uint8Array), signal(id, kind, text)   kind 0 offer, 1 answer, 2 candidate ("mid\ncand")
 //
 // TURN: when two phones can't reach each other directly (4G networks, school wifi that keeps devices apart), the link goes
-// through Metered's Open Relay (free, no account), still UDP. Its published static-auth secret gives time-limited
-// credentials (the TURN REST scheme: user "<expiry>:<name>", password base64(HMAC-SHA1(secret, user))). ICE prefers
-// direct candidates, so only the pairs that need it use the relay. The app side needs nothing: it reaches the browser's
-// relayed candidate like any other address. (?turn=0: off; ?turn=only: relayed candidates only, for tests)
-const TURN_HOST = "staticauth.openrelay.metered.ca", TURN_SECRET = "openrelayprojectsecret";
+// through Cloudflare's TURN servers (the nearest of their sites, free up to 1,000 GB a month). The relay hands out
+// credentials valid for a day (GET /turn); the TURN key itself never leaves the relay. ICE prefers direct candidates, so
+// only the pairs that need it use TURN. The app side needs nothing: it reaches the browser's relayed candidate like any
+// other address. (?turn=0: off; ?turn=only: relayed candidates only, for tests)
+const TURN_URL = "https://fogwood-relay.adrien-paul-bonnay.workers.dev/turn";
 let turnCache = null, turnAt = 0;
 export async function turnServers() {
   if (/[?&]turn=0/.test(location.search)) return [];
-  const now = Date.now() / 1000; if (turnCache && now - turnAt < 3600) return turnCache;
-  try {
-    const user = Math.floor(now + 24 * 3600) + ":fogwood", enc = new TextEncoder();
-    const key = await crypto.subtle.importKey("raw", enc.encode(TURN_SECRET), { name: "HMAC", hash: "SHA-1" }, false, ["sign"]);
-    const sig = new Uint8Array(await crypto.subtle.sign("HMAC", key, enc.encode(user)));
-    turnCache = [{ urls: ["turn:" + TURN_HOST + ":80", "turn:" + TURN_HOST + ":443", "turn:" + TURN_HOST + ":80?transport=tcp", "turns:" + TURN_HOST + ":443?transport=tcp"],
-      username: user, credential: btoa(String.fromCharCode(...sig)) }]; turnAt = now;
+  const now = Date.now() / 1000; if (turnCache && turnCache.length && now - turnAt < 3600) return turnCache;
+  try { const r = await fetch(TURN_URL, { cache: "no-store" }); const j = await r.json();
+    turnCache = (j.iceServers || []).filter((s) => s.username && s.credential); turnAt = now;   // the TURN entries (not its STUN one)
   } catch (_) { turnCache = turnCache || []; }
   return turnCache;
 }

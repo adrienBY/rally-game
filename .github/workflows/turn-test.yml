@@ -1,6 +1,6 @@
 name: TURN test
 
-# does the free TURN server (Metered's Open Relay, see web/fw_rtc.js) relay a data channel, and where is it?
+# does the TURN server (Cloudflare's, credentials from the relay's /turn, see web/fw_rtc.js) relay a data channel?
 on:
   push:
     branches: [turn-test]
@@ -11,9 +11,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Where the TURN server is
-        run: |
-          for ip in $(dig +short staticauth.openrelay.metered.ca | grep -E '^[0-9.]+$'); do echo "$ip: $(curl -s --max-time 5 ipinfo.io/$ip | tr -d '\n ' | cut -c1-200)"; done
+      - name: The relay hands out TURN servers
+        run: curl -s -H "Origin: http://127.0.0.1:8001" https://fogwood-relay.adrien-paul-bonnay.workers.dev/turn | jq -c '[.iceServers[] | .urls]'
       - name: A data channel through it (relayed candidates only), and round trips
         run: |
           (cd /tmp && npm i --silent --no-save playwright@1.49.1)
