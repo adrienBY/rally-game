@@ -3,6 +3,9 @@ name: Build APK
 on:
   push:
     branches: [main]
+    # changes that never reach the app: no new APK (and no build number spent on nothing)
+    paths-ignore: ["web/web_boot.js", "web/fw_rtc.js", "web/tools/**", "rust/tests/**", "relay-cf/**",
+      ".github/workflows/pages.yml", ".github/workflows/check.yml", ".github/workflows/relay-cf.yml", ".github/workflows/relay-test.yml"]
   workflow_dispatch:
 
 permissions:

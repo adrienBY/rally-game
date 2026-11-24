@@ -39,14 +39,31 @@ const fallback = () => { const s = document.createElement("script"); s.type = "m
   window.__fwAudio = (u8) => { try { const S = window.__SHARED; if (S) S.send(new Float32Array(u8.slice().buffer)); } catch (_) {} };
   const map = fw.web_start("fogwood-native-save");
   if (!/[?&]rt=1/.test(location.search)) history.replaceState(null, "", "?rt=1" + location.search.replace(/^\?/, "&") + "#" + map);
-  // size, safe areas
+  // size, safe areas. A home-screen web app on an iPhone owns the whole screen, but iOS sometimes reports a viewport
+  // shorter than it: once the keyboard has been up (the driver name), for the rest of the session, and in landscape on
+  // some versions. The page's dark background then showed as a black bar at the bottom. So there the canvas is sized to
+  // the screen itself, and once the keyboard is down the viewport is made to measure itself again (heal).
   const probe = document.getElementById("probe");
-  const fit = () => { const d = Math.min(window.devicePixelRatio || 1, 3); const w = Math.round(innerWidth * d), h = Math.round(innerHeight * d);
+  const homeApp = navigator.standalone === true || /[?&]homeapp=1/.test(location.search);   // (?homeapp=1: tests)
+  const vh = document.createElement("div");   // a full-height box: laying it out again makes WebKit re-measure
+  vh.style.cssText = "position:fixed;left:0;top:0;width:1px;height:100dvh;visibility:hidden;pointer-events:none"; document.body.appendChild(vh);
+  const size = () => { let w = innerWidth, h = innerHeight;
+    if (homeApp && screen.width > 0 && screen.height > 0) {
+      const L = Math.max(screen.width, screen.height), S = Math.min(screen.width, screen.height), land = w > h;
+      // the whole screen, when the viewport spans its width (not an iPad window or split view: trust the viewport there)
+      if (Math.abs(w - (land ? L : S)) <= 2) h = Math.max(h, land ? S : L); }
+    return [w, h]; };
+  const fit = () => { const d = Math.min(window.devicePixelRatio || 1, 3); const [cw, ch] = size();
+    cv.style.width = cw + "px"; cv.style.height = ch + "px";
+    const w = Math.round(cw * d), h = Math.round(ch * d);
     if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; } fw.web_resize(w, h);
     const cs = getComputedStyle(probe); const px = (v) => (parseFloat(v) || 0) * d;
     fw.web_insets(px(cs.paddingTop), px(cs.paddingRight), px(cs.paddingBottom), px(cs.paddingLeft));
-    rot.style.display = innerHeight > innerWidth * 1.05 ? "flex" : "none"; };
-  addEventListener("resize", fit); addEventListener("orientationchange", () => setTimeout(fit, 250)); fit();
+    rot.style.display = ch > cw * 1.05 ? "flex" : "none"; };
+  const heal = () => setTimeout(() => { vh.style.display = "none"; void vh.offsetHeight; vh.style.display = "block"; void vh.offsetHeight; fit(); }, 150);
+  addEventListener("resize", fit); addEventListener("orientationchange", () => setTimeout(fit, 250));
+  if (window.visualViewport) visualViewport.addEventListener("resize", fit);
+  document.addEventListener("focusout", heal); fit();
   // touches (and the mouse) in canvas pixels: 0 down, 1 move, 2 up
   let sound = false; const d = () => Math.min(window.devicePixelRatio || 1, 3);
   const live = new Set();   // pointers down: the first one also clears anything whose lift was lost (3)
@@ -86,7 +103,7 @@ const fallback = () => { const s = document.createElement("script"); s.type = "m
       '<div style="display:flex;gap:10px;justify-content:flex-end;margin-top:14px">' + (first ? "" : '<button type="button" data-x style="font:14px monospace;padding:6px 12px">CANCEL</button>') +
       '<button type="submit" style="font:14px monospace;padding:6px 14px;background:#f2b13a;border:0">OK</button></div></form>';
     document.body.appendChild(d);
-    const inp = d.querySelector("input"), close = () => { d.remove(); nameBox = null; };
+    const inp = d.querySelector("input"), close = () => { inp.blur(); d.remove(); nameBox = null; heal(); };
     inp.value = first ? "" : cur; setTimeout(() => inp.focus(), 30);
     d.querySelector("form").onsubmit = (e) => { e.preventDefault(); const n = inp.value.trim(); if (!/[a-z0-9]/i.test(n)) return; fw.web_name(n); close(); };
     const x = d.querySelector("[data-x]"); if (x) x.onclick = close;
