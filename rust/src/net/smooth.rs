@@ -211,6 +211,8 @@ pub const DELAY_CAP: f32 = 0.22;
 pub const FREE: f32 = 0.06;
 
 impl Track {
+    /// whether the latest state from that phone carried its driver's inputs (the physics guess is possible)
+    pub fn has_ctl(&self) -> bool { self.base.map(|b| b.ctl.is_some()).unwrap_or(false) }
     pub fn push(&mut self, c: CarSnap) { self.push_at(c, c.t); }
     /// a state that arrived at host time `arrival`
     pub fn push_at(&mut self, mut c: CarSnap, arrival: f64) {

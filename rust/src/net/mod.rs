@@ -662,6 +662,9 @@ impl Session {
     }
     /// every other phone in the room reads the driver's inputs on car states (and the relay, when it drives AI cars, is
     /// told by them: it only reads players' states)
+    /// (everyone sends driver inputs, phones and AI cars whose latest state had them, cars seen): for the desktop checks
+    pub fn phys_stat(&self) -> (bool, usize, usize) { let t = self.peers.values().map(|p| &p.track).chain(self.bots.values().map(|b| &b.track));
+        (self.all_phys(), t.clone().filter(|t| t.has_ctl()).count(), t.count()) }
     fn all_phys(&self) -> bool { self.peers.values().all(|p| p.caps & CAP_PHYS != 0) }
     fn track(&self, id: u32) -> Option<&smooth::Track> { match bot_of(id) { Some(k) => self.bots.get(&k).map(|b| &b.track), None => self.peers.get(&id).map(|p| &p.track) } }
     fn track_mut(&mut self, id: u32) -> Option<&mut smooth::Track> { match bot_of(id) { Some(k) => self.bots.get_mut(&k).map(|b| &mut b.track), None => self.peers.get_mut(&id).map(|p| &mut p.track) } }
