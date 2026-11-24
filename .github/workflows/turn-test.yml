@@ -1,0 +1,23 @@
+name: TURN test
+
+# does the free TURN server (Metered's Open Relay, see web/fw_rtc.js) relay a data channel, and where is it?
+on:
+  push:
+    branches: [turn-test]
+  workflow_dispatch:
+
+jobs:
+  turn:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Where the TURN server is
+        run: |
+          for ip in $(dig +short staticauth.openrelay.metered.ca | grep -E '^[0-9.]+$'); do echo "$ip: $(curl -s --max-time 5 ipinfo.io/$ip | tr -d '\n ' | cut -c1-200)"; done
+      - name: A data channel through it (relayed candidates only), and round trips
+        run: |
+          (cd /tmp && npm i --silent --no-save playwright@1.49.1)
+          (cd web && python3 -m http.server 8001 --bind 127.0.0.1 &) ; sleep 1
+          PW_MODULES=/tmp/node_modules/ node web/tools/turn_test.mjs http://127.0.0.1:8001/tools/turn_test.html "$(which google-chrome)"
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"

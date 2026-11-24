@@ -2,7 +2,28 @@
 // other phone, negotiated out of band as stream 0 (no extra handshake), each message retried for 200 ms at most. The
 // engine drives it through window.__fwRtc (open / signal / send / close); what happens comes back through `cb`:
 //   open(id), close(id), data(id, Uint8Array), signal(id, kind, text)   kind 0 offer, 1 answer, 2 candidate ("mid\ncand")
+//
+// TURN: when two phones can't reach each other directly (4G networks, school wifi that keeps devices apart), the link goes
+// through Metered's Open Relay (free, no account), still UDP. Its published static-auth secret gives time-limited
+// credentials (the TURN REST scheme: user "<expiry>:<name>", password base64(HMAC-SHA1(secret, user))). ICE prefers
+// direct candidates, so only the pairs that need it use the relay. The app side needs nothing: it reaches the browser's
+// relayed candidate like any other address. (?turn=0: off; ?turn=only: relayed candidates only, for tests)
+const TURN_HOST = "staticauth.openrelay.metered.ca", TURN_SECRET = "openrelayprojectsecret";
+let turnCache = null, turnAt = 0;
+export async function turnServers() {
+  if (/[?&]turn=0/.test(location.search)) return [];
+  const now = Date.now() / 1000; if (turnCache && now - turnAt < 3600) return turnCache;
+  try {
+    const user = Math.floor(now + 24 * 3600) + ":fogwood", enc = new TextEncoder();
+    const key = await crypto.subtle.importKey("raw", enc.encode(TURN_SECRET), { name: "HMAC", hash: "SHA-1" }, false, ["sign"]);
+    const sig = new Uint8Array(await crypto.subtle.sign("HMAC", key, enc.encode(user)));
+    turnCache = [{ urls: ["turn:" + TURN_HOST + ":80", "turn:" + TURN_HOST + ":443", "turn:" + TURN_HOST + ":80?transport=tcp", "turns:" + TURN_HOST + ":443?transport=tcp"],
+      username: user, credential: btoa(String.fromCharCode(...sig)) }]; turnAt = now;
+  } catch (_) { turnCache = turnCache || []; }
+  return turnCache;
+}
 export function makeRtc(cb) {
+  turnServers();   // credentials ready by the first link (and kept fresh: each open asks again)
   const links = new Map();   // id -> { pc, dc, remote (the other side's description is set), queued candidates, dead }
   const kill = (id) => { const L = links.get(id); if (!L) return; links.delete(id); L.dead = true;
     for (const f of [() => L.dc.close(), () => L.pc.close()]) { try { f(); } catch (_) {} } };
@@ -12,7 +33,9 @@ export function makeRtc(cb) {
     open_(id, offerer, ice) {
       kill(id);
       let iceServers = []; try { iceServers = JSON.parse(ice); } catch (_) {}
-      let pc; try { pc = new RTCPeerConnection({ iceServers }); } catch (e) { setTimeout(() => cb.close(id), 0); return; }
+      iceServers = iceServers.concat(turnCache || []); turnServers();
+      const only = /[?&]turn=only/.test(location.search);
+      let pc; try { pc = new RTCPeerConnection(only ? { iceServers, iceTransportPolicy: "relay" } : { iceServers }); } catch (e) { setTimeout(() => cb.close(id), 0); return; }
       const dc = pc.createDataChannel("fw", { negotiated: true, id: 0, ordered: false, maxPacketLifeTime: 200 });
       dc.binaryType = "arraybuffer";
       const L = { pc, dc, remote: false, queued: [], dead: false }; links.set(id, L);
