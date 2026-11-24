@@ -46,6 +46,8 @@ pub struct RCar {
     pub paint: usize,
     /// duos: its team
     pub team: Option<u8>,
+    /// an AI car: what its driver did this frame (they travel with its states: net::smooth::Phys)
+    pub inp: Input,
 }
 impl RCar {
     pub fn is_player(&self) -> bool { self.r.is_none() }
@@ -95,7 +97,7 @@ impl Race {
 pub(crate) fn mk_car(g: &mut Game, r: Option<usize>, k: usize, lat: f64) -> RCar {
     let form = 0.98 + g.rng.f() * 0.04; let mist_cd = 5.0 + g.rng.f() * 5.0; let react = 0.12 + g.rng.f() * 0.4;
     RCar { paint: 0, team: None, r, car: Car::new(), prog: k as f64 - g.np as f64, last_idx: k, i: k, lat, v: 0.0, lane: lat, lane_t: lat, pass_t: 3.0, cap: 99.0, pv: 1.0, boost: 0.0, form, mist: 0.0, mist_cd,
-        stuck_t: 0.0, lap_t0: 0.0, laps_done: 0, last: None, best: None, finished: false, finish_t: 0.0, react, tag_x: -99.0, tag_y: -99.0, tag_on: false, err: 0.0, trust: 1.0, off_at: None, resets: 0, remote: None, name: String::new(), left: false, owned: false, horizon: 0.0, bot: None, epoch: 0,
+        stuck_t: 0.0, lap_t0: 0.0, laps_done: 0, last: None, best: None, finished: false, finish_t: 0.0, react, inp: Input::default(), tag_x: -99.0, tag_y: -99.0, tag_on: false, err: 0.0, trust: 1.0, off_at: None, resets: 0, remote: None, name: String::new(), left: false, owned: false, horizon: 0.0, bot: None, epoch: 0,
         model: match r { Some(i) => super::cars::rival_model(i), None => g.ps.car } }
 }
 /// rcPlace: on the road at index i, lat metres right of the centre line, optionally already rolling
@@ -118,6 +120,12 @@ pub fn start(g: &mut Game, w: &World) {
         if s == PS { let c = mk_car(g, None, k, lat); g.race.player = g.race.cars.len(); g.race.cars.push(c); continue; }
         let mut c = mk_car(g, Some(order[ri]), k, lat); ri += 1; rc_place(&mut c.car, &g.rt, w, k, lat, 0.0); g.race.cars.push(c);
     }
+}
+/// the tune an AI car drives on: the stage's, with the rivals' grip and the catch-up boost (0: none; other phones predict
+/// it without)
+pub fn ai_tune(b: &Tune, bo: f64) -> Tune {
+    let mut t: Tune = *b; t.power = b.power * (1.0 + bo); t.mu_road = b.mu_road * (RT_MU + bo * 0.4); t.mu_grass = b.mu_grass * (1.0 + bo * 0.4);
+    t.a_grip = b.a_grip * RT_GRIP; t.a_yaw_cap = b.a_yaw_cap * RT_YAW; t
 }
 pub fn stop(g: &mut Game) { g.race.duos = false; g.race.online = false; g.race.demo = false; g.race.on = false; g.race.phase = Phase::Off; g.race.cars.clear(); }
 
@@ -353,10 +361,8 @@ pub fn step(g: &mut Game, w: &World, obs: &Obstacles, dt: f64) {
     for k in 0..g.race.cars.len() {
         if !g.race.cars[k].is_ai() { continue; }
         // rivals drive on the stage tune (their pace is balanced for it), whatever car you picked
-        let bo = g.race.cars[k].boost; let b = g.base_tune; let mut t: Tune = b;
-        t.power = b.power * (1.0 + bo); t.mu_road = b.mu_road * (RT_MU + bo * 0.4); t.mu_grass = b.mu_grass * (1.0 + bo * 0.4);
-        t.a_grip = b.a_grip * RT_GRIP; t.a_yaw_cap = b.a_yaw_cap * RT_YAW;
-        let inp = rival_input(g, w, k); let mut car = g.race.cars[k].car; car.update(w, obs, &t, dt, &inp); g.race.cars[k].car = car;
+        let t = ai_tune(&g.base_tune, g.race.cars[k].boost);
+        let inp = rival_input(g, w, k); let mut car = g.race.cars[k].car; car.update(w, obs, &t, dt, &inp); g.race.cars[k].car = car; g.race.cars[k].inp = inp;
         recover(g, w, k, dt);
     }
     contacts(g); if g.tf.on { super::tilefall::step(g, w, dt); } else { progress(g, w); }

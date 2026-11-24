@@ -25,6 +25,8 @@ pub const K_BATCH: u8 = 0xC8;
 /// hello capability bits: reads K_BATCH; is a browser (no UDP of its own: WebRTC is its only direct path); speaks
 /// WebRTC data channels (net::rtc)
 pub const CAP_BATCH: u8 = 1; pub const CAP_WEB: u8 = 2; pub const CAP_RTC: u8 = 4;
+/// reads the driver's inputs on car states and predicts cars with the physics from them (net::smooth::Phys)
+pub const CAP_PHYS: u8 = 8;
 /// RTC: a WebRTC negotiation message (net::rtc::Signal) in parts: [gen u8][kind u8][part u8][parts u8][bytes]
 pub const K_RTC: u8 = 12;
 /// "your car states reach me over our WebRTC link, first: skip the relay's copy" (1) or not (0): net::dual
@@ -43,6 +45,21 @@ pub struct CarSnap {
     pub u: f32, pub gear: i8, pub rpm: u16, pub d: [f32; 4], pub ang: [f32; 4], pub flags: u8,
     /// forward acceleration, m/s2 (compact packets only)
     pub a: f32,
+    /// the driver's inputs at that moment (newer builds, when everyone in the room reads them): receivers run the car
+    /// physics on from the state with them instead of guessing from its motion (net::smooth::Phys)
+    pub ctl: Option<Ctl>,
+}
+/// a driver's inputs, as they travel (steering -1..1, pedals 0..1)
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Ctl { pub steer: f32, pub throttle: f32, pub brake: f32, pub hb: bool }
+impl Ctl {
+    /// as the receiver will decode it (both sides predict from exactly these numbers)
+    pub fn quantised(self) -> Ctl { let mut b = Vec::new(); self.put(&mut b); Ctl::get(&b).unwrap() }
+    fn put(&self, b: &mut Vec<u8>) {
+        b.push((self.steer.clamp(-1.0, 1.0) * 127.0).round() as i8 as u8); b.push((self.throttle.clamp(0.0, 1.0) * 255.0).round() as u8);
+        b.push((self.brake.clamp(0.0, 1.0) * 127.0).round() as u8 | if self.hb { 128 } else { 0 });
+    }
+    fn get(b: &[u8]) -> Option<Ctl> { if b.len() < 3 { return None; } Some(Ctl { steer: b[0] as i8 as f32 / 127.0, throttle: b[1] as f32 / 255.0, brake: (b[2] & 127) as f32 / 127.0, hb: b[2] & 128 != 0 }) }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -125,19 +142,21 @@ pub fn car(e: Env, c: &CarSnap) -> Vec<u8> {
 pub fn read_car(r: &mut R) -> Option<CarSnap> {
     let t = r.f64()?; let mut f = [0f32; 12]; for v in f.iter_mut() { *v = r.f32()?; }
     let gear = r.u8()? as i8; let rpm = r.u16()?; let mut d = [0f32; 4]; for v in d.iter_mut() { *v = r.f32()?; } let mut ang = [0f32; 4]; for v in ang.iter_mut() { *v = r.f32()?; }
-    Some(CarSnap { t, x: f[0], y: f[1], z: f[2], h: f[3], vx: f[4], vy: f[5], vz: f[6], r: f[7], pitch: f[8], roll: f[9], steer: f[10], u: f[11], gear, rpm, d, ang, flags: r.u8()?, a: 0.0 })
+    Some(CarSnap { t, x: f[0], y: f[1], z: f[2], h: f[3], vx: f[4], vy: f[5], vz: f[6], r: f[7], pitch: f[8], roll: f[9], steer: f[10], u: f[11], gear, rpm, d, ang, flags: r.u8()?, a: 0.0, ctl: None })
 }
 /// Compact car state, 27 bytes. Position 1/128 m (24 bit), height 1 cm, heading 2^-16 turn, forward speed 1 cm/s,
 /// sideways speed 0.2 m/s, yaw rate 0.02 rad/s, pitch/roll/steer 0.005 rad, rpm x40, suspension 16 steps, time = host clock in ms mod 65536.
 /// Velocity travels as forward + sideways speed so the receiver can run the same prediction as the sender.
 pub fn car2(from: u32, seq: u8, c: &CarSnap) -> Vec<u8> { compact(K_CAR2, from, seq, c) }
-/// CAR3 = CAR2 + acceleration (0.2 m/s2) + vertical speed (0.1 m/s), one signed byte each
-pub fn car3(from: u32, seq: u8, c: &CarSnap) -> Vec<u8> {
-    let mut b = compact(K_CAR3, from, seq, c); let q8 = |v: f32, s: f32| (v / s).round().clamp(-127.0, 127.0) as i8 as u8;
+/// CAR3 = CAR2 + acceleration (0.2 m/s2) + vertical speed (0.1 m/s), one signed byte each, then (newer builds) the
+/// driver's inputs, 3 bytes (older readers stop before them)
+pub fn car3(from: u32, seq: u8, c: &CarSnap) -> Vec<u8> { let mut b = car3_base(K_CAR3, from, seq, c); if let Some(k) = &c.ctl { k.put(&mut b); } b }
+fn car3_base(kind: u8, from: u32, seq: u8, c: &CarSnap) -> Vec<u8> {
+    let mut b = compact(kind, from, seq, c); let q8 = |v: f32, s: f32| (v / s).round().clamp(-127.0, 127.0) as i8 as u8;
     b.push(q8(c.a, 0.2)); b.push(q8(c.vy, 0.1)); b
 }
-/// BOT3: one of the host's AI cars (`idx`), sent by the host
-pub fn bot3(from: u32, seq: u8, idx: u8, c: &CarSnap) -> Vec<u8> { let mut b = car3(from, seq, c); b[0] = K_BOT3; b.push(idx); b }
+/// BOT3: one of the host's AI cars (`idx`), sent by the host (its inputs after the index)
+pub fn bot3(from: u32, seq: u8, idx: u8, c: &CarSnap) -> Vec<u8> { let mut b = car3_base(K_BOT3, from, seq, c); b.push(idx); if let Some(k) = &c.ctl { k.put(&mut b); } b }
 /// the AI car a BOT3 is about
 pub fn bot_idx(b: &[u8]) -> Option<u8> { if b.first() == Some(&K_BOT3) && b.len() >= BOT3_LEN { Some(b[29]) } else { None } }
 fn compact(kind: u8, from: u32, seq: u8, c: &CarSnap) -> Vec<u8> {
@@ -160,6 +179,7 @@ pub fn read_car2(b: &[u8]) -> Option<(u16, u8, u16, CarSnap)> {
     let c3 = (b.first() == Some(&K_CAR3) && b.len() >= CAR3_LEN) || (b.first() == Some(&K_BOT3) && b.len() >= BOT3_LEN);
     if b.len() < CAR2_LEN || !(b[0] == K_CAR2 || c3) { return None; }
     let (a, vy) = if c3 { (b[27] as i8 as f32 * 0.2, b[28] as i8 as f32 * 0.1) } else { (0.0, 0.0) };
+    let ctl = if !c3 { None } else if b[0] == K_BOT3 { Ctl::get(&b[BOT3_LEN..]) } else { Ctl::get(&b[CAR3_LEN..]) };
     let mut r = R::new(&b[1..]); let from = r.u16()?; let seq = r.u8()?; let ms = r.u16()?;
     let i24 = |r: &mut R| -> Option<f32> { let t = r.take(3)?; Some(((i32::from_le_bytes([t[0], t[1], t[2], 0]) << 8) >> 8) as f32 / 128.0) };
     let x = i24(&mut r)?; let z = i24(&mut r)?; let y = r.u16()? as i16 as f32 / 100.0; let h = r.u16()? as f32 / 65536.0 * std::f32::consts::TAU;
@@ -168,7 +188,7 @@ pub fn read_car2(b: &[u8]) -> Option<(u16, u8, u16, CarSnap)> {
     let rpm = r.u8()? as u16 * 40; let gf = r.u8()?; let d01 = r.u8()?; let d23 = r.u8()?;
     let dd = |n: u8| n as f32 / 15.0 * 0.37 - 0.16; let (sh, ch) = (h.sin(), h.cos());
     Some((from, seq, ms, CarSnap { t: 0.0, x, y, z, h, vx: u * sh + vl * ch, vz: u * ch - vl * sh, r: yr, pitch, roll, steer, u, gear: (gf & 7) as i8, rpm,
-        d: [dd(d01 & 15), dd(d01 >> 4), dd(d23 & 15), dd(d23 >> 4)], ang: [0.0; 4], flags: gf >> 3, a, vy }))
+        d: [dd(d01 & 15), dd(d01 >> 4), dd(d23 & 15), dd(d23 >> 4)], ang: [0.0; 4], flags: gf >> 3, a, vy, ctl }))
 }
 pub fn time_pair(e: Env, a: f64, b: f64) -> Vec<u8> { let mut w = W::env(e); w.f64(a); w.f64(b); w.0 }
 pub fn hit(e: Env, d: [f32; 5], imp: f32, by: u8) -> Vec<u8> { let mut w = W::env(e); for v in d { w.f32(v); } w.f32(imp); w.u8(by); w.0 }
@@ -221,7 +241,7 @@ mod tests {
         let c = CarSnap { t: 5.25, x: 1.0, y: 2.0, z: -3.0, h: 0.5, u: 20.0, gear: 3, rpm: 6100, d: [0.07; 4], ang: [1.0, 2.0, 3.0, 4.0], flags: 1, ..Default::default() };
         let b = car(Env { kind: K_CAR, ..e }, &c); let (_, mut r) = read_env(&b).unwrap(); assert_eq!(read_car(&mut r).unwrap(), c);
         assert!(read_env(b"XX1aaaaaaaaaaaaaaaaaaaa").is_none());
-        let c = CarSnap { t: 70.123, x: -812.37, y: 41.5, z: 300.05, h: -2.5, vx: 12.0, vz: -20.0, r: 0.8, pitch: 0.03, roll: -0.11, steer: 0.4, u: 0.0, gear: 4, rpm: 6440, d: [0.05, 0.1, -0.02, 0.2], ang: [0.0; 4], flags: 1, vy: 0.0, a: 0.0 };
+        let c = CarSnap { t: 70.123, x: -812.37, y: 41.5, z: 300.05, h: -2.5, vx: 12.0, vz: -20.0, r: 0.8, pitch: 0.03, roll: -0.11, steer: 0.4, u: 0.0, gear: 4, rpm: 6440, d: [0.05, 0.1, -0.02, 0.2], ang: [0.0; 4], flags: 1, vy: 0.0, a: 0.0, ctl: None };
         let b = car2(0xabcd1234, 77, &c); assert_eq!(b.len(), CAR2_LEN);
         let (f, sq, ms, d) = read_car2(&b).unwrap(); assert_eq!((f, sq, ms), (0x1234, 77, (70123u32 % 65536) as u16));
         assert!((d.x - c.x).abs() < 0.005 && (d.z - c.z).abs() < 0.005 && (d.y - c.y).abs() < 0.006);
@@ -231,6 +251,12 @@ mod tests {
         let c3 = CarSnap { a: -9.3, vy: 2.47, ..c }; let b = car3(0xabcd1234, 78, &c3); assert_eq!(b.len(), CAR3_LEN);
         let (_, sq, _, d) = read_car2(&b).unwrap(); assert_eq!(sq, 78); assert!((d.a + 9.3).abs() < 0.11 && (d.vy - 2.47).abs() < 0.051, "{} {}", d.a, d.vy);
         assert!((d.x - c.x).abs() < 0.005 && d.gear == 4);
+        // the driver's inputs ride after the old fields (older readers ignore them; on a BOT3 after the index)
+        let k = Ctl { steer: -0.42, throttle: 0.8, brake: 0.25, hb: true }; let c4 = CarSnap { ctl: Some(k), ..c3 };
+        let b = car3(0xabcd1234, 80, &c4); assert_eq!(b.len(), CAR3_LEN + 3); let d = read_car2(&b).unwrap().3.ctl.unwrap();
+        assert!((d.steer + 0.42).abs() < 0.005 && (d.throttle - 0.8).abs() < 0.003 && (d.brake - 0.25).abs() < 0.005 && d.hb); assert_eq!(Some(d), Some(k.quantised()));
+        let b = bot3(0xabcd1234, 81, 4, &c4); assert_eq!(bot_idx(&b), Some(4)); assert_eq!(read_car2(&b).unwrap().3.ctl, Some(k.quantised()));
+        assert_eq!(read_car2(&car3(1, 1, &c3)).unwrap().3.ctl, None);
         let b = bot3(0xabcd1234, 79, 3, &c3); assert_eq!(b.len(), BOT3_LEN); assert_eq!(bot_idx(&b), Some(3));
         let (f, sq, _, d) = read_car2(&b).unwrap(); assert_eq!((f, sq), (0x1234, 79)); assert!((d.a + 9.3).abs() < 0.11 && (d.x - c.x).abs() < 0.005);
         // batches: a frame's car states in one packet, split when too big, a lone one as it is

@@ -41,15 +41,15 @@ fn main() {
             if k == 0 && !started && wall > 4.0 { started = true; s.start_race("lakes", 3, 1.0, &[], false, 0); }
             if !s.racing && wall > 4.0 && (k == 0 || s.start_in.take().is_some()) { s.racing = true; s.begin_race(bots, false); }
             let th = s.host_now();
-            s.send_car(truth(k, th), dt, None, 60.0);
-            if k == 0 { for b in 0..bots { s.send_bot(b, truth(100 + b as u32, th), dt, None, 60.0); } }
+            s.send_car(truth(k, th), dt, None, None, 60.0);
+            if k == 0 { for b in 0..bots { s.send_bot(b, truth(100 + b as u32, th), dt, None, None, 60.0); } }
             s.flush();
             let view = s.advance_view(dt);
             if wall > warm {
                 if snap.is_none() { snap = Some((s.traffic.get(), s.ways.get())); }
                 let ids: Vec<(u32, String)> = s.peers.values().map(|p| (p.id, p.name.clone())).collect();
-                for (id, nm) in ids { if let Some(c) = s.remote(id, None) { let d = s.peers.get(&id).map(|p| p.track.delay).unwrap_or(0.0); drawn.entry(nm).or_default().push((view + dt, d as f64, c.x, c.z)); } }
-                if k != 0 { for b in 0..bots { let id = net::bot_id(b as u8); if let Some(c) = s.remote(id, None) { let d = s.bots.get(&(b as u8)).map(|x| x.track.delay).unwrap_or(0.0); drawn.entry(format!("A{}", b)).or_default().push((view + dt, d as f64, c.x, c.z)); } } }
+                for (id, nm) in ids { if let Some(c) = s.remote(id, None, None) { let d = s.peers.get(&id).map(|p| p.track.delay).unwrap_or(0.0); drawn.entry(nm).or_default().push((view + dt, d as f64, c.x, c.z)); } }
+                if k != 0 { for b in 0..bots { let id = net::bot_id(b as u8); if let Some(c) = s.remote(id, None, None) { let d = s.bots.get(&(b as u8)).map(|x| x.track.delay).unwrap_or(0.0); drawn.entry(format!("A{}", b)).or_default().push((view + dt, d as f64, c.x, c.z)); } } }
             }
         });
         frame += 1; let next = frame as f64 * dt; let now = t0.elapsed().as_secs_f64(); if next > now { std::thread::sleep(std::time::Duration::from_secs_f64(next - now)); } else if now - next > 0.008 { late += 1; }
