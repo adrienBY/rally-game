@@ -5,13 +5,15 @@
 // them, the TURN server works with these credentials. Then ping-pong round trips through it (both ways relayed).
 import { turnServers } from "../fw_rtc.js";
 const out = document.getElementById("out"); const log = (s) => { out.textContent += s + "\n"; };
-const res = window.__res = { relayCands: 0, open: false, openMs: 0, rtts: [], error: "" };
+const res = window.__res = { relayCands: 0, types: {}, open: false, openMs: 0, rtts: [], error: "" };
+const q = new URLSearchParams(location.search), nodirect = q.get("nodirect") === "1";   // only relayed candidates reach the other side (a network that blocks direct paths)
 try {
   const ice = await turnServers();
   if (!ice.length) throw new Error("no TURN credentials");
-  const cfg = { iceServers: ice, iceTransportPolicy: new URLSearchParams(location.search).get("policy") || "relay" };
+  const cfg = { iceServers: ice, iceTransportPolicy: q.get("policy") || "relay" };
   const a = new RTCPeerConnection(cfg), b = new RTCPeerConnection(cfg);
-  for (const [p, q] of [[a, b], [b, a]]) p.onicecandidate = (e) => { if (e.candidate) { if (/ typ relay/.test(e.candidate.candidate)) res.relayCands++; q.addIceCandidate(e.candidate).catch(() => {}); } };
+  for (const [p, q2] of [[a, b], [b, a]]) p.onicecandidate = (e) => { if (e.candidate && e.candidate.candidate) { const ty = (/ typ (\w+)/.exec(e.candidate.candidate) || [])[1]; res.types[ty] = (res.types[ty] || 0) + 1; if (ty === "relay") res.relayCands++;
+    if (!nodirect || ty === "relay") q2.addIceCandidate(e.candidate).catch(() => {}); } };
   const da = a.createDataChannel("fw", { negotiated: true, id: 0, ordered: false, maxPacketLifeTime: 200 });
   const db = b.createDataChannel("fw", { negotiated: true, id: 0, ordered: false, maxPacketLifeTime: 200 });
   db.onmessage = (e) => db.send(e.data);
