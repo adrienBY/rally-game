@@ -11,7 +11,7 @@ impl Game {
     /// this install's random id (made on first use, then kept)
     fn stat_id(&mut self) -> String {
         if let Some(v) = self.ps.saves.get("fogwood-did") { if v.len() >= 8 { return v.to_string(); } }
-        let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0) as u64;
+        let t = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0) as u64;
         let mut x = t ^ 0x9E37_79B9_7F4A_7C15 ^ ((self.time * 1e6) as u64).rotate_left(29); x ^= x >> 33; x = x.wrapping_mul(0xff51_afd7_ed55_8ccd); x ^= x >> 33;
         let id = format!("{:012x}", x & 0xffff_ffff_ffff); self.ps.saves.set("fogwood-did", id.clone()); self.ps.saves.flush(); id
     }

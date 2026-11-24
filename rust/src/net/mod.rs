@@ -23,6 +23,7 @@ pub mod lobby;
 pub mod ws;
 pub mod smooth;
 pub mod udp;
+pub mod rtc;
 
 use proto::*;
 use std::collections::{HashMap, VecDeque};
@@ -66,6 +67,9 @@ pub struct Peer {
     /// pushes we gave their car (by which of our cars: proto::BY_PLAYER or an AI car), summed until the next bump message
     /// goes out, and when the last one went
     hit_acc: Vec<(u8, [f32; 5], f32)>, hit_tx: f64,
+    /// WebRTC (net::rtc): the negotiation round we are on, when it began, when to try again and how many tries in a row
+    /// failed; when something last came over the data channel, and whether it is open
+    rtc_gen: u8, rtc_since: f64, rtc_try_at: f64, rtc_tries: u32, pub last_rtc: f64, pub rtc_open: bool, last_tx_rtc: f64,
 }
 /// one of the host's AI cars as a guest sees it
 #[derive(Default)]
@@ -74,7 +78,7 @@ pub struct BotIn { pub track: smooth::Track, last_seq: u8, hit_acc: Option<([f32
 #[derive(Default)]
 struct BotOut { policy: smooth::Policy, seq: u8 }
 impl Peer {
-    pub fn link(&self) -> Link { if self.direct.is_some() { Link::Direct } else if self.last_seen > 0.0 { Link::Relay } else { Link::Connecting } }
+    pub fn link(&self) -> Link { if self.direct.is_some() || self.rtc_open { Link::Direct } else if self.last_seen > 0.0 { Link::Relay } else { Link::Connecting } }
     fn dup(&mut self, seq: u32) -> bool { if self.seen.contains(&seq) { return true; } self.seen.push_back(seq); if self.seen.len() > 96 { self.seen.pop_front(); } false }
 }
 
@@ -120,8 +124,22 @@ pub struct Session {
     /// closed-loop budget: the rate model's estimate is scaled by this, steered by the traffic actually measured (every
     /// 2 s: total bytes then, and when)
     rate_k: f64, meter: (f64, u64),
+    /// WebRTC links (UDP to and from browsers), and negotiation messages still arriving in parts
+    rtc: std::cell::RefCell<rtc::Links>, rtc_in: HashMap<(u32, u8, u8), Vec<Option<Vec<u8>>>>,
+    /// test hook FW_UDPLAG: datagrams held back like a slow network (due, bytes, from)
+    udp_held: VecDeque<(f64, Vec<u8>, SocketAddr)>,
 }
 const UDP_OVERHEAD: u64 = 28; const TCP_OVERHEAD: u64 = 40;
+/// a WebRTC data channel message beyond its payload: UDP/IP, DTLS record, SCTP common header and DATA chunk
+const RTC_OVERHEAD: u64 = 28 + 29 + 28;
+/// car states take a peer's WebRTC link when its car is this close to ours (m)
+const RTC_NEAR: f32 = 90.0;
+/// what this build tells the room it can do over WebRTC (FW_NORTC: nothing)
+fn udp_lag() -> Option<(f64, f64, f64)> {
+    static L: std::sync::OnceLock<Option<(f64, f64, f64)>> = std::sync::OnceLock::new();
+    *L.get_or_init(|| { let v: Vec<f64> = std::env::var("FW_UDPLAG").ok()?.split(',').filter_map(|x| x.parse().ok()).collect(); if v.len() == 3 { Some((v[0] / 1000.0, v[1] / 1000.0, v[2])) } else { None } })
+}
+fn rtc_caps() -> u8 { if std::env::var("FW_NORTC").is_ok() { return 0; } CAP_RTC | if cfg!(target_arch = "wasm32") { CAP_WEB } else { 0 } }
 /// a WebSocket message's wire cost beyond its payload: frame header (masked from us), TLS record, TCP/IP
 const WS_OVERHEAD: f64 = 6.0 + 21.0 + 40.0;
 /// Data budget for a session, both directions, every header counted: 22 kB/s is 79 MB an hour, under the 100 MB limit
@@ -179,7 +197,7 @@ fn open(code: u32, name: &str, map: &str, is_host: bool) {
         cut: std::env::var("FW_CUT").ok().and_then(|v| { let q: Vec<f64> = v.split(',').filter_map(|x| x.parse().ok()).collect(); if q.len() == 2 { Some([q[0], q[1]]) } else { None } }),
         loss: std::env::var("FW_LOSS").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0),
         thr: smooth::Thresholds::default(), heartbeat: None,
-        server_bots: false, srv_heard: -9.0, relay: if std::env::var("FW_NORELAY").is_ok() { None } else { Some(relay::Client::start(code, me)) }, last_announce: -9.0, outq: Vec::new(), rate_k: 1.0, meter: (0.0, 0) };
+        server_bots: false, srv_heard: -9.0, relay: if std::env::var("FW_NORELAY").is_ok() { None } else { Some(relay::Client::start(code, me)) }, last_announce: -9.0, outq: Vec::new(), rate_k: 1.0, meter: (0.0, 0), rtc: Default::default(), rtc_in: HashMap::new(), udp_held: VecDeque::new() };
     let mut s = s;
     if let Ok(v) = std::env::var("FW_THR") { let q: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect();
         if q.len() >= 3 { s.thr.pos = q[0]; s.thr.head = q[1]; s.thr.speed = q[2]; } if q.len() >= 4 { s.heartbeat = Some(q[3]); } }
@@ -195,7 +213,7 @@ impl Session {
     fn env(&mut self, kind: u8, to: u32) -> Env { self.seq = self.seq.wrapping_add(1); Env { kind, room: self.code, from: self.me, to, seq: self.seq } }
     fn hello_msg(&mut self) -> Vec<u8> {
         let mut cands = Vec::new(); for a in [self.local, self.public].into_iter().flatten() { cands.push((a.ip().octets(), a.port())); }
-        let h = Hello { host: self.is_host, racing: self.racing, name: self.name.clone(), map: self.map.clone(), cands, car: self.car, paint: self.paint, brokers: self.broker_mask(), caps: CAP_BATCH }; let e = self.env(K_HELLO, 0); hello(e, &h)
+        let h = Hello { host: self.is_host, racing: self.racing, name: self.name.clone(), map: self.map.clone(), cands, car: self.car, paint: self.paint, brokers: self.broker_mask(), caps: CAP_BATCH | rtc_caps() }; let e = self.env(K_HELLO, 0); hello(e, &h)
     }
     fn count(&self, k: usize, bytes: u64) { let mut t = self.traffic.get(); t[k] += bytes; self.traffic.set(t); let mut p = self.packets.get(); p[k] += 1; self.packets.set(p); }
     fn mqtt_bytes(&self, payload: usize) -> u64 { (payload + self.topic.len() + 4) as u64 + TCP_OVERHEAD }
@@ -228,13 +246,21 @@ impl Session {
     fn route(&self, p: &Peer, now: f64) -> (Option<SocketAddr>, bool, bool) {
         let quiet = if self.racing { QUIET_RACING } else { QUIET_LOBBY };
         if p.direct.is_some() && now - p.last_udp < quiet && now > p.mirror_until { return (p.direct, false, false); }
+        // a lively WebRTC link (the caller sends on it: see rtc_route) with our relay alongside: two independent paths,
+        // UDP straight to the phone and TCP through the relay, the first copy winning (FW_RTCONLY: the link alone)
+        if self.rtc_route(p, now) && now - p.last_rtc < quiet { let ours = self.on_relay(p, now) && std::env::var("FW_RTCONLY").is_err(); return (None, ours, false); }
         let ours = self.on_relay(p, now); (p.direct, ours, !(ours && now - p.via_relay < quiet))
     }
+    /// packets for this peer go over its WebRTC data channel (also while it has gone quiet: then the relay as well)
+    fn rtc_route(&self, p: &Peer, _now: f64) -> bool { p.rtc_open }
+    fn rtc_send(&self, id: u32, b: &[u8]) { if self.rtc.borrow_mut().send(id, b) { self.count(0, b.len() as u64 + RTC_OVERHEAD); } }
+    fn mark_rtc_tx(&mut self, id: u32, now: f64) { if let Some(p) = self.peers.get_mut(&id) { p.last_tx_rtc = now; } }
     fn send_to(&self, to: u32, b: &[u8]) {
         let now = self.now();
         if to == SERVER_ID { self.relay_send(to, b, now); return; }
         let Some(p) = self.peers.get(&to) else { self.relay_for(b, &[]); return };
         let (d, ours, brokers) = self.route(p, now);
+        if self.rtc_route(p, now) { self.rtc_send(to, b); }
         if let Some(a) = d { self.udp(b, a); }
         if ours { self.relay_send(to, b, now); }
         if brokers { self.relay_for(b, &[p.brokers]); }
@@ -251,8 +277,15 @@ impl Session {
     /// a car state (or batch) to everyone in the room, each the way `route` says (one message to our relay covers all on it)
     fn deliver_now(&mut self, b: &[u8], now: f64) {
         let mut relayed = Vec::new(); let mut out = Vec::new(); let mut via_ours = false;
-        let routes: Vec<(u32, (Option<SocketAddr>, bool, bool), u8)> = self.peers.values().map(|p| (p.id, self.route(p, now), p.brokers)).collect();
-        for (id, (d, ours, brokers), mask) in routes { if let Some(a) = d { out.push(a); if let Some(p) = self.peers.get_mut(&id) { p.last_tx = now; } } if ours { via_ours = true; } if brokers { relayed.push(mask); } }
+        // car states go over the WebRTC links (the relay's copy goes too: two independent paths, the first copy winning).
+        // In a big room (more than 5 phones) only to the phones whose cars are near ours, where precision shows (and to any
+        // the link is the only quick way to): a link per phone costs a packet per phone, the relay one for the room, and
+        // the room's data must stay inside its budget. Tuned with net_bench, 4 phones + 4 AI cars at 150 ms / 5% loss:
+        // worst shake 184 (relay alone) -> 38, path error 0.20 -> 0.08 m, ~45 MB/h.
+        let me = self.policy.sent.map(|c| (c.x, c.z)); let small = self.peers.len() <= 4;
+        let near = |p: &Peer| small || match (me, p.track.latest) { (Some(a), Some(b)) => (a.0 - b.x).hypot(a.1 - b.z) < RTC_NEAR, _ => true };
+        let routes: Vec<(u32, (Option<SocketAddr>, bool, bool), u8, bool)> = self.peers.values().map(|p| { let r = self.route(p, now); let rtc = self.rtc_route(p, now) && (near(p) || !r.1 || std::env::var("FW_RTCALLCARS").is_ok()); (p.id, r, p.brokers, rtc) }).collect();
+        for (id, (d, ours, brokers), mask, rtc) in routes { if rtc { self.rtc_send(id, b); self.mark_rtc_tx(id, now); if let Some(p) = self.peers.get_mut(&id) { p.last_tx = now; } } if let Some(a) = d { out.push(a); if let Some(p) = self.peers.get_mut(&id) { p.last_tx = now; } } if ours { via_ours = true; } if brokers { relayed.push(mask); } }
         for a in out { self.udp(b, a); }
         if via_ours { self.relay_send(0, b, now); } else if self.server_bots && self.racing { self.relay_send(SERVER_ID, b, now); }
         if !relayed.is_empty() { self.relay_for(b, &relayed); }
@@ -285,7 +318,17 @@ impl Session {
             for (from, p) in got { via.push(from); let b = self.relay_down_bytes(p.len(), per_s); self.count(1, b as u64); msgs.push((p, None)); } }
         for id in via { if let Some(p) = self.peers.get_mut(&id) { p.via_relay = now; } }
         // direct messages (only once STUN has finished with the socket)
-        if self.stun_done { if let Some(s) = &self.sock { let mut buf = [0u8; 1500]; while let Ok((n, a)) = s.recv_from(&mut buf) { msgs.push((buf[..n].to_vec(), Some(a))); self.count(1, n as u64 + UDP_OVERHEAD); } } }
+        if self.stun_done { if let Some(s) = &self.sock { let mut buf = [0u8; 2048]; let rn = rtc::now();
+            let mut got: Vec<(Vec<u8>, SocketAddr)> = Vec::new(); while let Ok((n, a)) = s.recv_from(&mut buf) { got.push((buf[..n].to_vec(), a)); }
+            if let Some((lat, jit, loss)) = udp_lag() { for (b, a) in got.drain(..) { if (rand_u32() as f64 / u32::MAX as f64) < loss { continue; }
+                    // a network path is a queue: late by a varying amount, rarely out of order (FW_UDPREORDER=1: independent delays)
+                    let mut at = now + lat + (rand_u32() as f64 / u32::MAX as f64 * 2.0 - 1.0) * jit; if std::env::var("FW_UDPREORDER").is_err() { at = at.max(self.udp_held.back().map(|h| h.0).unwrap_or(0.0)); }
+                    let k = self.udp_held.iter().position(|h| h.0 > at).unwrap_or(self.udp_held.len()); self.udp_held.insert(k, (at, b, a)); }
+                while self.udp_held.front().map(|h| h.0 <= now).unwrap_or(false) { let (_, b, a) = self.udp_held.pop_front().unwrap(); got.push((b, a)); } }
+            for (b, a) in got { let n = b.len(); buf[..n].copy_from_slice(&b); self.count(1, n as u64 + UDP_OVERHEAD);
+                // STUN (0-3) and DTLS (20-63) from a WebRTC peer go to its link (RFC 7983); ours start with FW1 or 0xC2..
+                if (buf[0] <= 3 || (20..=63).contains(&buf[0])) && self.rtc.borrow_mut().datagram(a, &buf[..n], rn) { continue; }
+                msgs.push((buf[..n].to_vec(), Some(a))); } } }
         // test hooks: FW_LOSS drops a share of what arrives, FW_LAG="mean_ms,jitter_ms" holds it back like a slow network
         let cut = self.cut.map(|c| now >= c[0] && now < c[1]).unwrap_or(false);
         for (b, from) in msgs { if self.loss > 0.0 && (rand_u32() as f64 / u32::MAX as f64) < self.loss { continue; }
@@ -294,6 +337,7 @@ impl Session {
                 if from.is_none() { at = at.max(self.held_last); self.held_last = at; }   // the broker link is TCP: late, never out of order
                 let k = self.held.iter().position(|h| h.0 > at).unwrap_or(self.held.len()); self.held.insert(k, (at, b, from)); } else { self.handle(&b, from, now); } }
         while self.held.front().map(|h| h.0 <= now).unwrap_or(false) { let (_, b, from) = self.held.pop_front().unwrap(); self.handle(&b, from, now); }
+        self.rtc_step(now);
         // presence
         // presence: every 2 s in the lobby, every 8 s while racing (car states already show who is there)
         if now - self.last_hello > if self.racing { 8.0 } else { 2.0 } { self.last_hello = now; let h = self.hello_msg(); self.relay_all(&h); }
@@ -345,7 +389,7 @@ impl Session {
             K_HIT => { if let Some((d, imp, by)) = read_hit(&mut r) { if self.hits_in.len() < 64 { self.hits_in.push((SERVER_ID, by, d, imp)); } } }
             _ => {} } return; }
         let p = self.peers.entry(e.from).or_insert_with(|| Peer { id: e.from, name: "?".into(), map: String::new(), host: false, racing: false, first_seen: now, last_seen: now, car: 0, paint: 0, caps: 0,
-            cands: Vec::new(), punch_from: now, last_probe: -9.0, direct: None, last_udp: -9.0, seen: VecDeque::new(), rtt: -1.0, last_tx: -9.0, track: Default::default(), last_seq: 0, brokers: 0xFF, via_relay: -99.0, hit_acc: Vec::new(), hit_tx: -9.0, mirror_until: -9.0 });
+            cands: Vec::new(), punch_from: now, last_probe: -9.0, direct: None, last_udp: -9.0, seen: VecDeque::new(), rtt: -1.0, last_tx: -9.0, track: Default::default(), last_seq: 0, brokers: 0xFF, via_relay: -99.0, hit_acc: Vec::new(), hit_tx: -9.0, mirror_until: -9.0, rtc_gen: 0, rtc_since: -99.0, rtc_try_at: 0.0, rtc_tries: 0, last_rtc: -99.0, rtc_open: false, last_tx_rtc: -99.0 });
         p.last_seen = now;
         if let Some(a) = from { p.last_udp = now; if e.kind == K_PROBE || e.kind == K_PROBE_ACK { if p.direct != Some(a) { p.direct = Some(a); } } }
         // a message can now come twice (direct and relayed while a path is quiet): once is enough
@@ -364,10 +408,88 @@ impl Session {
                     self.best_rtt += 0.002; if rtt <= self.best_rtt { self.best_rtt = rtt; self.offset_target = ht - (t + rtt / 2.0); if self.pong_n <= 2 { self.offset = self.offset_target; } } } } } }
             K_START => { if !self.is_host { if let Some(s) = read_start(&mut r) { if (s.go_at - self.last_start_go).abs() > 0.01 { self.last_start_go = s.go_at; self.start_in = Some(s); } } } }
             K_HIT => { if let Some((d, imp, by)) = read_hit(&mut r) { if self.hits_in.len() < 64 { self.hits_in.push((e.from, by, d, imp)); } } }
+            K_RTC => { if let Some(m) = read_rtc(&mut r) { self.rtc_in(e.from, m, now); } }
             K_TILES => { if !self.is_host && Some(e.from) == self.host_id { if let Some(v) = read_tiles(&mut r) { self.tiles_in = Some(v); } } }
             K_BOTHIT => { if self.is_host { if let Some((k, d, imp)) = read_bot_hit(&mut r) { if self.bot_hits_in.len() < 64 { self.bot_hits_in.push((e.from, k, d, imp)); } } } }
             _ => {}
         }
+    }
+
+    /// WebRTC with a peer: both builds speak it, and it is the way to a direct path (one of us is a browser, which
+    /// has no UDP of its own; FW_RTC_ALL: every pair, for tests). The app also needs its socket and addresses.
+    fn rtc_wanted(&self, p: &Peer) -> bool {
+        let mine = rtc_caps(); if mine & CAP_RTC == 0 || p.caps & CAP_RTC == 0 { return false; }
+        let web = mine & CAP_WEB != 0 || p.caps & CAP_WEB != 0 || std::env::var("FW_RTC_ALL").is_ok();
+        web && (cfg!(target_arch = "wasm32") || (self.sock.is_some() && self.stun_done && self.local.is_some()))
+    }
+    /// once a frame: start, retry and drop links, move their packets
+    fn rtc_step(&mut self, now: f64) {
+        let rn = rtc::now();
+        self.rtc.borrow_mut().set_addrs(self.local.map(SocketAddr::V4), self.public.map(SocketAddr::V4));
+        let ids: Vec<u32> = self.peers.keys().copied().collect(); let mut ka: Vec<u32> = Vec::new();
+        for id in ids {
+            let want = { let p = &self.peers[&id]; self.rtc_wanted(p) };
+            let (open, dead, exists) = { let l = self.rtc.borrow(); (l.is_open(id), l.is_dead(id), l.exists(id)) };
+            let me = self.me; let p = self.peers.get_mut(&id).unwrap();
+            if open && !p.rtc_open { p.rtc_tries = 0; p.last_rtc = now; if std::env::var("FW_WSDEBUG").is_ok() { eprintln!("rtc: open with {:08x}", id); } }
+            p.rtc_open = open;
+            if !want && !(exists && me > id) { if exists { self.rtc.borrow_mut().close(id); } continue; }
+            // a link that died, or went silent while open (nothing, not even the keep-alives, for 6 s), is dropped (the
+            // other side, or our next try, starts again)
+            let silent = open && now - p.last_rtc > 6.0;
+            if open && now - p.last_tx_rtc > 1.0 { p.last_tx_rtc = now; ka.push(id); }
+            if dead || silent { self.rtc.borrow_mut().close(id); p.rtc_open = false; if std::env::var("FW_WSDEBUG").is_ok() { eprintln!("rtc: {:08x} {}", id, if dead { "failed" } else { "went silent" }); } }
+            // the lower id offers; a try that hasn't opened within 12 s is given up, then tried again later (12 s, 24 s, ... 2 min)
+            if me < id && !open && now >= p.rtc_try_at && (!exists || dead || silent || now - p.rtc_since > 12.0) {
+                p.rtc_gen = p.rtc_gen.wrapping_add(1); p.rtc_since = now; p.rtc_tries += 1; p.rtc_try_at = now + (6.0 * (1u32 << p.rtc_tries.min(5)) as f64).min(120.0);
+                if std::env::var("FW_WSDEBUG").is_ok() { eprintln!("rtc: offer {} to {:08x}", p.rtc_gen, id); }
+                self.rtc.borrow_mut().open(id, true, rn);
+            }
+        }
+        // keep-alives on links that carried nothing for a second (a bare probe: it only says the link works)
+        for id in ka { let b = bare(Env { kind: K_PROBE, room: self.code, from: self.me, to: id, seq: 0 }); self.rtc_send(id, &b); }
+        // links to phones that left
+        let gone: Vec<u32> = self.rtc.borrow().ids().into_iter().filter(|id| !self.peers.contains_key(id)).collect();
+        for id in gone { self.rtc.borrow_mut().close(id); }
+        self.rtc.borrow_mut().tick(rn);
+        // negotiation out, through the room (never over the link being negotiated)
+        let sig = self.rtc.borrow_mut().take_signals();
+        for (id, s) in sig {
+            let gen = self.peers.get(&id).map(|p| p.rtc_gen).unwrap_or(0); let b = s.text().as_bytes();
+            let parts: Vec<&[u8]> = if b.is_empty() { vec![b] } else { b.chunks(RTC_PART).collect() }; let n = parts.len().min(255) as u8;
+            for (k, part) in parts.iter().take(n as usize).enumerate() { let e = self.env(K_RTC, id); let m = rtc_part(e, gen, s.kind(), k as u8, n, part); self.send_room(id, &m, now); }
+        }
+        // the app's link packets out on our socket
+        if let Some(s) = &self.sock { for (a, b) in self.rtc.borrow_mut().take_transmit() { if s.send_to(&b, a).is_ok() { self.count(0, b.len() as u64 + UDP_OVERHEAD); } } }
+        // what came over the links: handled like anything else from those phones
+        let inbox = self.rtc.borrow_mut().take_inbox();
+        for (id, b) in inbox { self.count(1, b.len() as u64 + RTC_OVERHEAD); if let Some(p) = self.peers.get_mut(&id) { p.last_rtc = now; p.last_seen = now; } self.handle(&b, None, now); }
+    }
+    /// a message to one peer through our relay or the brokers only (WebRTC negotiation)
+    fn send_room(&self, to: u32, b: &[u8], now: f64) {
+        let mask = self.peers.get(&to).map(|p| p.brokers).unwrap_or(0xFF);
+        if !self.relay_send(to, b, now) { self.relay_for(b, &[mask]); }
+    }
+    /// part of a negotiation message from `from`: once all its parts are here, to the link
+    fn rtc_in(&mut self, from: u32, (gen, kind, part, parts, bytes): (u8, u8, u8, u8, Vec<u8>), _now: f64) {
+        if std::env::var("FW_RTCDEBUG").is_ok() { eprintln!("rtc-in from {:08x} gen {} kind {} part {}/{} len {}", from, gen, kind, part, parts, bytes.len()); }
+        if parts == 0 || part >= parts || !self.peers.contains_key(&from) { return; }
+        let key = (from, gen, kind); let slot = self.rtc_in.entry(key).or_insert_with(|| vec![None; parts as usize]);
+        if slot.len() != parts as usize { *slot = vec![None; parts as usize]; }
+        slot[part as usize] = Some(bytes);
+        if slot.iter().any(|x| x.is_none()) { if self.rtc_in.len() > 64 { self.rtc_in.clear(); } return; }
+        let whole: Vec<u8> = self.rtc_in.remove(&key).unwrap().into_iter().flatten().flatten().collect();
+        let Some(sig) = rtc::Signal::from(kind, String::from_utf8_lossy(&whole).to_string()) else { return };
+        // (an offer says the sender speaks it, even if its hello hasn't arrived yet)
+        if kind == 0 { if let Some(p) = self.peers.get_mut(&from) { p.caps |= CAP_RTC; } }
+        let ready = cfg!(target_arch = "wasm32") || (self.sock.is_some() && self.stun_done && self.local.is_some());
+        let want = rtc_caps() & CAP_RTC != 0 && ready && (kind == 0 || self.rtc_wanted(&self.peers[&from]));
+        if !want { if std::env::var("FW_RTCDEBUG").is_ok() { eprintln!("rtc-in: not wanted (caps {})", self.peers[&from].caps); } return; }
+        let p = self.peers.get_mut(&from).unwrap();
+        // an offer starts its round (we answer within it); answers and candidates only count for the current round
+        match sig { rtc::Signal::Offer(_) => { if self.me < from { return; } p.rtc_gen = gen; p.rtc_open = false; } _ => { if gen != p.rtc_gen { return; } } }
+        if std::env::var("FW_WSDEBUG").is_ok() { eprintln!("rtc: {} {} from {:08x} ({} bytes)", ["offer", "answer", "candidate"][kind.min(2) as usize], gen, from, whole.len()); }
+        self.rtc.borrow_mut().signal(from, sig, rtc::now());
     }
 
     /// Host: everyone in the room races on `map`, lights out `delay` seconds from now, with `bots` AI cars (rivals, fastest
@@ -413,7 +535,8 @@ impl Session {
         let now = self.now(); let n = self.peers.len().max(1) as f64;
         let ours = self.peers.values().filter(|p| p.direct.is_none() && self.on_relay(p, now)).count() as f64;
         let direct = self.peers.values().filter(|p| p.direct.is_some()).count() as f64;
-        let brokered = (n - direct - ours).max(0.0);
+        let rtcs = self.peers.values().filter(|p| p.direct.is_none() && p.rtc_open).count() as f64;
+        let ours = (ours - rtcs).max(0.0); let brokered = (n - direct - ours - rtcs).max(0.0);
         // our AI cars (host) and the room's go out in the same packets as the cars of their frame: a state costs its bytes
         // plus a share of the packet (about two states a packet in a room with AI cars)
         let nb = self.race_bots as f64; let share = if nb > 0.0 { 0.5 } else { 1.0 };
@@ -422,9 +545,10 @@ impl Session {
         let r0 = 8.0; let per_s = (ours + if self.is_host { 0.0 } else { nb }) * r0;
         let ru = self.relay_up_bytes(CAR3_LEN + 1, now) * share; let rd = self.relay_down_bytes(CAR3_LEN + 1, per_s.max(1.0));
         // ours: a datagram per direct peer, one relay message for all on it, one broker publish when anyone needs that
-        let up = direct * udp + if ours > 0.0 { ru } else { 0.0 } + if brokered > 0.0 { 2.0 * mq } else { 0.0 };
+        let rtc_b = udp - UDP_OVERHEAD as f64 * share + RTC_OVERHEAD as f64 * share + 14.0;   // + the SCTP acknowledgements
+        let up = direct * udp + rtcs * rtc_b + if ours > 0.0 { ru } else { 0.0 } + if brokered > 0.0 { 2.0 * mq } else { 0.0 };
         // theirs: each other phone, by the way it reaches us
-        let down = direct * udp + ours * rd + brokered * (udp.max(mq) + mq * 0.5);
+        let down = direct * udp + rtcs * rtc_b + ours * rd + brokered * (udp.max(mq) + mq * 0.5);
         // AI cars: the host sends each like its own car, every guest receives each
         let bot_in = if self.server_bots || ours > 0.0 { rd } else if direct > 0.0 { udp } else { mq };
         let (up, down) = if self.is_host && !self.server_bots { (up * (1.0 + nb), down) } else { (up, down + nb * bot_in) };

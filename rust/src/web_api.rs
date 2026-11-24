@@ -67,9 +67,26 @@ pub fn web_ws_open(k: u32) { crate::guard::run("ws", (), || if k >= crate::net::
 pub fn web_ws_data(k: u32, b: &[u8]) { crate::guard::run("ws", (), || if k >= crate::net::relay::web::SOCK { crate::net::relay::web::on_data(k, b) } else { crate::net::mqtt::web::on_data(k, b) }) }
 #[wasm_bindgen]
 pub fn web_ws_close(k: u32) { crate::guard::run("ws", (), || if k >= crate::net::relay::web::SOCK { crate::net::relay::web::on_close(k) } else { crate::net::mqtt::web::on_close(k) }) }
+// the page's WebRTC links (see net::rtc and web/fw_rtc.js)
+#[wasm_bindgen]
+pub fn web_rtc_open(id: u32) { crate::guard::run("rtc", (), || crate::net::rtc::on_open(id)) }
+#[wasm_bindgen]
+pub fn web_rtc_close(id: u32) { crate::guard::run("rtc", (), || crate::net::rtc::on_close(id)) }
+#[wasm_bindgen]
+pub fn web_rtc_data(id: u32, b: &[u8]) { crate::guard::run("rtc", (), || crate::net::rtc::on_data(id, b)) }
+#[wasm_bindgen]
+pub fn web_rtc_signal(id: u32, kind: u8, text: String) { crate::guard::run("rtc", (), || crate::net::rtc::on_signal(id, kind, text)) }
 /// the driver name from the page's text box (answer to the game's "name" event)
 #[wasm_bindgen]
 pub fn web_name(n: &str) { crate::guard::run("name", (), || crate::gfx::rt_name(n)) }
 /// the online room this page is in (0: none); for tests and the page
 #[wasm_bindgen]
 pub fn web_room() -> u32 { crate::net::with(|s| s.code).unwrap_or(0) }
+/// test hook (the browser end-to-end check drives the page with it): join room `code`, as if its code were typed in
+#[wasm_bindgen]
+pub fn web_test_join(code: u32) { crate::guard::run("join", (), || crate::net::join(code, "WEB", "forest")) }
+/// test hook: each other phone in the room as "id:link:rtc" (link Relay / Direct / Connecting, rtc 1 when a data channel is open)
+#[wasm_bindgen]
+pub fn web_test_net() -> String {
+    crate::guard::run("net", String::new(), || crate::net::with(|s| s.peers.values().map(|p| format!("{:08x}:{:?}:{}", p.id, p.link(), p.rtc_open as u8)).collect::<Vec<_>>().join(" ")).unwrap_or_default())
+}

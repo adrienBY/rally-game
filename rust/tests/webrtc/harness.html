@@ -1,0 +1,63 @@
+<!doctype html><meta charset="utf-8"><title>fogwood webrtc harness</title>
+<script type="module">
+// A stand-in for the browser build in an online room, for testing WebRTC between a real browser and the app's str0m
+// links: joins the local relay (?relay=ws://...&room=&id=), says hello as phone "P9" (WebRTC and browser capable),
+// negotiates through the room with the same messages as the game (K_RTC), and once the data channel is open sends a car
+// along net_bench's figure of eight (phone 9) and counts the cars that come back. window.__res holds the results.
+import { makeRtc } from "/web/fw_rtc.js";
+const q = new URLSearchParams(location.search);
+const room = +q.get("room"), me = (+q.get("id")) >>> 0, relayUrl = q.get("relay");
+const res = window.__res = { open: false, opened: [], txCar: 0, rxCar: 0, rxRtc: 0, rxRelay: 0, offers: 0, answers: 0, cands: 0, peer: 0, lastX: null, log: [] };
+const log = (m) => { res.log.push(m); console.log(m); };
+const W = () => { const a = []; return { a, u8: (v) => a.push(v & 255), u16: (v) => { a.push(v & 255, (v >> 8) & 255); }, u32: (v) => { for (let i = 0; i < 4; i++) a.push((v >>> (8 * i)) & 255); },
+  f64: (v) => { const b = new Uint8Array(new Float64Array([v]).buffer); a.push(...b); }, str: (s) => { const b = new TextEncoder().encode(s); a.push(b.length, ...b); }, bytes: (b) => a.push(...b), out: () => new Uint8Array(a) }; };
+let seq = 0; const env = (kind, to) => { const w = W(); w.bytes([70, 87, 49]); w.u8(kind); w.u32(room); w.u32(me); w.u32(to); w.u32(++seq); return w; };
+const ws = new WebSocket(relayUrl + "/" + room); ws.binaryType = "arraybuffer";
+const send = (to, payload) => { if (ws.readyState !== 1) return; const w = W(); w.u8(2); w.u32(to); w.bytes(payload); ws.send(w.out()); };
+let host = 0, offset = 0, bestRtt = 9; const gens = new Map(), capsOf = new Map(), openSet = new Set();
+const t0 = performance.now(); const now = () => (performance.now() - t0) / 1000; const hostNow = () => now() + offset;
+const rtc = window.__fwRtc = makeRtc({
+  open: (id) => { log("dc open " + id.toString(16)); res.open = true; openSet.add(id); res.opened = [...openSet].map((x) => x.toString(16)); },
+  close: (id) => { log("dc closed " + id.toString(16)); openSet.delete(id); res.open = openSet.size > 0; },
+  data: (id, b) => { res.rxRtc++; onPayload(b, id, true); },
+  signal: (id, kind, text) => { const b = new TextEncoder().encode(text); const parts = []; for (let i = 0; i < Math.max(1, b.length); i += 900) parts.push(b.slice(i, i + 900));
+    parts.forEach((p, k) => { const w = env(12, id); w.u8(gens.get(id) || 0); w.u8(kind); w.u8(k); w.u8(parts.length); w.bytes(p); send(id, w.out()); }); },
+});
+const ICE = "[]";
+const parts = new Map();
+function onPayload(b, from, viaRtc) {
+  if (b[0] === 0xC8) { let i = 2; for (let k = 0; k < b[1]; k++) { const l = b[i]; onPayload(b.subarray(i + 1, i + 1 + l), from, viaRtc); i += 1 + l; } return; }
+  if (b[0] === 0xC3 || b[0] === 0xC2) { res.rxCar++; const x = ((b[6] | (b[7] << 8) | (b[8] << 16)) << 8 >> 8) / 128; res.lastX = x; if (!viaRtc) res.rxRelay++; return; }
+  if (b.length < 20 || b[0] !== 70 || b[1] !== 87 || b[2] !== 49) return;
+  const dv = new DataView(b.buffer, b.byteOffset, b.byteLength); const kind = b[3], src = dv.getUint32(8, true), to = dv.getUint32(12, true); let i = 20;
+  if (to !== 0 && to !== me) return;
+  if (kind === 1) { const f = b[i++]; const nl = b[i++]; i += nl; const ml = b[i++]; i += ml; const nc = b[i++]; i += nc * 6; i += 3; const caps = b[i] ?? 0;
+    if (f & 1) { host = src; res.peer = src; } if (capsOf.get(src) !== caps) { capsOf.set(src, caps); log("peer " + src.toString(16) + " caps " + caps); }
+    if ((caps & 4) && me < src && !gens.has(src)) { gens.set(src, 1); log("offering to " + src.toString(16)); rtc.open(src, true, ICE); } }
+  else if (kind === 5) { const t = dv.getFloat64(i, true), ht = dv.getFloat64(i + 8, true); const rtt = now() - t; if (rtt >= 0 && rtt < bestRtt) { bestRtt = rtt; offset = ht - (t + rtt / 2); } }
+  else if (kind === 12) { const g = b[i], k = b[i + 1], p = b[i + 2], n = b[i + 3]; const key = src + ":" + g + ":" + k; let s = parts.get(key); if (!s) { s = new Array(n).fill(null); parts.set(key, s); }
+    s[p] = b.slice(i + 4); if (s.some((x) => x === null)) return; parts.delete(key);
+    const text = new TextDecoder().decode(new Uint8Array(s.flatMap((x) => [...x])));
+    if (k === 0) { if (me < src) return; gens.set(src, g); res.offers++; rtc.open(src, false, ICE); rtc.signal(src, 0, text); }
+    else if (g === gens.get(src)) { if (k === 1) res.answers++; else res.cands++; rtc.signal(src, k, text); } }
+}
+ws.onmessage = (e) => { const b = new Uint8Array(e.data);
+  const one = (m) => { if (m[0] === 0x82 && m.length >= 5) { const from = new DataView(m.buffer, m.byteOffset).getUint32(1, true); onPayload(m.subarray(5), from, false); } };
+  if (b[0] === 0x88) { let i = 1; while (i + 2 <= b.length) { const n = b[i] | (b[i + 1] << 8); i += 2; one(b.subarray(i, i + n)); i += n; } } else one(b); };
+ws.onopen = () => { const j = () => { const w = W(); w.u8(1); w.u32(room); w.u32(me); ws.send(w.out()); }; j(); setInterval(j, 2000);
+  const hello = () => { const w = env(1, 0); w.u8(0); w.str("P9"); w.str("lakes"); w.u8(0); w.u8(0); w.u8(0); w.u8(0); w.u8(1 | 2 | 4); send(0, w.out()); }; hello(); setInterval(hello, 1000);
+  let pings = 0; setInterval(() => { if (!host || (pings > 8 && Math.random() < 0.8)) return; pings++; const w = env(4, host); w.f64(now()); w.f64(0); send(host, w.out()); }, 300); };
+// net_bench's figure of eight, phone 9
+function truth(k, t) { const pos = (t) => { const ph = k * 1.7, a = 0.11; return [180 * Math.sin(a * t + ph) + 2 * Math.sin(1.3 * t + ph), 90 * Math.sin(2 * a * t + ph) + 1.5 * Math.cos(0.9 * t)]; };
+  const e = 1e-3, [x, z] = pos(t), [x1, z1] = pos(t + e), [x0, z0] = pos(t - e); const vx = (x1 - x0) / (2 * e), vz = (z1 - z0) / (2 * e); const h = Math.atan2(vx, vz);
+  let dh = Math.atan2(x1 - x, z1 - z) - Math.atan2(x - x0, z - z0); while (dh > Math.PI) dh -= 2 * Math.PI; while (dh < -Math.PI) dh += 2 * Math.PI;
+  return { t, x, z, h, vx, vz, r: dh / e, u: Math.hypot(vx, vz) }; }
+let cseq = 0;
+function car3(c) { const w = W(); w.u8(0xC3); w.u16(me & 0xffff); w.u8(++cseq); w.u16(Math.floor(((c.t * 1000) % 65536 + 65536) % 65536));
+  const i24 = (v) => { const q = Math.max(-8388608, Math.min(8388607, Math.round(v * 128))); w.u8(q); w.u8(q >> 8); w.u8(q >> 16); };
+  const s8 = (v, s) => w.u8(Math.max(-127, Math.min(127, Math.round(v / s))));
+  i24(c.x); i24(c.z); w.u16(Math.round(0.075 * 100)); const turn = ((c.h / (2 * Math.PI)) % 1 + 1) % 1; w.u16(Math.round(turn * 65536) & 0xffff);
+  const sh = Math.sin(c.h), ch = Math.cos(c.h); const u = c.vx * sh + c.vz * ch, vl = c.vx * ch - c.vz * sh; const uq = Math.round(u * 100); w.u16(uq & 0xffff);
+  s8(vl, 0.2); s8(c.r, 0.02); s8(0, 0.005); s8(0, 0.005); s8(0, 0.005); w.u8(150); w.u8(4); w.u8(0x55); w.u8(0x55); s8(0, 0.2); s8(0, 0.1); return w.out(); }
+setInterval(() => { const c = car3(truth(9, hostNow())); for (const id of openSet) if (rtc.send(id, c)) res.txCar++; }, 50);
+</script>

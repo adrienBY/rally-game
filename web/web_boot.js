@@ -2,6 +2,7 @@
    WebGL2 canvas over the page, exactly like the Android app. This page plays the app's hidden stage builder: it builds
    each stage and hands the scene to the engine through the same FogwoodGL / FogwoodNative bridges the app provides. */
 import init, * as fw from "./fogwood_core.js";
+import { makeRtc } from "./fw_rtc.js";
 const main = document.getElementById("fwmain").textContent;
 const fallback = () => { const s = document.createElement("script"); s.type = "module"; s.textContent = main; document.body.appendChild(s); };
 (async () => {
@@ -21,7 +22,9 @@ const fallback = () => { const s = document.createElement("script"); s.type = "m
   // online rooms: the engine's MQTT client talks to the public brokers over secure WebSockets held here
   const socks = new Map();
   window.__fwWs = {
-    open: (k, url) => { try { const q = new URLSearchParams(location.search), o = k >= 1000 ? q.get("relay") : q.get("ws"); if (o) url = o;   // ?ws= / ?relay=: test servers const old = socks.get(k); if (old) { old.onclose = old.onerror = old.onmessage = null; try { old.close(); } catch (_) {} }
+    // (?ws= / ?relay=: test servers; a socket opened again replaces the old one)
+    open: (k, url) => { try { const q = new URLSearchParams(location.search), o = k >= 1000 ? q.get("relay") : q.get("ws"); if (o) url = o;
+      const old = socks.get(k); if (old) { old.onclose = old.onerror = old.onmessage = null; try { old.close(); } catch (_) {} }
       const ws = new WebSocket(url, k >= 1000 ? [] : ["mqtt"]); ws.binaryType = "arraybuffer"; socks.set(k, ws);
       ws.onopen = () => { if (socks.get(k) === ws) fw.web_ws_open(k); };
       ws.onmessage = (e) => { if (socks.get(k) === ws && e.data instanceof ArrayBuffer) fw.web_ws_data(k, new Uint8Array(e.data)); };
@@ -30,6 +33,8 @@ const fallback = () => { const s = document.createElement("script"); s.type = "m
     send: (k, b) => { const ws = socks.get(k); if (ws && ws.readyState === 1) try { ws.send(b.slice()); } catch (_) {} },
     close: (k) => { const ws = socks.get(k); if (ws) { socks.delete(k); ws.onclose = ws.onerror = ws.onmessage = null; try { ws.close(); } catch (_) {} } },
   };
+  // WebRTC data channels to the other phones (UDP from the browser: see fw_rtc.js and rust/src/net/rtc.rs)
+  window.__fwRtc = makeRtc({ open: (id) => fw.web_rtc_open(id), close: (id) => fw.web_rtc_close(id), data: (id, u8) => fw.web_rtc_data(id, u8), signal: (id, k, t) => fw.web_rtc_signal(id, k, t) });
   window.__fw = fw;
   window.__fwAudio = (u8) => { try { const S = window.__SHARED; if (S) S.send(new Float32Array(u8.slice().buffer)); } catch (_) {} };
   const map = fw.web_start("fogwood-native-save");
