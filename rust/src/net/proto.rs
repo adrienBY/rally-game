@@ -27,6 +27,8 @@ pub const K_BATCH: u8 = 0xC8;
 pub const CAP_BATCH: u8 = 1; pub const CAP_WEB: u8 = 2; pub const CAP_RTC: u8 = 4;
 /// RTC: a WebRTC negotiation message (net::rtc::Signal) in parts: [gen u8][kind u8][part u8][parts u8][bytes]
 pub const K_RTC: u8 = 12;
+/// "your car states reach me over our WebRTC link, first: skip the relay's copy" (1) or not (0): net::dual
+pub const K_PATHQ: u8 = 13;
 pub const RTC_PART: usize = 900;
 /// largest batch (bytes): well inside one datagram and one relay message
 pub const BATCH_MAX: usize = 1100;
