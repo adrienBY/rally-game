@@ -26,24 +26,26 @@ async function sha256hex(s) { const h = await crypto.subtle.digest("SHA-256", ne
 // TURN (Cloudflare Realtime, free up to 1,000 GB a month) for browser links that can't go direct: short-lived
 // credentials minted here from the TURN key kept in this worker's secrets (TURN_KEY_ID, TURN_KEY_TOKEN), shared for a
 // few minutes per isolate. Only pages of the game get them.
-let turnCache = null, turnAt = 0;
+let turnCache = null, turnAt = 0, turnErr = "";
 const TURN_ORIGINS = /^(https:\/\/adrienby\.github\.io|http:\/\/(localhost|127\.0\.0\.1)(:\d+)?)$/;
 async function turn(req, env) {
   const origin = req.headers.get("Origin") || "", ok = TURN_ORIGINS.test(origin);
   const cors = { "Access-Control-Allow-Origin": ok ? origin : "null", "Vary": "Origin", "cache-control": "no-store", "content-type": "application/json" };
-  if (!ok || !env.TURN_KEY_ID || !env.TURN_KEY_TOKEN) return new Response('{"iceServers":[]}', { headers: cors });
+  const id = String(env.TURN_KEY_ID || "").trim(), tok = String(env.TURN_KEY_TOKEN || "").trim();
+  if (!ok || !id || !tok) return new Response(JSON.stringify({ iceServers: [], why: !ok ? "origin" : "no key" }), { headers: cors });
   const now = Date.now() / 1000;
   if (!turnCache || now - turnAt > 600) {
     try {
-      const r = await fetch("https://rtc.live.cloudflare.com/v1/turn/keys/" + env.TURN_KEY_ID + "/credentials/generate-ice-servers", {
-        method: "POST", headers: { "Authorization": "Bearer " + env.TURN_KEY_TOKEN, "Content-Type": "application/json" }, body: '{"ttl":86400}' });
+      const r = await fetch("https://rtc.live.cloudflare.com/v1/turn/keys/" + encodeURIComponent(id) + "/credentials/generate-ice-servers", {
+        method: "POST", headers: { "Authorization": "Bearer " + tok, "Content-Type": "application/json" }, body: '{"ttl":86400}' });
       if (r.ok) { const j = await r.json();
         // browsers block port 53: drop those addresses rather than wait for them to time out
         const ice = (j.iceServers || []).map((s) => ({ ...s, urls: [].concat(s.urls || []).filter((u) => !/:53(\?|$)/.test(u)) })).filter((s) => s.urls.length);
-        turnCache = JSON.stringify({ iceServers: ice }); turnAt = now; }
-    } catch (_) {}
+        turnCache = JSON.stringify({ iceServers: ice }); turnAt = now; turnErr = ""; }
+      else turnErr = r.status + " " + (await r.text()).slice(0, 160);   // Cloudflare's error (no credentials in it)
+    } catch (e) { turnErr = String(e).slice(0, 160); }
   }
-  return new Response(turnCache || '{"iceServers":[]}', { headers: cors });
+  return new Response(turnCache || JSON.stringify({ iceServers: [], why: turnErr }), { headers: cors });
 }
 export default {
   async fetch(req, env) {

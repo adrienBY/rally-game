@@ -13,7 +13,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: The relay hands out TURN servers
         run: |
-          curl -s -H "Origin: http://127.0.0.1:8001" https://fogwood-relay.adrien-paul-bonnay.workers.dev/turn | jq -c '[.iceServers[] | .urls]'
+          curl -s -H "Origin: http://127.0.0.1:8001" https://fogwood-relay.adrien-paul-bonnay.workers.dev/turn | jq -c '{urls: [.iceServers[] | .urls], why}'
       - name: A data channel through it (relayed candidates only), and round trips
         run: |
           (cd /tmp && npm i --silent --no-save playwright@1.49.1)

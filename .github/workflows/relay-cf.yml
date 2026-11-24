@@ -68,11 +68,11 @@ jobs:
           if [ "$(echo "$r" | jq -r .success)" != "true" ]; then
             echo "::warning::No TURN key: $(echo "$r" | jq -c '[.errors[]? | {code, message}]')"; exit 0; fi
           echo "::add-mask::$(echo "$r" | jq -r .result.key)"
-          echo "$r" | jq -r .result.uid | npx --yes wrangler@4 secret put TURN_KEY_ID >/dev/null
-          echo "$r" | jq -r .result.key | npx --yes wrangler@4 secret put TURN_KEY_TOKEN >/dev/null
+          printf %s "$(echo "$r" | jq -r .result.uid)" | npx --yes wrangler@4 secret put TURN_KEY_ID >/dev/null
+          printf %s "$(echo "$r" | jq -r .result.key)" | npx --yes wrangler@4 secret put TURN_KEY_TOKEN >/dev/null
           echo "TURN key created and stored in the worker"
       - name: TURN answers
         if: env.CF_TOKEN != ''
         run: |
           sleep 5
-          curl -s -H "Origin: https://adrienby.github.io" https://fogwood-relay.adrien-paul-bonnay.workers.dev/turn | jq -c '[.iceServers[] | {urls: (.urls | length), auth: (.credential != null)}]'
+          curl -s -H "Origin: https://adrienby.github.io" https://fogwood-relay.adrien-paul-bonnay.workers.dev/turn | jq -c '{n: [.iceServers[] | {urls: (.urls | length), auth: (.credential != null)}], why}'
