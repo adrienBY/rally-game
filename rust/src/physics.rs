@@ -81,6 +81,11 @@ pub const NSTATE: usize = 33; pub const NWHEEL: usize = 13;
 #[derive(Clone, Copy, Default, Debug)]
 pub struct Input { pub throttle: f64, pub brake: f64, pub hb: bool, pub steer: f64 }
 
+/// what `Car::rebuilt` starts from (another phone's state and its driver's pedals)
+#[derive(Clone, Copy, Default, Debug)]
+pub struct Rebuild { pub x: f64, pub y: f64, pub z: f64, pub h: f64, pub vx: f64, pub vy: f64, pub vz: f64, pub r: f64, pub pitch: f64, pub roll: f64, pub steer: f64,
+    pub gear: f64, pub rpm: f64, pub a: f64, pub throttle: f64, pub brake: f64, pub hb: bool, pub air: bool }
+
 #[derive(Clone, Copy)]
 struct Ctl { throttle: f64, brake: f64, hb: bool, steer: f64 }
 
@@ -131,6 +136,28 @@ impl Car {
         for i in 0..4 { let b = NSTATE + i * NWHEEL; let w = &mut c.wh[i];
             w.w = g(b); w.ang = g(b + 1); w.comp = g(b + 2); w.d = g(b + 3); w.fz = g(b + 4); w.slide = g(b + 5); w.road = g(b + 6) != 0.0;
             w.bank = g(b + 7) != 0.0; w.mu = g(b + 8); w.rr = g(b + 9); w.wx = g(b + 10); w.wz = g(b + 11); w.hg = g(b + 12); }
+        c
+    }
+
+    /// A car rebuilt from what another phone sent about it (pose, velocities, steering angle, gear, rpm) and its driver's
+    /// pedals, to run on with the physics (net::smooth predicts remote cars this way). What a state doesn't carry is
+    /// filled in so the first step is quiet: wheels rolling at the road speed, pedals where the driver holds them, and
+    /// each wheel's ground and compression worked out exactly as `step` does (no damper kick from a made-up value).
+    pub fn rebuilt(world: &World, s: &Rebuild) -> Car {
+        let mut c = Car::new();
+        c.x = s.x; c.z = s.z; c.y = s.y; c.h = s.h; c.vx = s.vx; c.vz = s.vz; c.vy = s.vy; c.r = s.r; c.pitch = s.pitch; c.roll = s.roll; c.steer = s.steer;
+        c.gear = s.gear; c.rpm = s.rpm; let (sh, ch) = (sin(c.h), cos(c.h)); c.u = c.vx * sh + c.vz * ch; c.vl = c.vx * ch - c.vz * sh;
+        c.ax_f = s.a; c.ay_f = c.u * c.r; c.p_t = s.throttle; c.p_b = s.brake; c.hb_t = if s.hb { 0.6 } else { 0.0 };
+        c.clutch = if (c.u.abs() / TIRE_R * GEARS[(c.gear.max(1.0) as usize).min(5) - 1] * FINAL) * 60.0 / (2.0 * PI) > 1150.0 { 1.0 } else { 0.5 };
+        let (sp, sr) = (sin(c.pitch), sin(c.roll)); let mut contacts = 0.0;
+        for w in c.wh.iter_mut() {
+            let wx = c.x + ch * w.lx + sh * w.lz; let wz = c.z - sh * w.lx + ch * w.lz; w.wx = wx; w.wz = wz;
+            w.road = world.tiles() || world.path_dist(wx, wz) < world.road() + 0.25;
+            w.hg = world.height(wx, wz) + (vnoise(wx * 0.45 + 3.1, wz * 0.45) - 0.5) * (if w.road { 0.05 } else { 0.16 });
+            w.d = c.y + w.lz * sp + w.lx * sr - w.hg; w.comp = REST - w.d; if w.comp > 0.0 { contacts += 1.0; }
+            w.w = if w.f { (c.u * cos(c.steer) + c.vl * sin(c.steer)) / TIRE_R } else { c.u / TIRE_R };
+        }
+        c.contacts = if s.air { 0.0 } else { contacts }; c.air_t = if s.air { 0.1 } else { 0.0 };
         c
     }
 

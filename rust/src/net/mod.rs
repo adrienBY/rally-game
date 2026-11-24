@@ -226,7 +226,7 @@ impl Session {
     fn env(&mut self, kind: u8, to: u32) -> Env { self.seq = self.seq.wrapping_add(1); Env { kind, room: self.code, from: self.me, to, seq: self.seq } }
     fn hello_msg(&mut self) -> Vec<u8> {
         let mut cands = Vec::new(); for a in [self.local, self.public].into_iter().flatten() { cands.push((a.ip().octets(), a.port())); }
-        let h = Hello { host: self.is_host, racing: self.racing, name: self.name.clone(), map: self.map.clone(), cands, car: self.car, paint: self.paint, brokers: self.broker_mask(), caps: CAP_BATCH | rtc_caps() }; let e = self.env(K_HELLO, 0); hello(e, &h)
+        let h = Hello { host: self.is_host, racing: self.racing, name: self.name.clone(), map: self.map.clone(), cands, car: self.car, paint: self.paint, brokers: self.broker_mask(), caps: CAP_BATCH | CAP_PHYS | rtc_caps() }; let e = self.env(K_HELLO, 0); hello(e, &h)
     }
     fn way(&self, k: usize, bytes: u64) { let mut w = self.ways.get(); w[k] += bytes; self.ways.set(w); }
     fn count(&self, k: usize, bytes: u64) { let mut t = self.traffic.get(); t[k] += bytes; self.traffic.set(t); let mut p = self.packets.get(); p[k] += 1; self.packets.set(p); }
@@ -624,10 +624,12 @@ impl Session {
     /// drifted (15 cm, 1.5 degrees, 0.8 m/s, 12 cm of height, ~3.5 degrees of body angle), the gear or air changed, or the
     /// heartbeat is due; never faster than `car_rate` allows. Steady driving costs a few packets a second.
     /// `dist`: how far (m) the nearest other car is: see `relevance`
-    pub fn send_car(&mut self, mut c: CarSnap, dt: f64, g: smooth::Ground, dist: f32) {
+    /// (`c.ctl`: the driver's inputs, sent when everyone in the room reads them; `ph`: the physics they are predicted with)
+    pub fn send_car(&mut self, mut c: CarSnap, dt: f64, g: smooth::Ground, ph: Option<&smooth::Phys>, dist: f32) {
         let now = self.now(); let hn = self.host_now(); let th = self.stamp.advance(hn, dt); c.t = th; c.a = self.policy.accel(c.u, dt as f32);
+        if ph.is_none() || !self.all_phys() { c.ctl = None; }
         let (thr, rate, beat) = self.relevance(dist);
-        if !self.policy.due(&c, g, &thr, rate, beat) { return; }
+        if !self.policy.due(&c, g, ph, &thr, rate, beat) { return; }
         self.car_seq = self.car_seq.wrapping_add(1); let b = car3(self.me, self.car_seq, &c);
         // remember exactly what receivers will decode, so both sides predict from the same numbers
         if let Some((_, _, _, mut q)) = read_car2(&b) { q.t = th; self.policy.sent = Some(q); }
@@ -636,11 +638,12 @@ impl Session {
     /// Host: one of our AI cars (index `k` in the start message), right after our own car in the frame (same stamp, same
     /// rules: it goes out when the receivers' prediction has drifted, within the data budget).
     /// (`dist`: how far the nearest player's car is)
-    pub fn send_bot(&mut self, k: usize, mut c: CarSnap, dt: f64, g: smooth::Ground, dist: f32) {
+    pub fn send_bot(&mut self, k: usize, mut c: CarSnap, dt: f64, g: smooth::Ground, ph: Option<&smooth::Phys>, dist: f32) {
         if !self.is_host || self.server_bots || k >= self.bots_out.len() { return; }
         let now = self.now(); let th = self.stamp.get().unwrap_or_else(|| self.host_now()); c.t = th; c.a = self.bots_out[k].policy.accel(c.u, dt as f32);
+        if ph.is_none() || !self.all_phys() { c.ctl = None; }
         let (thr, rate, beat) = self.relevance(dist);
-        let bo = &mut self.bots_out[k]; if !bo.policy.due(&c, g, &thr, rate, beat) { return; }
+        let bo = &mut self.bots_out[k]; if !bo.policy.due(&c, g, ph, &thr, rate, beat) { return; }
         bo.seq = bo.seq.wrapping_add(1); let b = bot3(self.me, bo.seq, k as u8, &c);
         if let Some((_, _, _, mut q)) = read_car2(&b) { q.t = th; bo.policy.sent = Some(q); }
         self.deliver(&b, now);
@@ -657,6 +660,12 @@ impl Session {
         if let Some(p) = self.peers.get_mut(&id) { p.track.nudge(shown);
             match p.hit_acc.iter_mut().find(|x| x.0 == by) { Some(a) => { for q in 0..5 { a.1[q] += d[q]; } a.2 = a.2.max(imp); } None => p.hit_acc.push((by, d, imp)) } }
     }
+    /// every other phone in the room reads the driver's inputs on car states (and the relay, when it drives AI cars, is
+    /// told by them: it only reads players' states)
+    /// (everyone sends driver inputs, phones and AI cars whose latest state had them, cars seen): for the desktop checks
+    pub fn phys_stat(&self) -> (bool, usize, usize) { let t = self.peers.values().map(|p| &p.track).chain(self.bots.values().map(|b| &b.track));
+        (self.all_phys(), t.clone().filter(|t| t.has_ctl()).count(), t.count()) }
+    fn all_phys(&self) -> bool { self.peers.values().all(|p| p.caps & CAP_PHYS != 0) }
     fn track(&self, id: u32) -> Option<&smooth::Track> { match bot_of(id) { Some(k) => self.bots.get(&k).map(|b| &b.track), None => self.peers.get(&id).map(|p| &p.track) } }
     fn track_mut(&mut self, id: u32) -> Option<&mut smooth::Track> { match bot_of(id) { Some(k) => self.bots.get_mut(&k).map(|b| &mut b.track), None => self.peers.get_mut(&id).map(|p| &mut p.track) } }
     /// whether a car is, for now, moved only by its own phone (a contact it has already taken in)
@@ -701,8 +710,8 @@ impl Session {
     pub fn advance_view(&mut self, dt: f64) -> f64 { let hn = self.host_now(); self.frame_dt = dt.clamp(0.0, 0.05); self.view.advance(hn, dt) }
 
     /// Where a peer's car is shown this frame.
-    pub fn remote(&mut self, id: u32, g: smooth::Ground) -> Option<CarSnap> {
-        let t = self.view.get().unwrap_or_else(|| self.host_now()) + self.frame_dt; self.track_mut(id)?.sample(t, g)
+    pub fn remote(&mut self, id: u32, g: smooth::Ground, ph: Option<&smooth::Phys>) -> Option<CarSnap> {
+        let t = self.view.get().unwrap_or_else(|| self.host_now()) + self.frame_dt; self.track_mut(id)?.sample(t, g, ph)
     }
 }
 

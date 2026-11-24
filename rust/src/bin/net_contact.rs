@@ -39,7 +39,7 @@ enum Msg { Car(Vec<u8>), Hit([f32; 5], f32, f64) }
 fn snap_of(c: &Car, epoch: u8) -> CarSnap {
     CarSnap { t: 0.0, x: c.x as f32, y: c.y as f32, z: c.z as f32, h: c.h as f32, vx: c.vx as f32, vy: c.vy as f32, vz: c.vz as f32, r: c.r as f32, pitch: c.pitch as f32, roll: c.roll as f32,
         steer: c.steer as f32, u: c.u as f32, gear: c.gear as i8, rpm: c.rpm.clamp(0.0, 65000.0) as u16, d: [c.wh[0].d as f32, c.wh[1].d as f32, c.wh[2].d as f32, c.wh[3].d as f32],
-        ang: [0.0; 4], flags: smooth::with_epoch(if c.contacts == 0.0 && c.air_t > 0.06 { smooth::AIR } else { 0 }, epoch), a: 0.0 }
+        ang: [0.0; 4], flags: smooth::with_epoch(if c.contacts == 0.0 && c.air_t > 0.06 { smooth::AIR } else { 0 }, epoch), a: 0.0, ctl: None }
 }
 
 struct Phone {
@@ -47,7 +47,7 @@ struct Phone {
     inbox: Vec<(f64, Msg)>, hit_acc: Option<([f32; 5], f32)>, hit_tx: f64, net_hits: Vec<([f64; 5], f64)>,
     epoch: u8, contact_t: f64, hit_t: f64, shown: Car, have: bool,
     /// times this phone pushed its own car (local contact or a push from the other phone)
-    pushes: Vec<f64>,
+    pushes: Vec<f64>, plog: Vec<(f64, u8, f64, f64)>,
     /// lag compensation: the position and heading still to add to our car (spread over a few frames), and over how long
     catch: [f64; 3], catch_t: f64, hit_t0: f64,
 }
@@ -91,10 +91,11 @@ fn main() {
         };
         let place = |i: usize, lat: f64| -> Car { let mut car = Car::new(); let (tx, tz) = tan(i); car.x = path[i].0 - tz * lat; car.z = path[i].1 + tx * lat; car.h = tx.atan2(tz);
             car.gear = 1.0; car.rpm = 900.0; car.y = w.height(car.x, car.z) + 0.075; for wh in car.wh.iter_mut() { wh.comp = 0.135; wh.d = 0.075; wh.fz = 2900.0; } car };
-        for ver in ["old", "now"] {
-            let legacy = ver == "old";
+        for ver in ["old", "now", "phys"] {
+            let legacy = ver == "old"; let phys = ver == "phys";   // phys: states carry the inputs, cars predicted with the physics
+            let pctx = smooth::Phys { world: w, obs: &e.obstacles, tune }; let pc = if phys { Some(&pctx) } else { None };
             let mk = |c: Car| Phone { car: c, tr: { let mut t = Track::default(); t.legacy = legacy; t }, pol: Policy::default(), stamp: ViewClock::default(), view: ViewClock::default(), seq: 0, last_seq: None,
-                inbox: Vec::new(), hit_acc: None, hit_tx: -9.0, net_hits: Vec::new(), epoch: 0, contact_t: -9.0, hit_t: -9.0, shown: c, have: false, pushes: Vec::new(), catch: [0.0; 3], catch_t: 0.0, hit_t0: 0.0 };
+                inbox: Vec::new(), hit_acc: None, hit_tx: -9.0, net_hits: Vec::new(), epoch: 0, contact_t: -9.0, hit_t: -9.0, shown: c, have: false, pushes: Vec::new(), plog: Vec::new(), catch: [0.0; 3], catch_t: 0.0, hit_t0: 0.0 };
             let mut ph = [mk(place(0, 1.2)), mk(place(4, -1.2))];
             let mut links = [Link { lat, jit, loss, tcp, last: 0.0, rng: Rng(seed * 77 + 1) }, Link { lat, jit, loss, tcp, last: 0.0, rng: Rng(seed * 77 + 2) }];
             let mut rng = Rng(seed * 31 + 7); let mut wob = [0.0f64; 2];
@@ -125,10 +126,12 @@ fn main() {
                     } }
                     // 2. our state out (before the physics step, like the game), bumps out
                     let dist = (ph[p].shown.x - ph[p].car.x).hypot(ph[p].shown.z - ph[p].car.z); let close = dist < if legacy { 25.0 } else { 30.0 };
+                    wob[p] += (rng.f() - 0.5) * 0.01 - wob[p] * 0.03; let inp = drive(&ph[p].car, t, p, wob[p], catch[p]);
                     let me = &mut ph[p]; let mut s = snap_of(&me.car, me.epoch); s.t = if legacy { tick } else { me.stamp.advance(tick, dt) }; s.a = me.pol.accel(s.u, dt as f32);
+                    if phys { s.ctl = Some(proto::Ctl { steer: inp.steer as f32, throttle: inp.throttle as f32, brake: inp.brake as f32, hb: inp.hb }); }
                     let mut thr = Thresholds::default(); let (mut r, mut bt) = (rate, beat);
                     if close { if near_rate && !legacy { let (t2, r2, b2) = smooth::relevance(thr, r, bt, dist as f32); thr = t2; r = r2; bt = b2; } else { thr.pos *= 0.4; thr.head *= 0.5; thr.speed *= 0.5; r = (r * 1.5).min(30.0); bt = bt.min(0.25); } }
-                    if me.pol.due(&s, g, &thr, r, bt) {
+                    if me.pol.due(&s, g, pc, &thr, r, bt) {
                         me.seq = me.seq.wrapping_add(1); let b = proto::car3(7, me.seq, &s); let (_, _, _, mut q) = proto::read_car2(&b).unwrap(); q.t = s.t; me.pol.sent = Some(q);
                         if let Some(a) = links[p].arrival(tick) { ph[o].inbox.push((a, Msg::Car(b))); }
                     }
@@ -137,23 +140,23 @@ fn main() {
                     // 3. the other car, drawn where it is at the end of this frame (old: at its start)
                     let me = &mut ph[p]; let vt = me.view.advance(tick, dt);
                     me.tr.near = if legacy { if dist < 25.0 { 1.0 } else { 0.0 } } else { let q = ((40.0 - dist) / 25.0).clamp(0.0, 1.0); (q * q * (3.0 - 2.0 * q)) as f32 };
-                    let sn = if me.have { me.tr.sample(vt + if legacy { 0.0 } else { dt }, g) } else { None };
+                    let sn = if me.have { me.tr.sample(vt + if legacy { 0.0 } else { dt }, g, pc) } else { None };
                     if let Some(c) = sn { let sh = &mut me.shown; sh.x = c.x as f64; sh.y = c.y as f64; sh.z = c.z as f64; sh.h = c.h as f64; sh.vx = c.vx as f64; sh.vz = c.vz as f64; sh.r = c.r as f64; sh.u = c.u as f64; }
                     let owned = me.tr.owned();
                     // 4. our physics
-                    wob[p] += (rng.f() - 0.5) * 0.01 - wob[p] * 0.03; let inp = drive(&me.car, t, p, wob[p], catch[p]); me.car.update(w, &e.obstacles, &tune, dt, &inp);
+                    me.car.update(w, &e.obstacles, &tune, dt, &inp);
                     // 5. pushes from the other phone
                     for (d, _) in std::mem::take(&mut me.net_hits) { me.car.vx += d[0]; me.car.vz += d[1]; me.car.r += d[2];
                         let s = (d[3].hypot(d[4]) / 0.25).max(1.0);
                         if comp { let age = (t - me.hit_t0).clamp(0.0, 0.4); me.catch = [me.catch[0] + d[3] + d[0] * age, me.catch[1] + d[4] + d[1] * age, me.catch[2] + d[2] * age]; me.catch_t = 0.12; }
                         else { me.car.x += d[3] * 0.5 / s; me.car.z += d[4] * 0.5 / s; }
-                        me.hit_t = t; me.pushes.push(t); }
+                        me.hit_t = t; me.pushes.push(t); me.plog.push((t, 1, 0.0, 0.0)); }
                     if comp && me.catch_t > 0.0 { let f = (dt / me.catch_t).min(1.0); me.car.x += me.catch[0] * f; me.car.z += me.catch[1] * f; me.car.h += me.catch[2] * f; for q in 0..3 { me.catch[q] *= 1.0 - f; } me.catch_t -= dt; }
                     // 6. contact with the car as drawn here
                     if me.have { let (mut a, mut b) = (me.car, me.shown); let o0 = me.shown; let mg = margin + (me.tr.horizon() as f64 * amargin).min(0.25); let hit = bump_r(&mut a, &mut b, 1180.0, tune.iz, 1.72 - mg, resti);
                         let d = [b.vx - o0.vx, b.vz - o0.vz, b.r - o0.r, b.x - o0.x, b.z - o0.z];
                         if d.iter().any(|v| v.abs() > 1e-6) {
-                            me.car = a; if hit > 0.05 { me.pushes.push(t); }
+                            me.car = a; if hit > 0.05 { me.pushes.push(t); me.plog.push((t, 0, me.tr.horizon() as f64, hit)); }
                             if t - me.contact_t.max(me.hit_t) > 0.3 { me.epoch = (me.epoch + 1) & 15; } me.contact_t = t;
                             let df = d.map(|v| v as f32); me.tr.nudge(df.map(|v| v * nudge_k as f32));
                             if !legacy { let acc = me.hit_acc.get_or_insert(([0.0; 5], 0.0)); for k in 0..5 { acc.0[k] += df[k]; } acc.1 = acc.1.max(hit as f32); }
@@ -169,6 +172,20 @@ fn main() {
             let (mut felt, mut lats) = (0usize, Vec::new());
             for &t0 in &starts { for p in 0..2 { if let Some(&tp) = ph[p].pushes.iter().find(|&&tp| tp >= t0 - 0.3 && tp <= t0 + 1.0) { felt += 1; lats.push(((tp - t0) * 1000.0).max(0.0)); } } }
             let touch_t: Vec<f64> = touch.iter().enumerate().filter(|x| *x.1).map(|x| x.0 as f64 * dt).collect();
+            if std::env::var("GHOSTLOG").is_ok() { let near = truth.iter().filter(|c| { let (mut a, mut b) = (c[0], c[1]); let (mut a2, mut b2) = (c[0], c[1]);
+                let wide = { let _ = bump_r(&mut a, &mut b, 1180.0, tune.iz, 2.0, 1.0); (a.x - c[0].x).abs() + (a.z - c[0].z).abs() > 1e-9 };
+                let touch = { let _ = bump_r(&mut a2, &mut b2, 1180.0, tune.iz, 1.72, 1.0); (a2.x - c[0].x).abs() + (a2.z - c[0].z).abs() > 1e-9 }; wide && !touch }).count();
+                eprintln!("{} near-miss frames (within 28 cm of touching): {:.1}%", ver, near as f64 * 100.0 / truth.len() as f64);
+                // how far off the other car is drawn when the cars are within 6 m (centres), along the line between them
+                let mut ev: Vec<f64> = Vec::new(); let mut vv: Vec<f64> = Vec::new();
+                for (f, c) in truth.iter().enumerate() { for p in 0..2 { let (me_, o) = (&c[p], &c[1 - p]); let d = &drawn[f][p]; let gap = (me_.x - o.x).hypot(me_.z - o.z);
+                    let tf = f as f64 * dt; let calm = !touch_t.iter().any(|&tt| (tt - tf).abs() < 1.0) && !ph[p].pushes.iter().any(|&tp| (tp - tf).abs() < 1.0);
+                    if gap < 6.0 && gap > 0.5 && (std::env::var("CALM").is_err() || calm) { let (nx, nz) = ((o.x - me_.x) / gap, (o.z - me_.z) / gap); ev.push((d.x - o.x) * nx + (d.z - o.z) * nz); vv.push((d.vx - o.vx) * nx + (d.vz - o.vz) * nz); } } }
+                let m = |v: &Vec<f64>| v.iter().sum::<f64>() / v.len().max(1) as f64; let r = |v: &Vec<f64>| (v.iter().map(|x| x * x).sum::<f64>() / v.len().max(1) as f64).sqrt();
+                eprintln!("{} within 6 m: drawn other off along the gap: mean {:+.3} m rms {:.3} m; its velocity off along the gap: mean {:+.3} rms {:.3} m/s ({} samples)", ver, m(&ev), r(&ev), m(&vv), r(&vv), ev.len()); }
+            if std::env::var("GHOSTLOG").is_ok() && ver != "old" { for p in 0..2 { for &(tp, kind, hz, hv) in &ph[p].plog { if !touch_t.iter().any(|&tt| (tt - tp).abs() < 0.4) { let f = (tp / dt) as usize;
+                let (a, b) = (&truth[f.min(truth.len() - 1)][p], &truth[f.min(truth.len() - 1)][1 - p]); let d = &drawn[f.min(drawn.len() - 1)][p];
+                eprintln!("{} ghost t={:.2} phone {} {} real gap {:.2} m, drawn other off by {:.2} m, heading off {:.3} rad, horizon {:.0} ms, closing {:.2} m/s", ver, tp, p, if kind == 0 { "local" } else { "from other" }, (a.x - b.x).hypot(a.z - b.z), (d.x - b.x).hypot(d.z - b.z), wrap(d.h - b.h), hz * 1000.0, hv); } } } }
             let ghost = (0..2).map(|p| { let mut ep = -9.0; let mut n = 0; for &tp in &ph[p].pushes { if tp - ep > 0.3 && !touch_t.iter().any(|&tt| (tt - tp).abs() < 0.4) { n += 1; } ep = tp; } n }).sum::<usize>();
             // the drawn car around contacts, and side by side without contact
             let (mut err, mut shake, mut gap) = (Vec::new(), Vec::new(), Vec::new()); let mut tv = vec![[0.0f64; 2]; starts.len() * 2];

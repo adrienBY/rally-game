@@ -150,7 +150,7 @@ impl Sim {
         for p in self.players.iter_mut() {
             let Some(k) = self.game.race.cars.iter().position(|c| c.remote == Some(p.id)) else { continue };
             let gone = self.now - p.heard > 8.0; let c = &mut self.game.race.cars[k]; c.left = gone;
-            if let Some(sn) = p.track.sample(t, gr) { apply(&mut c.car, &sn, DT); c.owned = p.track.owned(); }
+            if let Some(sn) = p.track.sample(t, gr, None) { apply(&mut c.car, &sn, DT); c.owned = p.track.owned(); }
         }
         // pushes players gave our AI cars, taken in the race step unless we settled that contact ourselves a moment ago
         for (from, idx, d, imp) in std::mem::take(&mut self.bot_hits) {
@@ -182,12 +182,16 @@ impl Sim {
         let humans: Vec<(f64, f64)> = self.game.race.cars.iter().filter(|c| c.remote.is_some() && !c.left).map(|c| (c.car.x, c.car.z)).collect();
         let n = humans.len().max(1); let (rate, beat) = if n <= 4 { (20.0f32, 0.5f32) } else if n <= 8 { (12.0, 0.6) } else { (8.0, 0.75) };
         let base = smooth::Thresholds::default(); let mut batch: Vec<Vec<u8>> = Vec::new();
-        let list: Vec<(usize, CarSnap, f32)> = self.game.race.cars.iter().filter(|c| c.is_ai()).filter_map(|c| c.bot.map(|b| (b as usize, snap_of(&c.car, c.epoch), humans.iter().map(|h| (h.0 - c.car.x).hypot(h.1 - c.car.z) as f32).fold(1e9f32, f32::min)))).collect();
+        // with their drivers' inputs when every player's build predicts from them (the phones then run the physics on)
+        let phys = !self.players.is_empty() && self.players.iter().all(|p| self.caps.get(&p.id).map(|c| c & proto::CAP_PHYS != 0).unwrap_or(false));
+        let ai_ph = smooth::Phys { world: w, obs: &self.obs, tune: race::ai_tune(&self.game.base_tune, 0.0) };
+        let ctl = |i: &crate::physics::Input| if phys { Some(proto::Ctl { steer: i.steer as f32, throttle: i.throttle as f32, brake: i.brake as f32, hb: i.hb }) } else { None };
+        let list: Vec<(usize, CarSnap, f32)> = self.game.race.cars.iter().filter(|c| c.is_ai()).filter_map(|c| c.bot.map(|b| (b as usize, CarSnap { ctl: ctl(&c.inp), ..snap_of(&c.car, c.epoch) }, humans.iter().map(|h| (h.0 - c.car.x).hypot(h.1 - c.car.z) as f32).fold(1e9f32, f32::min)))).collect();
         for (k, mut c, dist) in list {
             if k >= self.bots.len() { continue; }
             c.t = t; c.a = self.bots[k].policy.accel(c.u, DT as f32);
             let (thr, rate, beat) = smooth::relevance(base, rate, beat, dist);
-            let bo = &mut self.bots[k]; if !bo.policy.due(&c, gr, &thr, rate, beat) { continue; }
+            let bo = &mut self.bots[k]; if !bo.policy.due(&c, gr, if phys { Some(&ai_ph) } else { None }, &thr, rate, beat) { continue; }
             bo.seq = bo.seq.wrapping_add(1); let b = proto::bot3(SERVER_ID, bo.seq, k as u8, &c);
             if let Some((_, _, _, mut q)) = proto::read_car2(&b) { q.t = t; bo.policy.sent = Some(q); }
             batch.push(b);
@@ -207,7 +211,7 @@ fn snap_of(c: &Car, epoch: u8) -> CarSnap {
     CarSnap { t: 0.0, x: c.x as f32, y: c.y as f32, z: c.z as f32, h: c.h as f32, vx: c.vx as f32, vy: c.vy as f32, vz: c.vz as f32, r: c.r as f32, pitch: c.pitch as f32, roll: c.roll as f32,
         steer: c.steer as f32, u: c.u as f32, gear: c.gear as i8, rpm: c.rpm.clamp(0.0, 65000.0) as u16, d: [c.wh[0].d as f32, c.wh[1].d as f32, c.wh[2].d as f32, c.wh[3].d as f32],
         ang: [c.wh[0].ang as f32, c.wh[1].ang as f32, c.wh[2].ang as f32, c.wh[3].ang as f32],
-        flags: smooth::with_epoch(if c.contacts == 0.0 && c.air_t > 0.06 { smooth::AIR } else { 0 }, epoch), a: 0.0 }
+        flags: smooth::with_epoch(if c.contacts == 0.0 && c.air_t > 0.06 { smooth::AIR } else { 0 }, epoch), a: 0.0, ctl: None }
 }
 fn apply(c: &mut Car, s: &CarSnap, dt: f64) {
     c.x = s.x as f64; c.y = s.y as f64; c.z = s.z as f64; c.h = s.h as f64; c.vx = s.vx as f64; c.vy = s.vy as f64; c.vz = s.vz as f64; c.r = s.r as f64;

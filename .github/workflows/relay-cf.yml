@@ -2,6 +2,8 @@ name: Relay (Cloudflare)
 
 # Deploys relay-cf/ to Cloudflare Workers (free plan). Needs the repository secrets CLOUDFLARE_API_TOKEN and
 # CLOUDFLARE_ACCOUNT_ID. The relay ends up at https://fogwood-relay.<your workers.dev subdomain>.workers.dev
+# TURN for browser links that can't go direct: the first deploy creates a Cloudflare Realtime TURN key with that same token
+# (it needs the Realtime / Calls edit permission) and keeps it in the worker's secrets, never in the repository or the logs.
 # Its AI cars are the game's own race code (rust/src/server.rs), built here into relay-cf/sim through WebAssembly, so the
 # relay is deployed again whenever that code changes.
 on:
@@ -53,3 +55,24 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: relay-cf
+      - name: TURN key (created once, kept in the worker's secrets)
+        if: env.CF_TOKEN != ''
+        working-directory: relay-cf
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if npx --yes wrangler@4 secret list --format json 2>/dev/null | grep -q '"TURN_KEY_ID"'; then echo "TURN key already in place"; exit 0; fi
+          r=$(curl -s -X POST "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/calls/turn_keys" \
+                -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json" --data '{"name":"fogwood"}')
+          if [ "$(echo "$r" | jq -r .success)" != "true" ]; then
+            echo "::warning::No TURN key: $(echo "$r" | jq -c '[.errors[]? | {code, message}]')"; exit 0; fi
+          echo "::add-mask::$(echo "$r" | jq -r .result.key)"
+          echo "$r" | jq -r .result.uid | npx --yes wrangler@4 secret put TURN_KEY_ID >/dev/null
+          echo "$r" | jq -r .result.key | npx --yes wrangler@4 secret put TURN_KEY_TOKEN >/dev/null
+          echo "TURN key created and stored in the worker"
+      - name: TURN answers
+        if: env.CF_TOKEN != ''
+        run: |
+          sleep 5
+          curl -s -H "Origin: https://adrienby.github.io" https://fogwood-relay.adrien-paul-bonnay.workers.dev/turn | jq -c '[.iceServers[] | {urls: (.urls | length), auth: (.credential != null)}]'

@@ -23,7 +23,7 @@ fn wrap(a: f64) -> f64 { let t = std::f64::consts::TAU; let a = a.rem_euclid(t);
 fn snap_of(c: &Car) -> CarSnap {
     CarSnap { t: 0.0, x: c.x as f32, y: c.y as f32, z: c.z as f32, h: c.h as f32, vx: c.vx as f32, vy: c.vy as f32, vz: c.vz as f32, r: c.r as f32, pitch: c.pitch as f32, roll: c.roll as f32,
         steer: c.steer as f32, u: c.u as f32, gear: c.gear as i8, rpm: c.rpm.clamp(0.0, 65000.0) as u16, d: [c.wh[0].d as f32, c.wh[1].d as f32, c.wh[2].d as f32, c.wh[3].d as f32],
-        ang: [0.0; 4], flags: if c.contacts == 0.0 && c.air_t > 0.06 { smooth::AIR } else { 0 }, a: 0.0 }
+        ang: [0.0; 4], flags: if c.contacts == 0.0 && c.air_t > 0.06 { smooth::AIR } else { 0 }, a: 0.0, ctl: None }
 }
 
 // ---- the netcode as it was (v1), for comparison
@@ -86,7 +86,7 @@ fn main() {
         let mut car = Car::new(); let p0 = path[0]; let p1 = path[1];
         car.x = p0.0; car.z = p0.1; car.h = (p1.0 - p0.0).atan2(p1.1 - p0.1); car.gear = 1.0; car.rpm = 900.0; car.y = w.height(car.x, car.z) + 0.075;
         for wh in car.wh.iter_mut() { wh.comp = 0.135; wh.d = 0.075; wh.fz = 2900.0; }
-        let n = (secs / dt) as usize; let mut truth: Vec<Car> = Vec::with_capacity(n); let mut rng = Rng(0x9E3779B97F4A7C15 ^ mid as u64);
+        let n = (secs / dt) as usize; let mut truth: Vec<Car> = Vec::with_capacity(n); let mut inps: Vec<Input> = Vec::with_capacity(n); let mut rng = Rng(0x9E3779B97F4A7C15 ^ mid as u64);
         let mut wob = 0.0;
         for f in 0..n {
             let i = fogwood_core::game::path_idx(w, car.x, car.z); let u = car.u.max(0.0); let ld = 6.0 + u * 0.38; let k = (i + ld as usize) % np;
@@ -97,11 +97,13 @@ fn main() {
             let delta = wrap(vh - car.h) + (2.0 * 2.5 * al.sin() / ld).atan() - (car.r - r_want) * 0.12 + wob;
             let vt = vplan[(i + 4) % np] * (0.97 + 0.06 * ((f as f64) * 0.01).sin());
             let inp = Input { steer: (delta / lock_k).clamp(-1.0, 1.0), throttle: ((vt - u) * 0.6).clamp(0.0, 1.0), brake: ((u - vt - 0.8) * 0.5).clamp(0.0, 1.0), hb: false };
-            car.update(w, &e.obstacles, &tune, dt, &inp); truth.push(car);
+            truth.push(car); inps.push(inp); car.update(w, &e.obstacles, &tune, dt, &inp);
             if std::env::var("DRV").is_ok() && f % 120 == 0 { eprintln!("t={:.0} i={} u={:.1} vt={:.1} pd={:.1} imp={:.1} st={:.2}", f as f64 * dt, i, car.u, vt, w.path_dist(car.x, car.z), car.impact, inp.steer); }
         }
-        for ver in ["v1", "now"] {
+        for ver in ["v1", "now", "phys"] {
             let mut net_rng = Rng(12345); let v1 = ver == "v1";
+            // phys: states carry the inputs, the car is predicted with the physics (both sides)
+            let pctx = smooth::Phys { world: w, obs: &e.obstacles, tune }; let pc = if ver == "phys" { Some(&pctx) } else { None };
             // send: (arrival, seq, bytes)
             let mut flight: Vec<(f64, Vec<Vec<u8>>)> = Vec::new(); let red = env("RED", 0.0) > 0.0 && !v1; let repeat = env("REPEAT", 0.0) / 1000.0; let dual = env("DUAL", 0.0) > 0.0 && !v1; let mut last_pkt: Option<(f64, Vec<u8>)> = None; let mut repeated = true; let mut tcp_last2 = 0.0f64; let hdr = env("HDR", -1.0); let mut pol = Policy::default(); let mut thr = Thresholds::default(); if let Ok(v) = std::env::var("THR") { let q: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect(); thr.pos = q[0]; thr.head = q[1]; thr.speed = q[2]; if q.len() > 3 { thr.height = q[3]; thr.body = q[4]; } } let mut v1s = V1::default();
             let mut seq = 0u8; let mut tcp_last = 0.0f64; let mut stamp = smooth::ViewClock::default(); let (mut pkts, mut bytes) = (0usize, 0usize);
@@ -111,7 +113,8 @@ fn main() {
                 // the sender's clock is read at a varying moment of each frame (STAMPJIT); the current netcode stamps on a
                 // vsync-paced clock locked to it instead
                 let t = f as f64 * dt; let mut s = snap_of(c); let raw = t + net_rng.f() * stampjit; s.t = if v1 || std::env::var("RAWSTAMP").is_ok() { raw } else { stamp.advance(raw, dt) };
-                let send = if v1 { v1s.due(&s) } else { s.a = pol.accel(s.u, dt as f32); pol.due(&s, g, &thr, rate, beat) };
+                if pc.is_some() { let i = &inps[f]; s.ctl = Some(proto::Ctl { steer: i.steer as f32, throttle: i.throttle as f32, brake: i.brake as f32, hb: i.hb }); }
+                let send = if v1 { v1s.due(&s) } else { s.a = pol.accel(s.u, dt as f32); pol.due(&s, g, pc, &thr, rate, beat) };
                 if !send {
                     // a repeat of the last state, once, when nothing new followed it within REPEAT
                     if repeat > 0.0 && !v1 && !repeated { if let Some((lt, lb)) = &last_pkt { if t - lt >= repeat { repeated = true; let b = lb.clone();
@@ -145,7 +148,7 @@ fn main() {
                 }
                 let s = if v1 { v1r.sample(tick) } else {
                     let t = view.advance(tick, dt);
-                    tr.sample(t, g) };
+                    tr.sample(t, g, pc) };
                 // v1 drew the received y as it was (no terrain prediction)
                 shown.push(s.unwrap_or_default());
             }

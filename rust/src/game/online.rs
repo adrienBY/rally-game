@@ -22,7 +22,7 @@ fn snap_of(c: &Car, epoch: u8) -> CarSnap {
         steer: c.steer as f32, u: c.u as f32, gear: c.gear as i8, rpm: c.rpm.clamp(0.0, 65000.0) as u16, d: [c.wh[0].d as f32, c.wh[1].d as f32, c.wh[2].d as f32, c.wh[3].d as f32],
         ang: [c.wh[0].ang as f32, c.wh[1].ang as f32, c.wh[2].ang as f32, c.wh[3].ang as f32],
         // airborne for more than a moment: receivers fly the car on a ballistic arc instead of gluing it to the ground
-        flags: net::smooth::with_epoch(if c.contacts == 0.0 && c.air_t > 0.06 { net::smooth::AIR } else { 0 }, epoch), a: 0.0 }
+        flags: net::smooth::with_epoch(if c.contacts == 0.0 && c.air_t > 0.06 { net::smooth::AIR } else { 0 }, epoch), a: 0.0, ctl: None }
 }
 fn apply(c: &mut Car, s: &CarSnap, w: &World, dt: f64) {
     c.x = s.x as f64; c.y = s.y as f64; c.z = s.z as f64; c.h = s.h as f64; c.vx = s.vx as f64; c.vy = s.vy as f64; c.vz = s.vz as f64; c.r = s.r as f64;
@@ -36,7 +36,7 @@ impl Game {
     pub fn online_open(&self) -> bool { self.ps.online_ui != OnlineUi::Closed }
 
     /// network work for this frame, the start when it arrives, and the other players' cars (before the race step)
-    pub(crate) fn online_tick(&mut self, w: &World, dt: f64) {
+    pub(crate) fn online_tick(&mut self, w: &World, obs: &crate::physics::Obstacles, dt: f64) {
         // the open-rooms list is fetched while the room screens are up
         if matches!(self.ps.online_ui, OnlineUi::Menu | OnlineUi::Rooms) { net::lobby::open(); net::lobby::poll(); } else { net::lobby::close(); }
         if !net::active() { return; }
@@ -59,7 +59,11 @@ impl Game {
                 if std::env::var("FW_DEBUG").is_ok() { eprintln!("relay AI cars silent: the host drives them"); } }
         }
         if self.race.online && self.state == State::Drive {
-            let mine = snap_of(&self.car, self.race.epoch);
+            // our state goes out with what we are doing with the controls: the other phones run the car physics on from it
+            // (not in tile fall: holes open under the cars there)
+            let ctl = |i: &crate::physics::Input| net::proto::Ctl { steer: i.steer as f32, throttle: i.throttle as f32, brake: i.brake as f32, hb: i.hb };
+            let phys = !self.tf.on;
+            let mine = net::proto::CarSnap { ctl: if phys { Some(ctl(&self.last_inp)) } else { None }, ..snap_of(&self.car, self.race.epoch) };
             let ids: Vec<(usize, u32)> = self.race.cars.iter().enumerate().filter_map(|(k, c)| c.remote.map(|id| (k, id))).collect();
             // both phones predict cars over the same terrain (the stage grids are identical everywhere)
             // (tile fall: a flat plane at the arena's top, so a car dropping through a hole stays smooth)
@@ -79,14 +83,18 @@ impl Game {
             if std::env::var("FW_DEBUG").is_ok() { for (id, by, d, imp) in &sum { eprintln!("hit-out t={:.2} to {:08x} by {} dv=({:.2},{:.2}) dr={:.2} imp={:.2}", self.race.t, id, by, d[0], d[1], d[2], imp); } }
             // host: our AI cars go out right after our own car (closer than 30 m to a player: more precisely)
             let humans: Vec<(f64, f64)> = self.race.cars.iter().enumerate().filter(|(_, c)| c.bot.is_none() && !c.left).map(|(k, c)| if k == self.race.player { (self.car.x, self.car.z) } else { (c.car.x, c.car.z) }).collect();
-            let bots_out: Vec<(usize, CarSnap, f32)> = self.race.cars.iter().filter(|c| c.is_ai()).filter_map(|c| c.bot.map(|b| (b as usize, snap_of(&c.car, c.epoch), humans.iter().map(|h| (h.0 - c.car.x).hypot(h.1 - c.car.z) as f32).fold(1e9f32, f32::min)))).collect();
+            let bots_out: Vec<(usize, CarSnap, f32)> = self.race.cars.iter().filter(|c| c.is_ai()).filter_map(|c| c.bot.map(|b| (b as usize, CarSnap { ctl: if phys { Some(ctl(&c.inp)) } else { None }, ..snap_of(&c.car, c.epoch) }, humans.iter().map(|h| (h.0 - c.car.x).hypot(h.1 - c.car.z) as f32).fold(1e9f32, f32::min)))).collect();
+            // the physics each car is predicted with: the stage, and its tune (a player's car, or an AI car's)
+            let ph = |tune| net::smooth::Phys { world: w, obs, tune };
+            let me_ph = ph(self.tune); let ai_ph = ph(race::ai_tune(&self.base_tune, 0.0));
+            let their_ph: Vec<net::smooth::Phys> = ids.iter().map(|(k, _)| { let c = &self.race.cars[*k]; ph(if c.bot.is_some() { race::ai_tune(&self.base_tune, 0.0) } else { super::cars::tune_for(&self.base_tune, c.model) }) }).collect();
             let (snaps, owned, incoming, bot_in) = net::with(|s| {
                 for (id, by, d, imp) in &sum { s.bump(*id, *by, d.map(|v| v as f32), *imp as f32); }
-                for (id, n, _) in &near { s.set_near(*id, *n); } s.send_car(mine, dt, g, nearest);
-                for (k, sn, nr) in &bots_out { s.send_bot(*k, *sn, dt, g, *nr); }
+                for (id, n, _) in &near { s.set_near(*id, *n); } s.send_car(mine, dt, g, if phys { Some(&me_ph) } else { None }, nearest);
+                for (k, sn, nr) in &bots_out { s.send_bot(*k, *sn, dt, g, if phys { Some(&ai_ph) } else { None }, *nr); }
                 s.flush();
                 s.advance_view(dt);
-                (ids.iter().map(|(k, id)| (*k, s.remote(*id, g))).collect::<Vec<_>>(), ids.iter().map(|(k, id)| (*k, s.owned(*id), s.horizon(*id))).collect::<Vec<_>>(), s.take_hits(), s.take_bot_hits())
+                (ids.iter().zip(their_ph.iter()).map(|((k, id), p)| (*k, s.remote(*id, g, if phys { Some(p) } else { None }))).collect::<Vec<_>>(), ids.iter().map(|(k, id)| (*k, s.owned(*id), s.horizon(*id))).collect::<Vec<_>>(), s.take_hits(), s.take_bot_hits())
             }).unwrap_or_default();
             for (k, sn) in snaps { if let Some(sn) = sn { let mut c = self.race.cars[k].car; apply(&mut c, &sn, w, dt); self.race.cars[k].car = c; } }
             for (k, o, h) in owned { self.race.cars[k].owned = o; self.race.cars[k].horizon = h; }

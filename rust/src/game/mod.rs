@@ -152,6 +152,8 @@ pub struct Game {
     pub rg_cols: Vec<Vec<f32>>, crash_flip: bool, crash_dt: f64,
     /// tools only: a camera placed from outside (eye, target, fov) and a fixed pixel height
     pub cam_ovr: Option<([f64; 3], [f64; 3], f64)>, pub pix_h: Option<f64>, pub inp_ovr: Option<Input>,
+    /// what drove our car this frame (it travels with our online states)
+    pub last_inp: Input,
     /// the relay server's race: the host's clock, set from outside (instead of the online session's)
     pub race_clock: Option<f64>,
     /// prism waves: run on the game clock instead of the wall clock (headless runs faster than real time); the heaving deck meshes
@@ -218,7 +220,7 @@ impl Game {
         let race = Race::new(&rt, &ps);
         let ncull = rt.cull.len(); let nglit = rt.glit.len();
         let mut g = Game {
-            np, snow: mid == 1, can: mid == 2, lak: mid == 3, tou: mid == 5, riv: mid == 6, pri: mid == 7, pri_last: None, vol: mid == 8, volc_tp: -1.0, tf: Default::default(), rg_cols: Vec::new(), cam_ovr: None, pix_h: None, inp_ovr: None, race_clock: None, crash_flip: false, crash_dt: 0.0, wave_sim: false, wave_t0: 0.0, wave_mesh: Vec::new(), wave_tab: Vec::new(),
+            np, snow: mid == 1, can: mid == 2, lak: mid == 3, tou: mid == 5, riv: mid == 6, pri: mid == 7, pri_last: None, vol: mid == 8, volc_tp: -1.0, tf: Default::default(), rg_cols: Vec::new(), cam_ovr: None, pix_h: None, inp_ovr: None, last_inp: Input::default(), race_clock: None, crash_flip: false, crash_dt: 0.0, wave_sim: false, wave_t0: 0.0, wave_mesh: Vec::new(), wave_tab: Vec::new(),
             tune: cars::tune_for(&Tune::from_slice(&tv), ps.car), base_tune: Tune::from_slice(&tv), gar: Default::default(), car_vis: None, paint_vis: None, menu: menu::fresh(), crash: crash::Crash::new(), cam_follow, car: Car::new(), rpm_shown: 900.0, shake: 0.0, car_hit: 0.0, prev_throttle: 0.0,
             state: State::Title, g_t: 0.0, lap: 1, lap_start: 0.0, best, flags: [false; 3], last_idx: 0, msg: String::new(), msg_t: 0.0, wrong_t: 0.0, started: false, go: 0.0,
             cam: CamState { y: 0.0, h: 0.0, init: false, mode: ps.cam_mode as i32, fov: 56.0, lag: 0.0, cp: None, cr: None, shot: -1, cut_t: 0.0, passed: 0.0, anchor: [0.0; 3], target: 0, side: 1.0 },
@@ -477,7 +479,7 @@ impl Game {
         } else if self.gar.open || (self.race.demo && self.go > 0.9) { Input { steer: 0.0, throttle: 0.0, brake: 0.0, hb: true } } else { self.ai_input(w) };
         let mut tp = web_time::Instant::now(); let mut prof = [0f32; 8];
         macro_rules! lap { ($k:expr) => {{ let n = web_time::Instant::now(); prof[$k] += (n - tp).as_secs_f32() * 1000.0; tp = n; }} }
-        self.online_tick(w, dt);
+        self.last_inp = inp; self.online_tick(w, obs, dt);
         if self.tf.on && !self.race.on { tilefall::stop(self, w, Some(&mut *r)); }
         self.garage_step(w, dt);
         // the menu's attract race: you and five rivals, AI at every wheel, round and round behind the menu
