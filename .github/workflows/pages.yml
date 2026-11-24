@@ -18,11 +18,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -47,5 +44,14 @@ jobs:
       - uses: actions/upload-pages-artifact@v3
         with:
           path: web/dist-web
+  # its own job: deploying in the job that uploaded the build sometimes found no artifact yet ("No artifacts named
+  # github-pages"), the artifact list lagging behind the upload
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - id: deployment
         uses: actions/deploy-pages@v4
