@@ -11,6 +11,11 @@ on:
     branches: [main]
     paths: ["relay-cf/**", ".github/workflows/relay-cf.yml", "rust/src/**", "rust/simwasm/**", "rust/Cargo.toml"]
   workflow_dispatch:
+    inputs:
+      turn_reset:
+        description: "Make a new TURN key (replaces the stored one)"
+        type: boolean
+        default: false
 
 jobs:
   deploy:
@@ -62,17 +67,23 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          if npx --yes wrangler@4 secret list --format json 2>/dev/null | grep -q '"TURN_KEY_ID"'; then echo "TURN key already in place"; exit 0; fi
+          API="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/calls/turn_keys"; AUTH="Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+          if [ "${{ inputs.turn_reset }}" != "true" ] && npx --yes wrangler@4 secret list --format json 2>/dev/null | grep -q '"TURN_KEY_ID"'; then echo "TURN key already in place"; exit 0; fi
+          for old in $(curl -s "$API" -H "$AUTH" | jq -r '.result[]? | select(.name == "fogwood") | .uid'); do
+            curl -s -X DELETE "$API/$old" -H "$AUTH" | jq -c '{deleted_old_key: .success}'; done
           r=$(curl -s -X POST "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/calls/turn_keys" \
                 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json" --data '{"name":"fogwood"}')
           if [ "$(echo "$r" | jq -r .success)" != "true" ]; then
             echo "::warning::No TURN key: $(echo "$r" | jq -c '[.errors[]? | {code, message}]')"; exit 0; fi
-          echo "::add-mask::$(echo "$r" | jq -r .result.key)"
-          printf %s "$(echo "$r" | jq -r .result.uid)" | npx --yes wrangler@4 secret put TURN_KEY_ID >/dev/null
-          printf %s "$(echo "$r" | jq -r .result.key)" | npx --yes wrangler@4 secret put TURN_KEY_TOKEN >/dev/null
+          KID=$(echo "$r" | jq -r .result.uid); KEY=$(echo "$r" | jq -r '.result.key // .result.secret'); echo "::add-mask::$KEY"
+          echo "new key: id ${#KID} chars, token ${#KEY} chars"
+          code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "https://rtc.live.cloudflare.com/v1/turn/keys/$KID/credentials/generate-ice-servers" \
+                   -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" --data '{"ttl":600}'); echo "credentials straight from the new key: HTTP $code"
+          printf %s "$KID" | npx --yes wrangler@4 secret put TURN_KEY_ID >/dev/null
+          printf %s "$KEY" | npx --yes wrangler@4 secret put TURN_KEY_TOKEN >/dev/null
           echo "TURN key created and stored in the worker"
       - name: TURN answers
         if: env.CF_TOKEN != ''
         run: |
-          sleep 5
+          sleep 15
           curl -s -H "Origin: https://adrienby.github.io" https://fogwood-relay.adrien-paul-bonnay.workers.dev/turn | jq -c '{n: [.iceServers[] | {urls: (.urls | length), auth: (.credential != null)}], why}'
