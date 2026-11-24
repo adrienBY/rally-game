@@ -193,7 +193,7 @@ pub fn rt_frame(dt: f64) -> String {
                         match bench.write(&dir) { Some(p) => { g.events.push(format!("bench {}", p)); g.flash_msg("BENCHMARK SAVED", 2.0); } None => g.flash_msg("BENCHMARK FAILED", 2.0) } }
                     else if toggle && b.is_none() {
                         let header = vec![format!("Fogwood Rally benchmark, map {}, {}", g.rt.map, if g.race.on { "race" } else { "time trial" }), format!("device: {}", device),
-                            format!("gpu: {} (timer queries: {})", r.gl_renderer(), if r.has_timer { "yes" } else { "no" }), format!("surface {}x{}, render {}x{}, pixel setting {}", size.0, size.1, g.lw, g.lh, g.ps.pix_idx)];
+                            format!("gpu: {} (timer queries: {})", r.gl_renderer(), if r.has_timer { "yes" } else { "no" }), format!("surface {}x{}, render {}x{}, hud {}x{}, pixel setting {}", size.0, size.1, g.rw, g.rh, g.lw, g.lh, g.ps.pix_idx)];
                         *b = Some(Bench { start: web_time::Instant::now(), last: None, rows: Vec::with_capacity(4000), header }); r.timing = true; g.flash_msg("RECORDING 60 S", 1.5); }
                     if let Some(x) = b.as_ref() { g.bench_secs = Some((BENCH_SECS - x.start.elapsed().as_secs_f64()).max(0.0).ceil() as u32); }
                 });
@@ -204,7 +204,7 @@ pub fn rt_frame(dt: f64) -> String {
                     let s = &g.car;
                     b.rows.push(Row { id: r.frame_id, t: (t_frame - b.start).as_secs_f32() * 1000.0, dt: (dt * 1000.0) as f32, interval, total: (now - t_frame).as_secs_f32() * 1000.0, tick: tick_ms, prof: g.prof, draw: r.draw_cpu_ms,
                         gpu: (-1.0, -1.0), calls: r.stats.0, tris: r.stats.1, state: (g.state == crate::game::State::Drive) as u8, kmh: (s.u * 3.6) as f32, race: g.race.on as u8,
-                        rivals: g.race.cars.len().saturating_sub(1) as u8, dust: g.d_live as u16, hud_up: g.hud_uploaded as u8, lw: g.lw, lh: g.lh, thermal: thermal.0, batt: thermal.1 });
+                        rivals: g.race.cars.len().saturating_sub(1) as u8, dust: g.d_live as u16, hud_up: g.hud_uploaded as u8, lw: g.rw, lh: g.rh, thermal: thermal.0, batt: thermal.1 });
                     for (id, a, c) in r.gpu_results.drain(..) { if let Some(row) = b.rows.iter_mut().rev().take(16).find(|x| x.id == id) { row.gpu = (a, c); } }
                 } });
                 return;

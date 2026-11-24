@@ -33,6 +33,8 @@ pub const VEH_L: f64 = 1.22 - -1.28;
 const LOD1: f64 = 150.0; const LOD2: f64 = 300.0;
 const REST: f64 = 0.21; const STOP: f64 = 0.33;
 pub(crate) const PIX: [f64; 3] = [170.0, 220.0, 340.0];
+/// the HUD's canvas height (short side) at every pixel setting but CHUNKY (half): HUD pixels are 1/170 of it either way
+const HUD_PIX: f64 = 340.0;
 /// one heaving prism deck mesh: its object, working positions, the vertices a wave reaches with their rest height and road position
 struct WaveMesh { id: usize, pos: Vec<f32>, live: Vec<u32>, rest_y: Vec<f32>, s: Vec<f32> }
 pub const MAPS: [&str; 8] = ["forest", "snow", "canyon", "lakes", "touge", "riviera", "prism", "ember"];
@@ -158,7 +160,8 @@ pub struct Game {
     pub state: State, pub g_t: f64, pub lap: i32, pub lap_start: f64, pub best: Option<f64>, pub flags: [bool; 3], pub last_idx: usize,
     pub msg: String, pub msg_t: f64, pub wrong_t: f64, pub started: bool, pub go: f64,
     pub cam: CamState, pub cam_pos: V3, pub cam_rot: M, pub fov_now: f64, pub view: M, pub proj: M, pub w: f64, pub h: f64,
-    pub lw: i32, pub lh: i32, pub u: f64, pub inset: [f64; 4], pub inset_px: [f64; 4],
+    /// the HUD's resolution (buttons, menus, text: `u` its pixel) and the world's (the pixel-size setting): see `resize`
+    pub lw: i32, pub lh: i32, pub rw: i32, pub rh: i32, pub u: f64, pub inset: [f64; 4], pub inset_px: [f64; 4],
     pub race: Race, pub ui: HashMap<&'static str, Rect>, touches: HashMap<i32, &'static str>,
     pub time: f64, pub wind: f64, pub rng: Rng, pub events: Vec<String>, pub ps: Persist, pub loading: Option<String>,
     // scene
@@ -219,7 +222,7 @@ impl Game {
             tune: cars::tune_for(&Tune::from_slice(&tv), ps.car), base_tune: Tune::from_slice(&tv), gar: Default::default(), car_vis: None, paint_vis: None, menu: menu::fresh(), crash: crash::Crash::new(), cam_follow, car: Car::new(), rpm_shown: 900.0, shake: 0.0, car_hit: 0.0, prev_throttle: 0.0,
             state: State::Title, g_t: 0.0, lap: 1, lap_start: 0.0, best, flags: [false; 3], last_idx: 0, msg: String::new(), msg_t: 0.0, wrong_t: 0.0, started: false, go: 0.0,
             cam: CamState { y: 0.0, h: 0.0, init: false, mode: ps.cam_mode as i32, fov: 56.0, lag: 0.0, cp: None, cr: None, shot: -1, cut_t: 0.0, passed: 0.0, anchor: [0.0; 3], target: 0, side: 1.0 },
-            cam_pos: [0.0; 3], cam_rot: ID, fov_now: 56.0, view: ID, proj: ID, w: 1280.0, h: 720.0, lw: 320, lh: 180, u: 1.0, inset: [0.0; 4], inset_px: [0.0; 4],
+            cam_pos: [0.0; 3], cam_rot: ID, fov_now: 56.0, view: ID, proj: ID, w: 1280.0, h: 720.0, lw: 320, lh: 180, rw: 320, rh: 180, u: 1.0, inset: [0.0; 4], inset_px: [0.0; 4],
             race, ui: HashMap::new(), touches: HashMap::new(), time: 0.0, wind: 0.5, rng: Rng(0x9E3779B97F4A7C15 ^ (mid as u64 + 1)), events: Vec::new(), ps, loading: None,
             node_base, node_world: vec![ID; rt.nodes.len()], obj_last: HashMap::new(), named, cull_vis: vec![true; ncull], glit_op: vec![-1.0; nglit],
             dust: dust::Dust::new(dn, 0x5EED ^ mid as u64), dust_env: dust::Env { tarmac: mid == 5 || mid == 6 || mid == 7, snow: mid == 1, sand: mid == 2, lush: mid == 0, alpha: if mid == 5 || mid == 6 || mid == 7 { 0.16 } else if mid == 1 { 0.14 } else if mid == 2 { 0.17 } else if mid == 3 { 0.17 } else { 0.15 },
@@ -269,7 +272,14 @@ impl Game {
     // ---------------- screen ----------------
     pub fn resize(&mut self, w: f64, h: f64, inset_px: [f64; 4]) {
         self.w = w.max(1.0); self.h = h.max(1.0); self.inset_px = inset_px;
-        let s = self.w.min(self.h) / self.pix_h.unwrap_or(PIX[self.ps.pix_idx]);
+        // the world: as chunky as the pixel-size setting asks
+        let pix = self.pix_h.unwrap_or(PIX[self.ps.pix_idx]); let s = self.w.min(self.h) / pix;
+        self.rw = ((self.w / s + 0.5).floor() as i32).max(120); self.rh = ((self.h / s + 0.5).floor() as i32).max(90);
+        // the HUD: its own resolution, so buttons and text keep one size on screen whatever the setting (a HUD pixel `u`
+        // is a whole number of canvas pixels: tied to the world's, CLASSIC drew every button a quarter smaller, and phones
+        // that drop to CLASSIC by themselves when slow, iPhones at 30 fps, got small buttons by default). CHUNKY keeps its
+        // chunkier HUD at the same size
+        let hp = if pix < HUD_PIX { HUD_PIX / 2.0 } else { HUD_PIX }; let s = self.w.min(self.h) / hp;
         self.lw = ((self.w / s + 0.5).floor() as i32).max(120); self.lh = ((self.h / s + 0.5).floor() as i32).max(90);
         self.u = ((self.lh as f64).min(self.lw as f64 * 0.56) / 150.0).floor().max(1.0);
         let k = self.lw as f64 / self.w; for i in 0..4 { self.inset[i] = inset_px[i] * k; }
@@ -788,14 +798,14 @@ impl Game {
 
     fn write_frame(&mut self, r: &mut Renderer) {
         let fr = &mut r.frame;
-        fr.lw = self.lw; fr.lh = self.lh; fr.view = to_f32(&self.view); fr.proj = to_f32(&self.proj);
+        fr.lw = self.rw; fr.lh = self.rh; fr.view = to_f32(&self.view); fr.proj = to_f32(&self.proj);
         fr.cam = [self.cam_pos[0] as f32, self.cam_pos[1] as f32, self.cam_pos[2] as f32];
         fr.time = self.time as f32; fr.wind = self.wind as f32; fr.sun = [self.sun_uv[0] as f32, self.sun_uv[1] as f32]; fr.sun_vis = if self.ps.rays { self.sun_vis as f32 } else { 0.0 };
         fr.flash = self.flash as f32; fr.speed = (if self.cam.mode == 2 { self.speed_k * 1.1 } else { self.speed_k }) as f32;
-        fr.dust_scale = (self.lh as f64 / (2.0 * (self.fov_now * std::f64::consts::PI / 360.0).tan())) as f32;
+        fr.dust_scale = (self.rh as f64 / (2.0 * (self.fov_now * std::f64::consts::PI / 360.0).tan())) as f32;
         fr.expo = self.expo as f32; fr.dim = (self.dim * self.shade_dim) as f32;
         fr.split_s = [self.rt.split[0], self.rt.split[1], self.rt.split[2]]; fr.split_h = [self.rt.split[3], self.rt.split[4], self.rt.split[5]];
-        fr.texel = [1.0 / self.lw as f32, 1.0 / self.lh as f32]; fr.valid = true;
+        fr.texel = [1.0 / self.rw as f32, 1.0 / self.rh as f32]; fr.valid = true;
         // Ember Peak drives by headlight: your car and the three nearest others in view
         fr.lamp_n = 0;
         if self.rt.map == "ember" {
