@@ -82,6 +82,8 @@ pub struct BotIn { pub track: smooth::Track, last_seq: u8, hit_acc: Option<([f32
 #[derive(Default)]
 struct BotOut { policy: smooth::Policy, seq: u8 }
 impl Peer {
+    /// they said our WebRTC link alone brings them our cars (net::dual: we send them only the thin relay stream)
+    pub fn thinned(&self, now: f64) -> bool { now < self.skip_until }
     pub fn link(&self) -> Link { if self.direct.is_some() || self.rtc_open { Link::Direct } else if self.last_seen > 0.0 { Link::Relay } else { Link::Connecting } }
     fn dup(&mut self, seq: u32) -> bool { if self.seen.contains(&seq) { return true; } self.seen.push_back(seq); if self.seen.len() > 96 { self.seen.pop_front(); } false }
 }

@@ -85,8 +85,9 @@ pub fn web_room() -> u32 { crate::net::with(|s| s.code).unwrap_or(0) }
 /// test hook (the browser end-to-end check drives the page with it): join room `code`, as if its code were typed in
 #[wasm_bindgen]
 pub fn web_test_join(code: u32) { crate::guard::run("join", (), || crate::net::join(code, "WEB", "forest")) }
-/// test hook: each other phone in the room as "id:link:rtc" (link Relay / Direct / Connecting, rtc 1 when a data channel is open)
+/// test hook: each other phone in the room as "id:link:rtc:thin" (link Relay / Direct / Connecting, rtc 1 when a data
+/// channel is open, thin 1 while that phone says our link alone is enough: net::dual)
 #[wasm_bindgen]
 pub fn web_test_net() -> String {
-    crate::guard::run("net", String::new(), || crate::net::with(|s| s.peers.values().map(|p| format!("{:08x}:{:?}:{}", p.id, p.link(), p.rtc_open as u8)).collect::<Vec<_>>().join(" ")).unwrap_or_default())
+    crate::guard::run("net", String::new(), || crate::net::with(|s| { let now = s.now(); s.peers.values().map(|p| format!("{:08x}:{:?}:{}:{}", p.id, p.link(), p.rtc_open as u8, p.thinned(now) as u8)).collect::<Vec<_>>().join(" ") }).unwrap_or_default())
 }
