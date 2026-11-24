@@ -1,0 +1,26 @@
+<!doctype html><meta charset="utf-8"><title>TURN test</title>
+<pre id="out"></pre>
+<script type="module">
+// Two peer connections in this page, allowed to use relayed (TURN) candidates only: if a data channel opens between
+// them, the TURN server works with these credentials. Then ping-pong round trips through it (both ways relayed).
+import { turnServers } from "../fw_rtc.js";
+const out = document.getElementById("out"); const log = (s) => { out.textContent += s + "\n"; };
+const res = window.__res = { relayCands: 0, open: false, openMs: 0, rtts: [], error: "" };
+try {
+  const ice = await turnServers();
+  if (!ice.length) throw new Error("no TURN credentials");
+  const cfg = { iceServers: ice, iceTransportPolicy: new URLSearchParams(location.search).get("policy") || "relay" };
+  const a = new RTCPeerConnection(cfg), b = new RTCPeerConnection(cfg);
+  for (const [p, q] of [[a, b], [b, a]]) p.onicecandidate = (e) => { if (e.candidate) { if (/ typ relay/.test(e.candidate.candidate)) res.relayCands++; q.addIceCandidate(e.candidate).catch(() => {}); } };
+  const da = a.createDataChannel("fw", { negotiated: true, id: 0, ordered: false, maxPacketLifeTime: 200 });
+  const db = b.createDataChannel("fw", { negotiated: true, id: 0, ordered: false, maxPacketLifeTime: 200 });
+  db.onmessage = (e) => db.send(e.data);
+  const t0 = performance.now();
+  da.onopen = () => { res.open = true; res.openMs = Math.round(performance.now() - t0); log("open after " + res.openMs + " ms");
+    let k = 0; const sent = new Map();
+    da.onmessage = (e) => { const s = sent.get(e.data); if (s !== undefined) res.rtts.push(Math.round(performance.now() - s)); };
+    const tick = setInterval(() => { if (k >= 40) { clearInterval(tick); return; } const m = "p" + k++; sent.set(m, performance.now()); da.send(m); }, 50); };
+  const o = await a.createOffer(); await a.setLocalDescription(o); await b.setRemoteDescription(o);
+  const an = await b.createAnswer(); await b.setLocalDescription(an); await a.setRemoteDescription(an);
+} catch (e) { res.error = String(e); log("error " + e); }
+</script>
