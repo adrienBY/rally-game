@@ -25,7 +25,7 @@ jobs:
         with:
           workspaces: rust
       - name: Build the probe
-        run: cd rust && cargo build --release --bin sim_probe
+        run: cd rust && cargo build --release --bin sim_probe --bin net_bench
       - name: Race against the relay's AI cars
         env:
           FW_BROKERS: ""
@@ -38,3 +38,18 @@ jobs:
           wait
           echo "== host"; cat host.log; echo "== guest"; cat guest.log
           grep -q "relay drives true silence 0" guest.log && grep -q "relay drives true silence 0" host.log
+      - name: WebRTC signaling through the live relay (two app clients open a data channel; offers travel through the room)
+        env:
+          FW_BROKERS: ""
+          FW_NOSTUN: "1"
+          FW_RTC_ALL: "1"
+          FW_NODIRECT: "1"
+          FW_WSDEBUG: "1"
+        run: |
+          B=rust/target/release/net_bench; rm -f /tmp/rtc_code
+          $B 0 25 /tmp/rtc_code > rtc0.log 2>&1 &
+          sleep 1.5
+          $B 1 22 /tmp/rtc_code > rtc1.log 2>&1
+          wait
+          echo "== 0"; grep -E "rtc:|^P0|shake" rtc0.log; echo "== 1"; grep -E "rtc:|^P1|shake" rtc1.log
+          grep -q "rtc: open with" rtc0.log && grep -q "rtc: open with" rtc1.log
