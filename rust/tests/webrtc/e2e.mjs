@@ -9,6 +9,7 @@ const p = await b.newPage({ viewport: { width: 800, height: 450 } });
 const errs = [];
 p.on("console", (m) => { const t = m.text(); if (m.type() === "error" || /panic|rtc|webrtc/i.test(t)) errs.push(m.type() + ": " + t.slice(0, process.env.FULL ? 4000 : 200)); if (process.env.VERBOSE) console.log("page:", t); });
 p.on("pageerror", (e) => errs.push("pageerror: " + String(e).slice(0, 200)));
+if (process.env.NO_WEBRTC) await p.addInitScript(() => { window.RTCPeerConnection = undefined; });   // a browser without WebRTC
 await p.goto(url);
 const t0 = Date.now();
 await p.waitForFunction(() => window.__fw && typeof window.__fw.web_test_join === "function", null, { timeout: 60000 });
