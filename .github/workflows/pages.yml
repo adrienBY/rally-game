@@ -36,6 +36,13 @@ jobs:
           workspaces: rust
       - name: Build
         run: sh web/build_web.sh
+      - name: Smoke test in headless Chrome (an engine trap freezes the game in the browser)
+        run: |
+          (cd /tmp && npm i --silent --no-save playwright@1.49.1)
+          (cd web/dist-web && python3 -m http.server 8001 --bind 127.0.0.1 &) ; sleep 1
+          PW_MODULES=/tmp/node_modules/ node web/tools/smoke.mjs http://127.0.0.1:8001/index.html "$(which google-chrome)"
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
