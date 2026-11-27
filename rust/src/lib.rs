@@ -1,3 +1,4 @@
+#![recursion_limit = "512"]
 //! Fogwood Rally native core.
 //! * `world`   – stage generation (road distance field, nearest-road index, terrain height)
 //! * `physics` – four-tyre vehicle model with suspension, gearbox and collisions
@@ -14,5 +15,6 @@ pub mod server;
 #[cfg(any(target_os = "android", feature = "jni-host"))]
 mod jni_api;
 pub mod game;
+pub mod stage;
 #[cfg(target_arch = "wasm32")]
 pub mod web_api;

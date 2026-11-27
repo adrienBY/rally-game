@@ -281,7 +281,7 @@ void main() { vUv = vtx * 0.5 + 0.5; gl_Position = vec4(vtx, 0.0, 1.0); }
 pub const POST_FS: &str = r#"#version 300 es
 precision highp float;
 uniform sampler2D tScene; uniform vec2 uSun; uniform float uSunVis; uniform float uTime; uniform float uFlash; uniform float uSpeed; uniform float uExpo; uniform vec3 uSplitS; uniform vec3 uSplitH; uniform vec2 uTexel;
-uniform sampler2D tHud; uniform float uHudOn; uniform sampler2D tRay; uniform float uRayOn;
+uniform sampler2D tRay; uniform float uRayOn;
 in vec2 vUv; out vec4 fragColor;
 const float BAYER[16] = float[16](0., 8., 2., 10., 12., 4., 14., 6., 3., 11., 1., 9., 15., 7., 13., 5.);
 float bayer(vec2 p) { vec2 q = mod(floor(p), 4.0); int i = int(q.x + q.y * 4.0); return BAYER[i] / 16.0 - 0.47; }
@@ -297,7 +297,6 @@ void main() {
   c = (c - 0.5) * 1.08 + 0.5; c *= vec3(1.0, 1.0, 0.97);
   vec2 vv = vUv - 0.5; c *= 1.0 - dot(vv, vv) * (0.5 + uSpeed * 0.7);
   c += vec3(0.25, 0.2, 0.15) * uFlash;
-  if (uHudOn > 0.5) { vec4 h = texture(tHud, vec2(vUv.x, 1.0 - vUv.y)); c = mix(c, h.rgb, h.a); }   // the HUD, drawn at the same resolution, dithered with the scene
   c += bayer(gl_FragCoord.xy) / 26.0;
   c = floor(clamp(c, 0.0, 1.0) * 26.0 + 0.5) / 26.0;
   fragColor = vec4(c, 1.0);
@@ -330,13 +329,32 @@ void main() {
 "#;
 /// Final upscale to the screen ("sharp bilinear"): each low-res pixel stays a flat block, and only the one screen pixel on its border blends with
 /// the neighbour. With a non-integer scale (756 -> 2800 is x3.7), plain nearest makes pixels 3 or 4 wide by turns, so edges jump as things move.
+/// The HUD is laid over here, at screen resolution, from its own canvas: it has its own pixel grid (340 lines whatever the world's pixel
+/// setting), and squeezing it into a coarser world pass (MEDIUM: 220 lines) dropped and doubled rows and columns of every letter. It goes
+/// through the same filter as the scene: the 4x4 ordered dither and 26 levels, on its own pixels.
 pub const UPSCALE_FS: &str = r#"#version 300 es
 precision highp float;
 uniform sampler2D tScene; uniform vec2 uSrc; uniform vec2 uZoom;
+uniform sampler2D tHud; uniform float uHudOn; uniform vec2 uHudSrc; uniform vec2 uHudZoom;
 in vec2 vUv; out vec4 fragColor;
+const float BAYER[16] = float[16](0., 8., 2., 10., 12., 4., 14., 6., 3., 11., 1., 9., 15., 7., 13., 5.);
+float bayer(vec2 p) { vec2 q = mod(floor(p), 4.0); int i = int(q.x + q.y * 4.0); return BAYER[i] / 16.0 - 0.47; }
+vec4 hudPx(vec2 p) { ivec2 q = clamp(ivec2(p), ivec2(0), ivec2(uHudSrc) - 1); vec4 h = texelFetch(tHud, q, 0); return vec4(h.rgb * h.a, h.a); }
 void main() {
   vec2 px = vUv * uSrc, i = floor(px), f = px - i - 0.5, reg = 0.5 - 0.5 / uZoom;
   vec2 g = (f - clamp(f, -reg, reg)) * uZoom + 0.5;
-  fragColor = vec4(texture(tScene, (i + g) / uSrc).rgb, 1.0);
+  vec3 c = texture(tScene, (i + g) / uSrc).rgb;
+  if (uHudOn > 0.5) {
+    // the same sharp-bilinear sampling on the HUD's own grid (premultiplied, so a glyph's edge never picks up the empty pixels' colour)
+    vec2 hp = vec2(vUv.x, 1.0 - vUv.y) * uHudSrc, hi = floor(hp), hf = hp - hi - 0.5, hr = 0.5 - 0.5 / uHudZoom;
+    vec2 s = hi + (hf - clamp(hf, -hr, hr)) * uHudZoom, s0 = floor(s), t = s - s0;
+    vec4 h = mix(mix(hudPx(s0), hudPx(s0 + vec2(1.0, 0.0)), t.x), mix(hudPx(s0 + vec2(0.0, 1.0)), hudPx(s0 + vec2(1.0, 1.0)), t.x), t.y);
+    if (h.a > 0.002) {
+      vec3 m = c * (1.0 - h.a) + h.rgb;
+      m = floor(clamp(m + bayer(hi) / 26.0, 0.0, 1.0) * 26.0 + 0.5) / 26.0;
+      c = m;
+    }
+  }
+  fragColor = vec4(c, 1.0);
 }
 "#;

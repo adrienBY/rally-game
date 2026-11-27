@@ -57,6 +57,12 @@ pub extern "system" fn Java_com_fogwood_rally_NativeCore_audioInit<'l>(_env: JNI
 pub extern "system" fn Java_com_fogwood_rally_NativeCore_audioMessage<'l>(env: JNIEnv<'l>, _c: JClass<'l>, data: JByteArray<'l>) { crate::guard::run("audioMessage", (), || {
     if let Ok(v) = env.convert_byte_array(&data) { fogwood_audio::native::message(&v); }
 }) }
+/// a recording from the app's assets (snd/<name>): decoded natively and handed to the sound engine
+#[no_mangle]
+pub extern "system" fn Java_com_fogwood_rally_NativeCore_audioFile<'l>(mut env: JNIEnv<'l>, _c: JClass<'l>, name: JString<'l>, data: JByteArray<'l>) -> jboolean {
+    let n = s(&mut env, &name); let Ok(v) = env.convert_byte_array(&data) else { return 0 };
+    crate::guard::run("audioFile", 0, || if crate::stage::sound::load(&n, &v) { 1 } else { 0 })
+}
 #[no_mangle]
 pub extern "system" fn Java_com_fogwood_rally_NativeCore_audioRender<'l>(env: JNIEnv<'l>, _c: JClass<'l>, out: JFloatArray<'l>, frames: jint) { crate::guard::run("audioRender", (), || {
     thread_local! { static BUF: std::cell::RefCell<Vec<f32>> = const { std::cell::RefCell::new(Vec::new()) }; }

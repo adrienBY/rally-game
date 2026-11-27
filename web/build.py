@@ -30,18 +30,21 @@ open(D + 'dist/fogwood-rally.html', 'w').write(main)
 open(D + 'dist/fogwood-rally-debug.html', 'w').write(dbg)
 CDN = 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.min.js'
 open(D + '../android/app/src/main/assets/index.html', 'w').write(main.replace(CDN, './three.module.min.js'))
-# browser build of the native game (GitHub Pages): same page, its main script started by web_boot.js once the
-# WebAssembly engine is ready (CI adds fogwood_core.js / fogwood_core_bg.wasm from rust/)
-WEB = D + 'dist-web/'; os.makedirs(WEB, exist_ok=True)
-APPA = D + '../android/app/src/main/assets/'
-web = main.replace(CDN, './three.module.min.js')
-k = web.index('<script type="module">')
-web = web[:k] + '<script type="text/fogwood" id="fwmain">' + web[k + len('<script type="module">'):]
-web = web.replace('</body>', '<script type="module" src="web_boot.js"></script></body>')
-web = web.replace('content="width=device-width, initial-scale=1, viewport-fit=cover"', 'content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"', 1)
-open(WEB + 'index.html', 'w').write(web)
+# browser build of the native game (GitHub Pages): a bare page (canvas, inset probe, web_boot.js); the engine builds everything.
+# The old all-JavaScript game stays beside it as legacy.html for browsers without WebGL2 / WebAssembly.
 import shutil
+WEB = D + 'dist-web/'; os.makedirs(WEB + 'snd', exist_ok=True)
+APPA = D + '../android/app/src/main/assets/'
+legacy = main.replace(CDN, './three.module.min.js')
+open(WEB + 'legacy.html', 'w').write(legacy)
+style = s[s.index('<style>'):s.index('</style>') + len('</style>')]
+open(WEB + 'index.html', 'w').write(HEAD.replace('content="width=device-width, initial-scale=1, viewport-fit=cover"', 'content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"', 1)
+    + '<title>Fogwood Rally</title>' + style + '</head><body><div id="probe"></div><script type="module" src="web_boot.js"></script></body></html>')
 for f in ['three.module.min.js', 'icon-180.png', 'icon-512.png', 'manifest.webmanifest']: shutil.copy(APPA + f, WEB + f)
-shutil.copy(D + 'web_boot.js', WEB + 'web_boot.js')
-shutil.copy(D + 'fw_rtc.js', WEB + 'fw_rtc.js')
+for f in ['web_boot.js', 'fw_rtc.js']: shutil.copy(D + f, WEB + f)
+if os.path.exists(W): shutil.copy(W, WEB + 'fogwood_audio.wasm')
+# the recordings, as files: the app reads them from its assets, the browser fetches them; the engine decodes both
+os.makedirs(APPA + 'snd', exist_ok=True)
+for f in ['wind.mp3', 'birds.mp3', 'engine.wav', 'skid.wav', 'impact.wav']: shutil.copy(D + f, APPA + 'snd/' + f); shutil.copy(D + f, WEB + 'snd/' + f)
+for f in os.listdir(D + 'snd'): shutil.copy(D + 'snd/' + f, APPA + 'snd/' + f); shutil.copy(D + 'snd/' + f, WEB + 'snd/' + f)
 print('built', len(main), 'bytes')

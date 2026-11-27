@@ -51,7 +51,10 @@ pub fn gl_init_ctx(gl: glow::Context) -> bool {
         Ok(r) => { R.with(|c| *c.borrow_mut() = Some(r)); set_status("renderer ready".into()); }
         Err(e) => { set_status(format!("renderer init failed: {e}")); R.with(|c| *c.borrow_mut() = None); }
     }
-    inbox().had_scene
+    // the old context's GPU copy of the scene is gone: build it again (the game keeps running on its world)
+    let had = inbox().had_scene; let cur = crate::stage::current();
+    if had && !cur.is_empty() { crate::stage::request(&cur, true); }
+    false
 }
 pub fn gl_resize(w: i32, h: i32) { inbox().size = (w.max(1), h.max(1)); }
 
@@ -72,7 +75,10 @@ pub fn gl_draw() {
 pub fn rt_init(save_path: &str) -> String {
     inbox().save_path = save_path.to_string();
     let p = Persist::new(save_path); let m = p.saves.get("fogwood-map").unwrap_or("forest").to_string();
-    if crate::game::MAPS.contains(&m.as_str()) { m } else { "forest".into() }
+    let m = if crate::game::MAPS.contains(&m.as_str()) { m } else { "forest".into() };
+    // the stage is built natively from here on (no page): start now, while the app sets up its window and GL
+    crate::stage::request(&m, false);
+    m
 }
 /// pointer events in screen pixels: 0 down, 1 move, 2 up / cancel
 pub fn rt_touch(action: i32, id: i32, x: f32, y: f32) { inbox().touches.push((action, id, x, y)); }
@@ -155,6 +161,7 @@ pub fn rt_frame_guarded(dt: f64) -> String {
 }
 
 pub fn rt_frame(dt: f64) -> String {
+    crate::stage::poll();
     let t_frame = web_time::Instant::now();
     let (scene, rtp, size, touches, back, insets, save_path, thermal, device) = { let mut ib = inbox();
         (ib.scene.take(), ib.rt.take(), ib.size, std::mem::take(&mut ib.touches), std::mem::replace(&mut ib.back, false), ib.insets, ib.save_path.clone(), ib.thermal, ib.device.clone()) }; let bench_tap = std::mem::replace(&mut inbox().bench, false);
@@ -197,7 +204,8 @@ pub fn rt_frame(dt: f64) -> String {
                         *b = Some(Bench { start: web_time::Instant::now(), last: None, rows: Vec::with_capacity(4000), header }); r.timing = true; g.flash_msg("RECORDING 60 S", 1.5); }
                     if let Some(x) = b.as_ref() { g.bench_secs = Some((BENCH_SECS - x.start.elapsed().as_secs_f64()).max(0.0).ceil() as u32); }
                 });
-                for e in g.events.drain(..) { events.push_str(&e); events.push('\n'); }
+                // "map <name>": build that stage (here, natively); everything else is for the app
+                for e in g.events.drain(..) { if let Some(m) = e.strip_prefix("map ") { crate::stage::request(m.trim(), false); continue; } events.push_str(&e); events.push('\n'); }
                 if let Err(e) = unsafe { r.draw(None, size.0, size.1) } { set_status(format!("draw failed: {e}")); }
                 B.with(|bc| { if let Some(b) = bc.borrow_mut().as_mut() {
                     let now = web_time::Instant::now(); let interval = b.last.map(|l| (t_frame - l).as_secs_f32() * 1000.0).unwrap_or(0.0); b.last = Some(t_frame);

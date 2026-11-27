@@ -3,9 +3,9 @@
 Pixel-art rally game (Forest, Snow, Canyon, Lakes, Touge, Riviera, Prism Skyway and Ember Peak stages; time trial or races against five AI rivals) packaged as a native Android app with a custom Rust engine core.
 
 ```
-rust/      fogwood_core: stage generation + vehicle physics in Rust (JNI cdylib)
-android/   Kotlin app: full-screen landscape WebView renderer, bundled game + three.js, JNI bridge
-web/       game source (rally_template.html), audio, build.py
+rust/      fogwood_core: stage builder, game, physics, renderer, audio in Rust (JNI cdylib + wasm)
+android/   Kotlin app: GLSurfaceView + JNI bridge (WebView only as a WebGL fallback)
+web/       legacy three.js game (rally_template.html, fallback + parity oracle), web boot, audio, build.py
 .github/   CI: tests the Rust core, cross-compiles it for arm64/armv7/x86_64, builds and publishes the APK
 ```
 
@@ -59,15 +59,27 @@ through a simulated link and reports how far off and how smooth the other player
 across: how many real touches each victim's phone felt and how late, pushes with no real touch, and how much the other
 car is thrown about on screen around a contact (old netcode vs current).
 
-After editing the game: `python3 web/build.py` (rebuilds `web/dist/*.html` and the app's `assets/index.html`).
+After editing the web side: `python3 web/build.py` (rebuilds `dist-web/`, the legacy fallback page and the app's assets/sounds).
+
+## Stage builder (Rust)
+`rust/src/stage/` builds every stage natively — road, terrain, trees, props, cars, canvas textures (tiny-skia), sky,
+water — and emits the same two packets the page used to send: the scene (`FWS1`, consumed by `render::load_scene`) and
+the runtime handoff (`FRT1`, consumed by `game::rt`). It is an order-exact port of the stage code in `rally_template.html`
+(same seeded random stream, three.js r160 geometry generators, earcut, Canvas2D drawing), so both builds produce the same
+world. Stage-independent textures and the five car liveries are painted once and cached; a stage takes ~50–600 ms on a
+background thread instead of booting a WebView and running three.js. Sounds (`assets/snd`, `dist-web/snd`) are decoded
+in Rust (WAV + MP3) and handed to the sound engine directly.
+
+* `cargo run --release --bin stage_build <map|all> [outdir]` writes `<map>.fws` / `<map>.frt` and prints timings;
+  `game_host out/forest.fws out/forest.frt /tmp/shots "1:shot"` renders one.
+* Parity oracle: `node web/tools/dump_stage.mjs <map> <outdir>` dumps the same packets from the JavaScript build in
+  headless Chrome for comparison.
 
 ## Native renderer (Android)
-`rust/src/render/` draws the 3D world with OpenGL ES 3 on a `GLSurfaceView` underneath the WebView. At its first frame the
-game exports its whole scene (geometries, materials, textures, instances, lights, fog) as one binary packet through
-`window.FogwoodGL.postMessage(ArrayBuffer)`, then sends a small packet per frame (camera, objects that moved, buffers that
-changed). Rust reproduces three.js's Basic/Lambert/Phong shading, fog, instancing, wind sway, sky, particles and the post
-pass (god rays, zoom blur, grade, 4x4 dither) at the game's low resolution and upscales with nearest filtering. The page
-itself only draws the HUD. If the WebView can't post binary messages, the game falls back to WebGL.
+`rust/src/render/` draws the 3D world with OpenGL ES 3 on a `GLSurfaceView` (WebGL2 on the web build). Rust reproduces three.js's Basic/Lambert/Phong shading, fog, instancing, wind sway, sky, particles and the post
+pass (god rays, zoom blur, grade, 4x4 dither) at the game's low resolution. The upscale pass then composites the HUD
+at screen resolution with sharp-bilinear filtering, so pixel text stays crisp at any (non-integer) screen ratio. If the
+device can't run GLES3, the app falls back to the legacy WebGL page.
 
 `cargo run --release --bin render_host <scene> <frame|.stream> out.ppm` renders dumped packets headlessly (Mesa EGL).
 

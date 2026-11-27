@@ -13,3 +13,4 @@ rust/relay/target/
 relay-cf/.wrangler/
 rust/relay/target/
 rust/simwasm/target/
+android/app/src/main/assets/snd/

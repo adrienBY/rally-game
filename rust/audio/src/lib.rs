@@ -174,10 +174,16 @@ pub mod native {
     /// per-frame messages wait here (a lock held for a push or a swap only); the audio thread applies them before each block,
     /// so the game never waits for a block to finish rendering
     static Q: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
-    pub fn init(sr: f32) { let mut g = ENG.lock().unwrap_or_else(|e| e.into_inner()); if g.as_ref().map(|e| (e.sr - sr).abs() > 1.0).unwrap_or(true) { *g = Some(Engine::new(sr)); } }
+    /// the recordings received so far (by id): a fresh engine (first start, or a new output rate) gets them all again
+    static REC: Mutex<Vec<(u32, Vec<u8>)>> = Mutex::new(Vec::new());
+    pub fn init(sr: f32) { let mut g = ENG.lock().unwrap_or_else(|e| e.into_inner()); if g.as_ref().map(|e| (e.sr - sr).abs() > 1.0).unwrap_or(true) { let mut e = Engine::new(sr);
+        for (_, m) in REC.lock().unwrap_or_else(|e| e.into_inner()).iter() { e.message(m); } *g = Some(e); } }
     pub fn message(b: &[u8]) {
-        // recordings (type 4) are big and rare: decoded straight into the engine
-        if b.len() >= 4 && f32::from_le_bytes([b[0], b[1], b[2], b[3]]) as i32 == 4 { if let Some(e) = ENG.lock().unwrap_or_else(|e| e.into_inner()).as_mut() { e.message(b); } return; }
+        // recordings (type 4) are big and rare: decoded straight into the engine (and kept for an engine made later)
+        if b.len() >= 8 && f32::from_le_bytes([b[0], b[1], b[2], b[3]]) as i32 == 4 {
+            let id = f32::from_le_bytes([b[4], b[5], b[6], b[7]]) as u32;
+            { let mut r = REC.lock().unwrap_or_else(|e| e.into_inner()); r.retain(|x| x.0 != id); r.push((id, b.to_vec())); }
+            if let Some(e) = ENG.lock().unwrap_or_else(|e| e.into_inner()).as_mut() { e.message(b); } return; }
         let mut q = Q.lock().unwrap_or_else(|e| e.into_inner()); if q.len() < 4096 { q.push(b.to_vec()); }
     }
     pub fn render(out: &mut [f32]) {

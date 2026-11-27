@@ -16,6 +16,9 @@ fogwood_audio = { path = "audio" }
 # Instant / SystemTime that also work in the browser (plain std elsewhere)
 web-time = "1"
 miniz_oxide = "0.8"
+# the stage builder's pixel textures (Skia's rasterizer, as the browser canvas painted them) and the recordings' decoder
+tiny-skia = { version = "0.11", default-features = false, features = ["std"] }
+nanomp3 = "0.1"
 
 # the app's WebSocket to the relay (TLS by rustls with ring: builds with the NDK, no cmake)
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

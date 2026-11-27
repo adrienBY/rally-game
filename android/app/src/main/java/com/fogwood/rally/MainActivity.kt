@@ -44,21 +44,17 @@ import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 
 /**
- * Runtime mode (normal): the Rust engine runs the whole game in a GLSurfaceView - frame loop, physics, rivals, camera, HUD, sound -
- * driven at 60 fps by the display's vsync. A hidden WebView only builds each stage once and hands it over, then sleeps.
- * Fallback: if the native renderer can't start, the page runs the game itself with WebGL.
+ * Runtime mode (normal): the Rust engine does everything in a GLSurfaceView - it builds each stage (terrain, props, textures, cars) on a
+ * background thread, decodes the recordings, and runs the frame loop, physics, rivals, camera, HUD and sound at 60 fps on the display's
+ * vsync. No WebView is made at all.
+ * Fallback: if the Rust library or the native renderer can't start, a WebView runs the old all-JavaScript game with WebGL.
  */
 class MainActivity : Activity() {
-    private lateinit var web: WebView
+    /** only for the fallback (the old WebGL game); never made in runtime mode */
+    private var web: WebView? = null
     private val updater by lazy { Updater(this) }
     private lateinit var root: FrameLayout
     private lateinit var assetLoader: WebViewAssetLoader
-    /** the stage the page was last asked to build (to rebuild it if the page's process dies) */
-    private var curMap = "forest"
-    /** a stage build is under way (cleared by its runtime handoff) */
-    @Volatile private var building = false
-    /** the page's process died while idle: a fresh WebView loads the page when a stage is next wanted */
-    private var webFresh = false
     private lateinit var haptics: Haptics
     private var glView: GLSurfaceView? = null
     private val main = Handler(Looper.getMainLooper())
@@ -119,10 +115,9 @@ class MainActivity : Activity() {
         private var frames = 0
         private var lastNs = 0L
         override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
-            val resend = NativeCore.glInit()
+            NativeCore.glInit()   // a lost scene is rebuilt by the engine itself
             Log.i(TAG, "GL ready: ${NativeCore.glStatus()}")
             checkFailure()
-            if (resend) main.post { if (webFresh) { webFresh = false; building = true; loadRtPage(curMap) } else { web.resumeTimers(); web.evaluateJavascript("window.__nglResend && window.__nglResend()") { if (rtMode) web.pauseTimers() } } }
         }
         override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) = NativeCore.glResize(width, height)
         override fun onDrawFrame(gl: GL10?) {
@@ -145,8 +140,6 @@ class MainActivity : Activity() {
         }
     }
     @Volatile private var fellBack = false
-    /** the page has handed its stage over (and had time to finish decoding the recordings): no timers, no work until the next stage */
-    private val sleepPage = Runnable { if (rtMode) web.pauseTimers() }
 
     /** a play-stats note from the game (see rust/src/game/stats.rs): posted to the relay's /stat in the background, best effort */
     private fun postStat(json: String) {
@@ -162,7 +155,7 @@ class MainActivity : Activity() {
         }.start()
     }
 
-    /** events from the native game: "h <kind> <strength>" haptics, "map <name>" build that stage */
+    /** events from the native game: "h <kind> <strength>" haptics, "fps", the name dialog, stats, exports (stages are built in Rust) */
     private fun handleEvents(ev: String) {
         for (line in ev.lineSequence()) {
             if (line == "fps 30") vsync.gap = gapFor(30) else if (line == "fps 60") vsync.gap = gapFor(60)
@@ -171,10 +164,6 @@ class MainActivity : Activity() {
             else if (line.startsWith("stat ")) postStat(line.substring(5))
             else if (line.startsWith("bench ")) { val path = line.substring(6); main.post { exportBench(path) } }
             else if (line.startsWith("crash ")) { val path = line.substring(6); main.post { exportCrash(path) } }
-            else if (line.startsWith("map ")) { val name = line.substring(4).filter { it.isLetter() }
-                main.post { main.removeCallbacks(sleepPage); curMap = name; building = true
-                    if (webFresh) { webFresh = false; loadRtPage(name) }
-                    else { web.resumeTimers(); web.evaluateJavascript("window.__rtBoot && window.__rtBoot('$name')", null) } } }
         }
     }
 
@@ -224,17 +213,19 @@ class MainActivity : Activity() {
             }
         } catch (e: Throwable) { Log.e(TAG, "crash note export", e) }
     }
-    private fun loadRtPage(map: String) { web.resumeTimers(); web.loadUrl("https://appassets.androidplatform.net/assets/index.html?rt=1#$map") }
-
-    /** The hidden page's process died (low memory, or the system reclaimed it): without this the whole app would be killed.
-     *  Swap in a fresh WebView; reload the page now if a stage was being built, else when one is next wanted. */
+    /** The fallback page's process died (low memory): swap in a fresh WebView and reload the game instead of letting the app be killed. */
     private fun pageGone() {
         val old = web
-        try { root.removeView(old); old.destroy() } catch (_: Throwable) {}
-        web = makeWeb(rtMode); root.addView(web, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        if (!rtMode) { web.loadUrl("https://appassets.androidplatform.net/assets/index.html"); return }
-        web.visibility = View.INVISIBLE
-        if (building) loadRtPage(curMap) else webFresh = true
+        try { if (old != null) { root.removeView(old); old.destroy() } } catch (_: Throwable) {}
+        val w = makeWeb(); web = w; root.addView(w, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        w.loadUrl("https://appassets.androidplatform.net/assets/index.html")
+    }
+    /** the recordings, straight from the APK's assets into the Rust decoder (one background thread, while the first stage builds) */
+    private fun loadSounds() {
+        Thread {
+            try { for (f in assets.list("snd") ?: emptyArray()) { val b = assets.open("snd/$f").use { it.readBytes() }; if (!NativeCore.audioFile(f, b)) Log.w(TAG, "sound $f not decoded") } }
+            catch (e: Throwable) { Log.e(TAG, "sounds", e) }
+        }.apply { name = "sounds"; priority = Thread.MIN_PRIORITY }.start()
     }
 
     /** temporary benchmark: copy the log the game wrote into Downloads/Fogwood so it can be shared */
@@ -259,12 +250,11 @@ class MainActivity : Activity() {
     @SuppressLint("RequiresFeature")
     private fun fallBackToWebGl() {
         stopLoop(); rtMode = false
-        try { WebViewCompat.removeWebMessageListener(web, "FogwoodGL") } catch (_: Throwable) {}
         glView?.let { (it.parent as? ViewGroup)?.removeView(it) }
         glView = null
-        web.resumeTimers(); web.visibility = View.VISIBLE
-        web.setBackgroundColor(Color.rgb(11, 16, 11))
-        web.loadUrl("https://appassets.androidplatform.net/assets/index.html")
+        val w = web ?: makeWeb().also { web = it; root.addView(it, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)) }
+        w.visibility = View.VISIBLE
+        w.loadUrl("https://appassets.androidplatform.net/assets/index.html")
     }
 
     @SuppressLint("SetJavaScriptEnabled", "RequiresFeature")
@@ -287,12 +277,10 @@ class MainActivity : Activity() {
         root = FrameLayout(this)
         root.setBackgroundColor(Color.rgb(11, 16, 11))
 
-        // native renderer only when the Rust library loaded and this WebView can post binary messages
-        val nativeGl = NativeCore.loaded &&
-            WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) &&
-            WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_ARRAY_BUFFER)
+        // the native game whenever the Rust library loaded (it starts building the first stage right here, on its own thread)
+        val nativeGl = NativeCore.loaded
         rtMode = nativeGl
-        val startMap = if (rtMode) NativeCore.rtInit(filesDir.absolutePath + "/fogwood.sav") else "forest"
+        if (rtMode) { NativeCore.rtInit(filesDir.absolutePath + "/fogwood.sav"); loadSounds() }
         if (rtMode) NativeCore.rtDevice("${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
         if (nativeGl) {
             glView = GLSurfaceView(this).apply {
@@ -331,26 +319,24 @@ class MainActivity : Activity() {
                 NativeCore.rtInsets(c.top.toFloat(), c.right.toFloat(), c.bottom.toFloat(), c.left.toFloat()); ViewCompat.onApplyWindowInsets(v, ins) }
         }
 
-        web = makeWeb(nativeGl)
         if (NativeCore.loaded) audio.start()
         updater.check()   // a newer build on GitHub? offer it
-        root.addView(web, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        if (rtMode) web.visibility = View.INVISIBLE   // builds stages only; never drawn, never touched
+        if (!rtMode) {   // no Rust library: the old all-JavaScript game in a WebView
+            val w = makeWeb(); web = w
+            root.addView(w, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            if (savedInstanceState == null) w.loadUrl("https://appassets.androidplatform.net/assets/index.html") else w.restoreState(savedInstanceState)
+        }
         setContentView(root)
         hideBars()
         pickMode(60f)?.let { applyMode(it.modeId); Log.i(TAG, "display ${it.refreshRate} Hz") }
-        curMap = startMap
-        if (rtMode) { building = true; web.loadUrl("https://appassets.androidplatform.net/assets/index.html?rt=1#$startMap") }
-        else if (savedInstanceState == null) web.loadUrl("https://appassets.androidplatform.net/assets/index.html")
-        else web.restoreState(savedInstanceState)
         startLoop()
     }
 
-    /** the page: in runtime mode a hidden stage builder posting scenes over FogwoodGL and sound over FogwoodAudio */
+    /** the fallback page: the old all-JavaScript game drawing with WebGL */
     @SuppressLint("SetJavaScriptEnabled", "RequiresFeature")
-    private fun makeWeb(nativeGl: Boolean): WebView {
+    private fun makeWeb(): WebView {
         val web = WebView(this).apply {
-            setBackgroundColor(if (nativeGl) Color.TRANSPARENT else Color.rgb(11, 16, 11))
+            setBackgroundColor(Color.rgb(11, 16, 11))
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.mediaPlaybackRequiresUserGesture = false
@@ -374,19 +360,7 @@ class MainActivity : Activity() {
             }
             if (NativeCore.loaded) addJavascriptInterface(Bridge(), "FogwoodNative")
         }
-        if (nativeGl) {
-            // window.FogwoodGL.postMessage(ArrayBuffer): scene once, then one small packet per frame
-            WebViewCompat.addWebMessageListener(web, "FogwoodGL", setOf("https://appassets.androidplatform.net")) { _, message, _, _, _ ->
-                if (message.type == WebMessageCompat.TYPE_ARRAY_BUFFER) {
-                    val b = message.arrayBuffer
-                    NativeCore.glMessage(b)
-                    if (!rtMode) glView?.requestRender()
-                    // the stage handoff is the page's last word: let it sleep until the next stage is wanted
-                    else if (b.size >= 4 && b[0] == 'F'.code.toByte() && b[1] == 'R'.code.toByte() && b[2] == 'T'.code.toByte()) { building = false; main.removeCallbacks(sleepPage); main.postDelayed(sleepPage, 8000) }
-                }
-            }
-        }
-        if (NativeCore.loaded) {
+        if (NativeCore.loaded && WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) && WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_ARRAY_BUFFER)) {
             // window.FogwoodAudio.postMessage(ArrayBuffer): the page drives the Rust sound engine
             WebViewCompat.addWebMessageListener(web, "FogwoodAudio", setOf("https://appassets.androidplatform.net")) { _, message, _, _, _ ->
                 if (message.type == WebMessageCompat.TYPE_ARRAY_BUFFER) NativeCore.audioMessage(message.arrayBuffer)
@@ -408,7 +382,7 @@ class MainActivity : Activity() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
-        if (!rtMode) web.saveState(outState)
+        if (!rtMode) web?.saveState(outState)
     }
 
     /** Back while driving returns to the stage menu; back on the menu leaves the app. */
@@ -416,21 +390,22 @@ class MainActivity : Activity() {
     @Suppress("DEPRECATION")
     override fun onBackPressed() {
         if (rtMode) { if (!NativeCore.rtBack()) finish(); return }
-        web.evaluateJavascript("(window.__back && window.__back()) ? 1 : 0") { r -> if (r != "1") finish() }
+        val w = web ?: run { finish(); return }
+        w.evaluateJavascript("(window.__back && window.__back()) ? 1 : 0") { r -> if (r != "1") finish() }
     }
 
     override fun onPause() {
         stopLoop(); main.removeCallbacks(thermalTick)
         if (NativeCore.loaded && rtMode) NativeCore.rtTouch(5, 0, 0f, 0f)   // fingers lifted while away never report: let go of the pedals
-        if (!rtMode) web.evaluateJavascript("window.__appPause && window.__appPause(true)", null)
-        web.onPause(); glView?.onPause(); audio.stop(); super.onPause()
+        if (!rtMode) web?.evaluateJavascript("window.__appPause && window.__appPause(true)", null)
+        web?.onPause(); glView?.onPause(); audio.stop(); super.onPause()
     }
     override fun onResume() {
-        super.onResume(); web.onResume(); glView?.onResume(); hideBars(); if (NativeCore.loaded) audio.start(); updater.resume()
-        if (!rtMode) web.evaluateJavascript("window.__appPause && window.__appPause(false)", null)
+        super.onResume(); web?.onResume(); glView?.onResume(); hideBars(); if (NativeCore.loaded) audio.start(); updater.resume()
+        if (!rtMode) web?.evaluateJavascript("window.__appPause && window.__appPause(false)", null)
         startLoop(); main.removeCallbacks(thermalTick); main.post(thermalTick)
     }
-    override fun onDestroy() { audio.stop(); web.destroy(); super.onDestroy() }
+    override fun onDestroy() { audio.stop(); web?.destroy(); super.onDestroy() }
 
     companion object { private const val TAG = "Fogwood" }
 }

@@ -93,9 +93,9 @@ pub struct Renderer {
     tq_free: Vec<(glow::Query, glow::Query)>, tq_pending: std::collections::VecDeque<(glow::Query, glow::Query, u64)>, tq_cur: Option<(glow::Query, glow::Query)>, tq_made: usize, tq_post: bool,
 }
 
-const UNIFORMS: [&str; 57] = ["uModel", "uView", "uProj", "uNormalM", "uMapM", "uTime", "uWind", "uColor", "uOpacity", "uMap", "uAlphaTest", "uHemiSky",
+const UNIFORMS: [&str; 59] = ["uModel", "uView", "uProj", "uNormalM", "uMapM", "uTime", "uWind", "uColor", "uOpacity", "uMap", "uAlphaTest", "uHemiSky",
     "uHemiGround", "uHemiDir", "uDirColor", "uDirDir", "uFogColor", "uFogDensity", "uCamPos", "uSpec", "uShin", "uEmissive", "uSun", "uFog", "uTop", "uGlow",
-    "uHalo", "uSize", "uScale", "uDens", "uCol", "tScene", "uSunVis", "uFlash", "uSpeed", "uExpo", "uDim", "uSplitS", "uSplitH", "uTexel", "tHud", "uHudOn", "uSkySun", "uSkyGlow", "uSkyHalo", "tMask", "tRay", "uRayOn", "uSrc", "uZoom", "tDust", "tSharp", "uDensScale", "uLampN", "uLampP", "uLampD", "uLampC"];
+    "uHalo", "uSize", "uScale", "uDens", "uCol", "tScene", "uSunVis", "uFlash", "uSpeed", "uExpo", "uDim", "uSplitS", "uSplitH", "uTexel", "tHud", "uHudOn", "uSkySun", "uSkyGlow", "uSkyHalo", "tMask", "tRay", "uRayOn", "uSrc", "uZoom", "tDust", "tSharp", "uDensScale", "uLampN", "uLampP", "uLampD", "uLampC", "uHudSrc", "uHudZoom"];
 
 unsafe fn compile(gl: &Gl, vs: &str, fs: &str) -> Result<Program, String> {
     let p = gl.create_program()?;
@@ -672,14 +672,17 @@ impl Renderer {
         gl.active_texture(glow::TEXTURE0); gl.bind_texture(glow::TEXTURE_2D, Some(t1)); gl.uniform_1_i32(p.u(U!("tScene")), 0);
         gl.uniform_2_f32(p.u(U!("uSun")), fr.sun[0], fr.sun[1]); gl.uniform_1_f32(p.u(U!("uSunVis")), fr.sun_vis); gl.uniform_1_f32(p.u(U!("uTime")), fr.time);
         gl.uniform_1_f32(p.u(U!("uFlash")), fr.flash); gl.uniform_1_f32(p.u(U!("uSpeed")), fr.speed); gl.uniform_1_f32(p.u(U!("uExpo")), if fr.expo > 0.0 { fr.expo } else { 1.0 });
-        if let (false, Some((ht, _, _))) = (self.no_hud, self.hud) { gl.active_texture(glow::TEXTURE1); gl.bind_texture(glow::TEXTURE_2D, Some(ht)); gl.uniform_1_i32(p.u(U!("tHud")), 1); gl.uniform_1_f32(p.u(U!("uHudOn")), 1.0); gl.active_texture(glow::TEXTURE0); }
-        else { gl.uniform_1_f32(p.u(U!("uHudOn")), 0.0); }
         gl.uniform_3_f32_slice(p.u(U!("uSplitS")), &fr.split_s); gl.uniform_3_f32_slice(p.u(U!("uSplitH")), &fr.split_h); gl.uniform_2_f32(p.u(U!("uTexel")), fr.texel[0], fr.texel[1]);
         gl.bind_vertex_array(Some(self.quad_vao)); gl.draw_arrays(glow::TRIANGLES, 0, 3); gl.bind_vertex_array(None);
         // sharp-bilinear upscale to the screen (flat pixels, one blended screen pixel at each border: steady under a non-integer scale)
         let t2 = self.tgt.unwrap().6; gl.bind_framebuffer(glow::FRAMEBUFFER, screen); gl.viewport(0, 0, w, h);
         let p = &self.up; gl.use_program(Some(p.prog)); gl.active_texture(glow::TEXTURE0); gl.bind_texture(glow::TEXTURE_2D, Some(t2)); gl.uniform_1_i32(p.u(U!("tScene")), 0);
         gl.uniform_2_f32(p.u(U!("uSrc")), lw as f32, lh as f32); gl.uniform_2_f32(p.u(U!("uZoom")), (w as f32 / lw as f32).max(1.0), (h as f32 / lh as f32).max(1.0));
+        if let (false, Some((ht, hw, hh))) = (self.no_hud, self.hud) {
+            gl.active_texture(glow::TEXTURE1); gl.bind_texture(glow::TEXTURE_2D, Some(ht)); gl.uniform_1_i32(p.u(U!("tHud")), 1); gl.uniform_1_f32(p.u(U!("uHudOn")), 1.0);
+            gl.uniform_2_f32(p.u(U!("uHudSrc")), hw as f32, hh as f32); gl.uniform_2_f32(p.u(U!("uHudZoom")), (w as f32 / hw as f32).max(1.0), (h as f32 / hh as f32).max(1.0));
+            gl.active_texture(glow::TEXTURE0);
+        } else { gl.uniform_1_f32(p.u(U!("uHudOn")), 0.0); }
         gl.bind_vertex_array(Some(self.quad_vao)); gl.draw_arrays(glow::TRIANGLES, 0, 3); gl.bind_vertex_array(None);
         self.stats = (calls, tris); self.tq_post = post_q;
         Ok(())

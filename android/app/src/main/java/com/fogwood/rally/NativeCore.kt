@@ -13,7 +13,7 @@ object NativeCore {
     @JvmStatic external fun step(csv: String): String
 
     // native renderer
-    /** GL context created; true if the page must resend its scene. */
+    /** GL context created (a lost scene is rebuilt natively; always false now). */
     @JvmStatic external fun glInit(): Boolean
     @JvmStatic external fun glResize(w: Int, h: Int)
     @JvmStatic external fun glDraw()
@@ -41,6 +41,8 @@ object NativeCore {
     @JvmStatic external fun audioInit(sampleRate: Int)
     /** A binary message from the page (params, events, emitters, recordings, stage preset). */
     @JvmStatic external fun audioMessage(data: ByteArray)
+    /** A recording from the assets (snd/<name>), decoded natively. */
+    @JvmStatic external fun audioFile(name: String, data: ByteArray): Boolean
     /** Fills [out] with [frames] interleaved stereo frames. */
     @JvmStatic external fun audioRender(out: FloatArray, frames: Int)
 }

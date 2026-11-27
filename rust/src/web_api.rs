@@ -76,6 +76,9 @@ pub fn web_rtc_close(id: u32) { crate::guard::run("rtc", (), || crate::net::rtc:
 pub fn web_rtc_data(id: u32, b: &[u8]) { crate::guard::run("rtc", (), || crate::net::rtc::on_data(id, b)) }
 #[wasm_bindgen]
 pub fn web_rtc_signal(id: u32, kind: u8, text: String) { crate::guard::run("rtc", (), || crate::net::rtc::on_signal(id, kind, text)) }
+/// a recording fetched by the page (snd/<name>): decoded here and handed to the sound worklet
+#[wasm_bindgen]
+pub fn web_sound(name: &str, bytes: &[u8]) -> bool { crate::guard::run("sound", false, || crate::stage::sound::load(name, bytes)) }
 /// the driver name from the page's text box (answer to the game's "name" event)
 #[wasm_bindgen]
 pub fn web_name(n: &str) { crate::guard::run("name", (), || crate::gfx::rt_name(n)) }
