@@ -86,7 +86,7 @@ impl Game {
         let (step, did, tt) = (t.step, t.did, t.t);
         match step {
             Step::Gas if did > 0.3 => self.tut_next(Step::Steer),
-            Step::Steer if did > 1.0 => self.tut_next(Step::Slide),
+            Step::Steer if did > 0.7 => self.tut_next(Step::Slide),
             Step::Slide if did > 0.25 || tt > 15.0 => self.tut_next(Step::Finish),
             Step::Finish if tt > 4.0 => self.tut_next(Step::Done),
             _ => {}
