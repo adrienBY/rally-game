@@ -1,0 +1,22 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="Fogwood"><meta name="theme-color" content="#0b100b"><link rel="icon" href="icon-180.png"><link rel="apple-touch-icon" href="icon-180.png"><link rel="manifest" href="manifest.webmanifest"><title>Fogwood Rally</title><style>
+/* Layout: a single full-bleed low-res canvas. Scene and HUD are drawn at the same resolution and pass through one dither filter. */
+:root { --ground: #0b100b; color-scheme: dark; }
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body {
+  margin: 0; overflow: hidden; background: var(--ground);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  touch-action: none; overscroll-behavior: none;
+  -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent;
+}
+*, *::before, *::after { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
+#view {
+  position: fixed; inset: 0; width: 100vw; height: 100dvh; display: block; touch-action: none;
+  image-rendering: pixelated; image-rendering: crisp-edges; background: #6f7a74; outline: none;
+}
+#probe {
+  position: fixed; visibility: hidden; pointer-events: none;
+  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+}
+</style></head><body><div id="probe"></div><script type="module" src="web_boot.js"></script></body></html>
