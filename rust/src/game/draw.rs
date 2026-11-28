@@ -14,6 +14,7 @@ pub fn hud(gm: &mut Game) {
     let portrait = gm.h > gm.w;
     let inp = if gm.state == State::Drive { gm.read_input() } else { crate::physics::Input::default() };
     let mut ui: Vec<(&'static str, Rect)> = Vec::new();
+    let tip = gm.tut_tip();
     let km_total = gm.stage_km();
     let res = if gm.race.on && gm.race.phase == Phase::Done && gm.race.done_t > 1.2 { race::results(gm) } else { Vec::new() };
     let tr = if !res.is_empty() && gm.race.duos { race::team_results(gm) } else { Vec::new() };
@@ -42,6 +43,7 @@ pub fn hud(gm: &mut Game) {
         if !portrait {
             let mut m = std::mem::take(g); super::menu::draw(gm, &mut m, &mut ui, lw, lh, u, pl, pt, pb);
             if gm.loading.is_some() { super::menu::loading(gm, &mut m, lw, lh, u, pl, pb); }
+            if gm.tut_card_up() { super::tutorial::card(gm, &mut m, lw, lh, u, now); }
             gm.hud = m;
         }
     }
@@ -121,6 +123,8 @@ pub fn hud(gm: &mut Game) {
     else if gm.wrong_t > 1.0 { m = if ((now / 300.0) as i64) % 2 == 1 { "WRONG WAY".into() } else { String::new() }; mc = RED; }
     else if gm.msg_t > 0.0 { m = gm.msg.clone(); mc = AMBER; }
     if !m.is_empty() { let sc = 2.0 * u; g.tx(&m, (lw - text_w(&m, sc)) / 2.0, lh * 0.3, sc, mc); }
+    // the tutorial's tip, under the stage panel (a message on screen has the floor)
+    if let Some(t) = tip.as_ref() { if m.is_empty() && !(race_on && gm.race.phase == Phase::Done) { super::tutorial::tip(g, t, &ui, &inp, lw, pt + ph + 5.0 * u, u, now); } }
     if race_on && gm.race.phase == Phase::Done && gm.race.done_t > 1.2 && !tfr.is_empty() {
         // tile fall: the last car standing, then the others by how long they lasted
         let rw = (lw - 16.0 * u).min(196.0 * u); let rh = (tfr.len() as f64 * 10.0 + 46.0) * u; let (rx, ry) = (js_round((lw - rw) / 2.0), js_round((lh - rh) / 2.0));

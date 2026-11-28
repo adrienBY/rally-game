@@ -3,7 +3,7 @@
 //! env: DUSTN=6000 (the app's dust buffer size, for scenes dumped from the browser build), NODUST, NOHUD
 //! script: comma-separated steps "t:action", e.g. "1:start,1:auto,8:shot,12:shot,20:race,40:shot,60:state"
 //!   start (tap to start)  auto (demo driver drives)  shot (write <outdir>/fNNNN.ppm)  state (print the car)  tap:x:y  race (toggle mode on the menu)
-//!   mtap:key  hit:cx:cz:r:dx:dz:speed / hitcar:cx:cz:axx:axz:dx:dz:speed (dent the bodywork, car frame)  cam  menu  log (car each second from then on)  garage gnext gprev gclose gpaint[:d] car:k
+//!   key:Code kd:Code ku:Code (a computer key pressed / held down / let go; KeyboardEvent.code)  mtap:key  hit:cx:cz:r:dx:dz:speed / hitcar:cx:cz:axx:axz:dx:dz:speed (dent the bodywork, car frame)  cam  menu  log (car each second from then on)  garage gnext gprev gclose gpaint[:d] car:k
 use fogwood_core::game::{Game, Persist, State};
 use fogwood_core::render::{loader::Loader, Renderer};
 use glow::HasContext;
@@ -52,6 +52,8 @@ fn main() {
             for c in 0..chs { for i in 0..frames { let q = (i * ch as usize + c) * 2; m.extend_from_slice(&data[q..q + 2]); } }
             fogwood_audio::native::message(&m); println!("loaded {} {} ch {} Hz {} frames", f, chs, rate, frames);
         }
+        if std::env::var("FW_TUT").is_ok() { fogwood_core::game::tutorial::WANT.store(true, std::sync::atomic::Ordering::Relaxed); }   // the first-run tutorial (itch.io)
+        if let Ok(v) = std::env::var("FW_TOUCH") { fogwood_core::game::tutorial::TOUCH_DEVICE.store(v == "1", std::sync::atomic::Ordering::Relaxed); }
         let mut g = Game::new(rt, Persist::new(&std::env::var("FW_SAVE").unwrap_or("/tmp/game_host.sav".into()))); g.wave_sim = std::env::var("FW_REALTIME").is_err(); g.wave_t0 = std::env::var("FW_WAVE_T0").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0); if let Ok(n) = std::env::var("DUSTN") { g.dust = fogwood_core::game::dust::Dust::new(n.parse().unwrap_or(6000), 0x5EED); }   // a scene dumped from the browser build has the browser's small dust buffer
         g.resize(w as f64, h as f64, [0.0; 4]); if std::env::var("NOLOD").is_err() { g.attach(&mut r); }
         let gl = r.gl();
@@ -83,6 +85,7 @@ fn main() {
                 let act = steps[k].1.clone(); k += 1;
                 let parts: Vec<&str> = act.split(':').collect();
                 match parts[0] {
+                    "key" => { g.key(parts[1], true); g.key(parts[1], false); } "kd" => g.key(parts[1], true), "ku" => g.key(parts[1], false),   // a key pressed / held / let go
                     "start" => g.start_game(), "auto" => g.auto = true, "race" => { g.ps.race_mode = true; }
                     "tap" => { let (x, y) = (parts[1].parse::<f64>().unwrap(), parts[2].parse::<f64>().unwrap()); g.touch(0, 7, x, y); g.touch(2, 7, x, y); }
                     "menu" => { g.to_title(); } "log" => log = true, "tel" => g.tel_toggle(),

@@ -15,6 +15,7 @@ pub mod menu;
 pub mod volc;
 pub mod tilefall;
 pub mod stats;
+pub mod tutorial;
 mod draw;
 
 use crate::bridge;
@@ -100,13 +101,15 @@ pub struct Persist { /** asked for a driver name this run already */ pub name_as
     /// your car (garage), and the livery picked for each car (0 = its own)
     pub car: usize, pub paint: Vec<usize>,
     /// dust and smoke 0 off .. 2 full, visual crash damage, rivals 0 easy / 1 adaptive / 2 hard / 3 extreme, laps of an offline race, the menu's attract race
-    pub particles: i32, pub damage: bool, pub rivals: i32, pub race_laps: i32, pub menu_race: bool }
+    pub particles: i32, pub damage: bool, pub rivals: i32, pub race_laps: i32, pub menu_race: bool,
+    /// the first-run tutorial; what the player drives with (true keys, false a touch screen, None not known yet)
+    pub tut: tutorial::Tut, pub input_kb: Option<bool> }
 impl Persist {
     pub fn new(save_path: &str) -> Persist {
         let saves = Saves::load(save_path);
         let mut p = Persist { online_mode: 0, name_asked: false, saves, sound_on: true, vib_on: true, pix_idx: 2, touch_used: false, downgraded: false, race_mode: false, race_skill: 0.95, online_ui: online::OnlineUi::Closed, name: String::new(), online_laps: 2, online_bots: 0, online_ai: 1,
-            vol: 10, rvol: 8, hap: 2, rays: true, mph: false, cam_mode: 0, shake: true, saver: false, debug: true, car: 0, paint: vec![0; cars::CARS.len()], particles: 2, damage: true, rivals: 1, race_laps: 3, menu_race: true };
-        p.reload(); p
+            vol: 10, rvol: 8, hap: 2, rays: true, mph: false, cam_mode: 0, shake: true, saver: false, debug: true, car: 0, paint: vec![0; cars::CARS.len()], particles: 2, damage: true, rivals: 1, race_laps: 3, menu_race: true, tut: Default::default(), input_kb: None };
+        p.reload(); p.tut = tutorial::Tut::new(p.saves.get("fogwood-tut").is_some()); p
     }
     pub fn reload(&mut self) {
         self.vib_on = self.saves.get("fogwood-vib") != Some("0");
@@ -168,6 +171,8 @@ pub struct Game {
     /// the HUD's resolution (buttons, menus, text: `u` its pixel) and the world's (the pixel-size setting): see `resize`
     pub lw: i32, pub lh: i32, pub rw: i32, pub rh: i32, pub u: f64, pub inset: [f64; 4], pub inset_px: [f64; 4],
     pub race: Race, pub ui: HashMap<&'static str, Rect>, touches: HashMap<i32, &'static str>,
+    /// driving keys held on a keyboard (the same names as the touch controls)
+    keys: std::collections::HashSet<&'static str>,
     pub time: f64, pub wind: f64, pub rng: Rng, pub events: Vec<String>, pub ps: Persist, pub loading: Option<String>,
     // scene
     node_base: Vec<(V3, V3, V3, Option<M>)>, node_world: Vec<M>, obj_last: HashMap<usize, M>, named: HashMap<String, usize>,
@@ -228,7 +233,7 @@ impl Game {
             state: State::Title, g_t: 0.0, lap: 1, lap_start: 0.0, best, flags: [false; 3], last_idx: 0, msg: String::new(), msg_t: 0.0, wrong_t: 0.0, started: false, go: 0.0,
             cam: CamState { y: 0.0, h: 0.0, init: false, mode: ps.cam_mode as i32, fov: 56.0, lag: 0.0, cp: None, cr: None, shot: -1, cut_t: 0.0, passed: 0.0, anchor: [0.0; 3], target: 0, side: 1.0 },
             cam_pos: [0.0; 3], cam_rot: ID, fov_now: 56.0, view: ID, proj: ID, w: 1280.0, h: 720.0, lw: 320, lh: 180, rw: 320, rh: 180, u: 1.0, inset: [0.0; 4], inset_px: [0.0; 4],
-            race, ui: HashMap::new(), touches: HashMap::new(), time: 0.0, wind: 0.5, rng: Rng(0x9E3779B97F4A7C15 ^ (mid as u64 + 1)), events: Vec::new(), ps, loading: None,
+            race, ui: HashMap::new(), touches: HashMap::new(), keys: Default::default(), time: 0.0, wind: 0.5, rng: Rng(0x9E3779B97F4A7C15 ^ (mid as u64 + 1)), events: Vec::new(), ps, loading: None,
             node_base, node_world: vec![ID; rt.nodes.len()], obj_last: HashMap::new(), named, cull_vis: vec![true; ncull], glit_op: vec![-1.0; nglit],
             dust: dust::Dust::new(dn, 0x5EED ^ mid as u64), dust_env: dust::Env { tarmac: mid == 5 || mid == 6 || mid == 7, snow: mid == 1, sand: mid == 2, lush: mid == 0, alpha: if mid == 5 || mid == 6 || mid == 7 { 0.16 } else if mid == 1 { 0.14 } else if mid == 2 { 0.17 } else if mid == 3 { 0.17 } else { 0.15 },
                 dry: if mid == 2 { 1.0 } else if mid == 3 { 0.8 } else { 0.7 },
@@ -292,7 +297,7 @@ impl Game {
     }
 
     // ---------------- input ----------------
-    fn pressed(&self, n: &str) -> bool { self.touches.values().any(|v| *v == n) }
+    fn pressed(&self, n: &str) -> bool { self.touches.values().any(|v| *v == n) || self.keys.contains(n) }
     pub fn read_input(&self) -> Input {
         let l = self.pressed("left"); let r = self.pressed("right");
         Input { steer: (l as i32 - r as i32) as f64, throttle: if self.pressed("gas") { 1.0 } else { 0.0 }, brake: if self.pressed("brake") { 1.0 } else { 0.0 }, hb: self.pressed("hb") }
@@ -328,7 +333,10 @@ impl Game {
     /// 3: the first finger down (no other finger is on the screen: anything still held here was lost), 5: every finger up
     /// (the app was paused or lost focus). A lifted finger always lets go of its pedal, whatever screen it lands on.
     pub fn touch(&mut self, action: i32, id: i32, sx: f64, sy: f64) {
-        let action = match action { 3 => { self.touches.clear(); 0 } 5 => { self.touches.clear(); return; } a => a };
+        let action = match action { 3 => { self.touches.clear(); 0 } 5 => { self.touches.clear(); self.keys.clear(); return; } a => a };
+        if action == 0 && id != tutorial::MOUSE_ID { self.ps.input_kb = Some(false); }
+        // the tutorial's controls card: a tap anywhere drives
+        if action == 0 && self.tut_card_up() { self.ps.touch_used = true; self.touches.clear(); self.tut_go(); return; }
         if action == 2 { self.touches.remove(&id); }
         if action == 0 && (self.set.open || self.gar.open) { self.touches.clear(); }
         let (x, y) = self.low_xy(sx, sy);
@@ -367,12 +375,33 @@ impl Game {
             _ => { self.touches.remove(&id); }
         }
     }
+    /// a key on a computer keyboard (the web build): arrows / WASD drive, Space is the handbrake, Enter picks on the menu,
+    /// C the camera, R back on the road, M the sound. An empty code lets go of every key (the page lost focus).
+    pub fn key(&mut self, code: &str, down: bool) {
+        if code.is_empty() { self.keys.clear(); return; }
+        let drive_key = match code { "ArrowLeft" | "KeyA" => Some("left"), "ArrowRight" | "KeyD" => Some("right"), "ArrowUp" | "KeyW" => Some("gas"), "ArrowDown" | "KeyS" => Some("brake"), "Space" => Some("hb"), _ => None };
+        if !down { if let Some(k) = drive_key { self.keys.remove(k); } return; }
+        self.ps.input_kb = Some(true);
+        if self.set.open || self.gar.open { return; }
+        let ok = matches!(code, "Enter" | "NumpadEnter" | "Space");
+        if self.state == State::Drive {
+            if self.race.on && self.race.phase == race::Phase::Done && self.race.done_t > 1.2 && ok { self.to_title(); return; }
+            if let Some(k) = drive_key { self.keys.insert(k); return; }
+            match code { "KeyC" => self.cycle_cam(), "KeyR" => self.reset_car(), "KeyM" => self.toggle_sound(), _ => {} }
+            return;
+        }
+        if self.tut_card_up() { if ok { self.tut_go(); } return; }
+        if self.ps.online_ui != online::OnlineUi::Closed { return; }
+        if code == "KeyM" { self.toggle_sound(); return; }
+        self.menu_key(code);
+    }
     /// Android back: to the menu while driving; false lets the app close from the menu
-    pub fn back(&mut self) -> bool { if self.set.open { self.close_settings(); return true; } if self.gar.open { self.close_garage(); return true; }
+    pub fn back(&mut self) -> bool { if self.tut_card_up() { self.tut_close_card(); return true; }
+        if self.set.open { self.close_settings(); return true; } if self.gar.open { self.close_garage(); return true; }
         if self.ps.online_ui != online::OnlineUi::Closed { self.online_tap("on_back"); return true; }
         if self.state == State::Title && self.menu_back() { return true; } self.to_title() }
     /// would the system back gesture do something here (else it leaves the app): driving, or a panel / sub-list is open
-    pub fn wants_back(&self) -> bool { self.state == State::Drive || self.set.open || self.gar.open || self.ps.online_ui != online::OnlineUi::Closed || self.menu.view != menu::View::Main || self.menu.wipe.is_some() || self.loading.is_some() }
+    pub fn wants_back(&self) -> bool { self.state == State::Drive || self.tut_card_up() || self.set.open || self.gar.open || self.ps.online_ui != online::OnlineUi::Closed || self.menu.view != menu::View::Main || self.menu.wipe.is_some() || self.loading.is_some() }
 
     pub fn switch_map(&mut self, name: &str) { if self.loading.is_none() { self.loading = Some(name.to_string()); self.events.push(format!("map {}", name)); self.ps.saves.set("fogwood-map", name.to_string()); } }
     pub fn toggle_mode(&mut self) { self.ps.race_mode = !self.ps.race_mode; self.ps.saves.set("fogwood-mode", if self.ps.race_mode { "race".into() } else { "tt".into() }); }
@@ -439,7 +468,7 @@ impl Game {
     pub fn to_title(&mut self) -> bool {
         if self.state != State::Drive { return false; }
         if let Some(t) = self.tel.take() { self.tel_save(t); }
-        race::stop(self); self.state = State::Title; self.go = 0.0; self.started = false; self.g_t = 0.0; self.msg_t = 0.0; self.wrong_t = 0.0; self.touches.clear();
+        race::stop(self); self.state = State::Title; self.go = 0.0; self.started = false; self.g_t = 0.0; self.msg_t = 0.0; self.wrong_t = 0.0; self.touches.clear(); self.keys.clear(); self.tut_left();
         let g = bridge::lock(); if let Some(e) = g.as_ref() { self.place_at(&e.world, 6); } true
     }
 
@@ -511,7 +540,7 @@ impl Game {
             let np = self.np; let k = path_idx(w, self.car.x, self.car.z); if w.path_dist(self.car.x, self.car.z) < w.road() { self.pri_last = Some(k); }
             if self.car.y < self.rt.roadh[k] - 8.0 { let back = (self.pri_last.unwrap_or(k) + np - 4) % np; self.place_at(w, back); if self.state == State::Drive { self.flash_msg("RESPAWN", 1.0); self.buzz("land", 0.7); } }
         }
-        if self.state == State::Drive && !paused { if self.race.on { race::step(self, w, obs, dt); } else { self.update_lap(w, dt); } }
+        if self.state == State::Drive && !paused { if self.race.on { race::step(self, w, obs, dt); } else { self.update_lap(w, dt); } self.tut_step(w, dt, &inp); }
         else if self.state == State::Title && self.race.demo { race::step(self, w, obs, dt); } lap!(1);
         // crash damage: a hit (a tree, a rock, a wall, another car) dents the bodywork where it landed; a landing does not
         if !self.ps.damage && self.crash.damaged { self.crash.repair(); }

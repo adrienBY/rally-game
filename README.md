@@ -75,6 +75,16 @@ in Rust (WAV + MP3) and handed to the sound engine directly.
 * Parity oracle: `node web/tools/dump_stage.mjs <map> <outdir>` dumps the same packets from the JavaScript build in
   headless Chrome for comparison.
 
+## First-run tutorial and keyboard
+`rust/src/game/tutorial.rs`: on a player's first visit from itch.io (the web build, detected by host; `?tut=1` forces it), a
+"HOW TO DRIVE" card over the menu shows the controls for the device (keys on a computer, a sketch of the touch layout on a
+phone), then the first drive shows one tip at a time (gas, steer, handbrake), each cleared by doing it, plus a reset hint
+when the car is stuck. It sends `tut` stat events per step and is never shown again once seen (`fogwood-tut` save key).
+`FW_TUT=1 FW_TOUCH=0|1 game_host ...` shows it headlessly; `key:Enter`, `kd:ArrowUp`, `ku:ArrowUp` press keys in scripts.
+
+The web build drives from the keyboard too: arrows or WASD, Space handbrake, Enter picks on the menu, C camera, R back on
+the road, M sound, Escape back.
+
 ## Native renderer (Android)
 `rust/src/render/` draws the 3D world with OpenGL ES 3 on a `GLSurfaceView` (WebGL2 on the web build). Rust reproduces three.js's Basic/Lambert/Phong shading, fog, instancing, wind sway, sky, particles and the post
 pass (god rays, zoom blur, grade, 4x4 dither) at the game's low resolution. The upscale pass then composites the HUD

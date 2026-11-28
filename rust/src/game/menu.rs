@@ -125,6 +125,23 @@ impl Game {
         let n = STAGES.len() as i32; let k = ((stage_of(&self.rt.map) as i32 + d) % n + n) % n; let want = STAGES[k as usize].0;
         if want != self.rt.map { self.switch_map(want); }
     }
+    /// the keyboard on the menu: up / down move the cursor, Enter (or Space) opens the entry, left / right change its setting
+    pub fn menu_key(&mut self, code: &str) {
+        if self.menu.wipe.is_some() || self.menu.confirm.is_some() || self.loading.is_some() { return; }
+        let ok = matches!(code, "Enter" | "NumpadEnter" | "Space");
+        let d = match code { "ArrowUp" | "KeyW" => -1, "ArrowDown" | "KeyS" => 1, _ => 0 };
+        let lr = match code { "ArrowLeft" | "KeyA" => -1, "ArrowRight" | "KeyD" => 1, _ => 0 };
+        if self.menu.view == View::Stages {
+            let n = SKEYS.len() as i32;
+            if d != 0 { self.menu.scur = (self.menu.scur as i32 + d).rem_euclid(n) as usize; self.buzz("tap", 0.25); }
+            else if ok { self.menu.confirm = Some((100 + self.menu.scur, 0.0)); self.buzz("tap", 0.45); }
+            return;
+        }
+        let n = ITEMS.len() as i32;
+        if d != 0 { self.menu.cur = (self.menu.cur as i32 + d).rem_euclid(n) as usize; self.buzz("tap", 0.25); }
+        else if ok { self.menu.confirm = Some((self.menu.cur, 0.0)); self.buzz("tap", 0.45); }
+        else if lr != 0 { match ITEMS[self.menu.cur].0 { Item::Drive => { self.toggle_mode(); self.ps.store(); } Item::Stage => self.menu_stage(lr), _ => {} } }
+    }
     /// a tap on a menu key; true when it was one. Lists with a cursor work in two taps: the first tap moves the
     /// cursor to an entry, a tap on the entry under the cursor opens it.
     pub fn menu_tap(&mut self, key: &str) -> bool {
@@ -293,7 +310,7 @@ pub fn loading(gm: &Game, g: &mut Canvas, lw: f64, lh: f64, u: f64, pl: f64, pb:
     let sc_n = js_round(3.0 * u).max(2.0); let name_w = Canvas::italic_w(st.2, sc_n, 0.0);
     let sc_n = if name_w > lw - x0 - 10.0 * u { js_round(2.0 * u).max(2.0) } else { sc_n };
     g.text_italic(st.2, x0 - slide * 1.4, y0 + 7.0 * sc + 6.0 * u, sc_n, &CHROME, 0.0, Some((rgba(0, 0, 0, 0.9), sc_n)));
-    let info = format!("{} - STAGE {} OF 6", st.3, stage_of(&want) + 1);
+    let info = format!("{} - STAGE {} OF {}", st.3, stage_of(&want) + 1, STAGES.len());
     g.text(&info, x0 - slide * 1.8, y0 + 7.0 * sc + 6.0 * u + 7.0 * sc_n + 8.0 * u, u, rgba(200, 208, 232, k as f32), None);
     // the chevron bar, scrolling
     let (bx, bw, bh) = (x0, (lw - x0 * 2.0).min(220.0 * u), 9.0 * u); let by = js_round(lh - pb - 24.0 * u);

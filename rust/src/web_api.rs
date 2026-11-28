@@ -44,6 +44,15 @@ pub fn web_resize(w: i32, h: i32) { crate::gfx::gl_resize(w, h); }
 pub fn web_touch(action: i32, id: i32, x: f32, y: f32) { crate::gfx::rt_touch(action, id, x, y); }
 #[wasm_bindgen]
 pub fn web_back() -> bool { crate::gfx::rt_back() }
+/// a key (KeyboardEvent.code) down or up; "" lets go of every key
+#[wasm_bindgen]
+pub fn web_key(code: &str, down: bool) { crate::gfx::rt_key(code, down); }
+/// before web_start: "tut" show the first-run tutorial (itch.io), "touch" the main pointer is a finger
+#[wasm_bindgen]
+pub fn web_hint(k: &str, on: bool) {
+    use std::sync::atomic::Ordering;
+    match k { "tut" => crate::game::tutorial::WANT.store(on, Ordering::Relaxed), "touch" => crate::game::tutorial::TOUCH_DEVICE.store(on, Ordering::Relaxed), _ => {} }
+}
 #[wasm_bindgen]
 pub fn web_insets(t: f32, r: f32, b: f32, l: f32) { crate::gfx::rt_insets(t, r, b, l); }
 /// one frame; returns the app events (haptics "h kind strength", "map name", ...)

@@ -35,6 +35,8 @@ document.addEventListener("visibilitychange", () => { try { if (SND.ac) { if (do
   if (!ok) { fallback(); return; }
   cv.id = "fw"; cv.style.cssText = "position:fixed;inset:0;width:100vw;height:100dvh;display:block;z-index:10;touch-action:none;background:#0b100b;outline:none";
   document.body.appendChild(cv);
+  // keys only reach a page that has focus (on itch.io the game sits in a frame inside their page)
+  cv.tabIndex = 0; const focus = () => { try { window.focus(); cv.focus({ preventScroll: true }); } catch (_) {} }; focus();
   const rot = document.createElement("div");
   rot.style.cssText = "position:fixed;inset:0;z-index:11;display:none;align-items:center;justify-content:center;background:#0b100b;color:#e9ece2;font:16px monospace;letter-spacing:2px;text-align:center";
   rot.textContent = "TURN YOUR PHONE SIDEWAYS"; document.body.appendChild(rot);
@@ -57,6 +59,10 @@ document.addEventListener("visibilitychange", () => { try { if (SND.ac) { if (do
   window.__fwRtc = makeRtc({ open: (id) => fw.web_rtc_open(id), close: (id) => fw.web_rtc_close(id), data: (id, u8) => fw.web_rtc_data(id, u8), signal: (id, k, t) => fw.web_rtc_signal(id, k, t) });
   window.__fw = fw;
   window.__fwAudio = (u8) => { try { SND.send(u8.slice().buffer); } catch (_) {} };
+  // a first visit from itch.io (or ?tut=1): the game shows its how-to-drive card and tips on the first drive, the touch
+  // version on phones and tablets
+  try { fw.web_hint("tut", /(^|\.)itch\.(zone|io)$|(^|\.)hwcdn\.net$/.test(location.hostname) || /[?&]tut=1/.test(location.search));
+    fw.web_hint("touch", matchMedia("(pointer: coarse)").matches); } catch (e) { console.warn("hints", e); }
   const map = fw.web_start("fogwood-native-save");   // (starts building that stage)
   // the recordings: fetched in the background and decoded by the engine
   for (const f of ["wind.mp3", "birds.mp3", "engine.wav", "skid.wav", "impact.wav", "water_a.mp3", "water_b.mp3", "traffic.mp3", "splash.mp3", "metal.mp3", "plank.mp3", "soft.mp3", "wind2.mp3", "boom.mp3", "explo.mp3", "lava.mp3", "erupt.mp3"])
@@ -90,8 +96,10 @@ document.addEventListener("visibilitychange", () => { try { if (SND.ac) { if (do
   // touches (and the mouse) in canvas pixels: 0 down, 1 move, 2 up
   let sound = false; const d = () => Math.min(window.devicePixelRatio || 1, 3);
   const live = new Set();   // pointers down: the first one also clears anything whose lift was lost (3)
-  addEventListener("blur", () => { live.clear(); fw.web_touch(5, 0, 0, 0); });
-  document.addEventListener("visibilitychange", () => { if (document.hidden) { live.clear(); fw.web_touch(5, 0, 0, 0); } });
+  const held = new Set();   // keys down
+  const letGo = () => { live.clear(); fw.web_touch(5, 0, 0, 0); held.clear(); fw.web_key("", false); };
+  addEventListener("blur", letGo);
+  document.addEventListener("visibilitychange", () => { if (document.hidden) letGo(); });
   // iPhone: Web Audio is silenced by the ring/silent switch unless the page plays as media: ask for the playback session
   // (iOS 17+), and for older versions keep a silent <audio> loop going, which switches the page to the media category
   const unmute = () => { try { if (navigator.audioSession) navigator.audioSession.type = "playback"; } catch (_) {}
@@ -109,10 +117,17 @@ document.addEventListener("visibilitychange", () => { try { if (SND.ac) { if (do
   for (const ev of ["gesturestart", "gesturechange", "dblclick"]) document.addEventListener(ev, (e) => e.preventDefault(), opt);
   // the mouse (computers): pointer events, mouse only
   const MID = 0x7fff;
-  cv.addEventListener("pointerdown", (e) => { if (e.pointerType !== "mouse") return; e.preventDefault(); start(); try { cv.setPointerCapture(e.pointerId); } catch (_) {} send(0, MID, e.clientX, e.clientY); });
+  cv.addEventListener("pointerdown", (e) => { if (e.pointerType !== "mouse") return; e.preventDefault(); focus(); start(); try { cv.setPointerCapture(e.pointerId); } catch (_) {} send(0, MID, e.clientX, e.clientY); });
   cv.addEventListener("pointermove", (e) => { if (e.pointerType === "mouse" && e.buttons) send(1, MID, e.clientX, e.clientY); });
   for (const ev of ["pointerup", "pointercancel"]) cv.addEventListener(ev, (e) => { if (e.pointerType === "mouse") send(2, MID, e.clientX, e.clientY); });
-  addEventListener("keydown", (e) => { if (e.target && e.target.tagName === "INPUT") return; if (e.key === "Escape" || e.key === "Backspace") fw.web_back(); });
+  // keys (computers): arrows / WASD drive, Space is the handbrake, Enter picks, C camera, R back on the road, M sound;
+  // Escape / Backspace go back. Held keys are sent once down and once up (the browser's auto-repeat is dropped).
+  const KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "KeyW", "KeyA", "KeyS", "KeyD", "Space", "Enter", "NumpadEnter", "KeyC", "KeyR", "KeyM"]);
+  addEventListener("keydown", (e) => { if (e.target && e.target.tagName === "INPUT") return;
+    if (e.key === "Escape" || e.key === "Backspace") { fw.web_back(); return; }
+    if (!KEYS.has(e.code) || e.ctrlKey || e.metaKey || e.altKey) return;
+    e.preventDefault(); start(); if (held.has(e.code)) return; held.add(e.code); fw.web_key(e.code, true); });
+  addEventListener("keyup", (e) => { if (held.delete(e.code)) fw.web_key(e.code, false); });
   // the driver name: a text box over the game (the phone's own keyboard comes up); first run: no way round it
   let nameBox = null;
   const askName = (first, cur) => {
