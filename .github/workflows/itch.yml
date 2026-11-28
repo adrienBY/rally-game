@@ -53,6 +53,9 @@ jobs:
         run: |
           butler -V
           R="$GITHUB_REPOSITORY"; web_id=""; apk_id=""
+          # butler wants user/game; a bare game name gets the repo owner (same username on itch.io)
+          case "$ITCH_GAME" in */*) ;; *) ITCH_GAME="${GITHUB_REPOSITORY_OWNER,,}/$ITCH_GAME" ;; esac
+          echo "itch target: $ITCH_GAME"
           if [ "$EVENT" = "workflow_run" ]; then
             if [ "$RUN_NAME" = "Build APK" ]; then apk_id="$RUN_ID"; else web_id="$RUN_ID"; fi
           else
